@@ -1,0 +1,113 @@
+FFmpeg WebAssembly distribution / source and license information
+
+Scope
+-----
+This directory contains only the two runtime files required by the single-thread
+ESM @ffmpeg/core 0.12.10, plus license, provenance and source-access notices.
+No multi-thread core, ffmpeg-core.worker.js, sample video or CDN loader is shipped.
+The application wrapper's module Worker is bundled by Vite from the installed
+@ffmpeg/ffmpeg 0.12.15 package. It is NOT a second pthread/multi-thread core.
+
+ffmpeg-core.js: 111804 bytes
+SHA-256: 67a48f11645f85439f3fde4f2119042c16b374b910206b7a7a24f342e28dcae3
+ffmpeg-core.wasm: 32232419 bytes
+SHA-256: 9f57947a5bd530d8f00c5b3f2cb2a3492faa7e5d823315342d6a8656d0a6b7b7
+Both files were copied unmodified from node_modules/@ffmpeg/core/dist/esm/.
+Package: https://registry.npmjs.org/@ffmpeg/core/-/core-0.12.10.tgz
+npm dist.integrity:
+sha512-dzNplnn2Nxle2c2i2rrDhqcB19q9cglCkWnoMTDN9Q9l3PvdjZWd1HfSPjCNWc/p8Q3CT+Es9fWOR0UhAeYQZA==
+
+IMPORTANT LICENSE DISTINCTION
+----------------------------
+The JavaScript wrapper and its worker (@ffmpeg/ffmpeg) are MIT licensed:
+see LICENSE-wrapper-MIT.txt (Copyright 2019 Jerome Wu).
+The shipped @ffmpeg/core package declares GPL-2.0-or-later, NOT MIT.
+See core-package.txt, LICENSE-core-GPLv2.txt and LICENSE-FFmpeg-notice.txt.
+The upstream build enables --enable-gpl, libx264 and libx265; these GPL
+components change the applicable core license from FFmpeg's LGPL baseline.
+The actual upstream FFmpeg LGPL text is also supplied as LICENSE-LGPLv2.1.txt.
+Do not describe the combined compiled core as an MIT-only dependency.
+Codec patent issues, if applicable to a distribution/jurisdiction, are separate
+from copyright licensing. This notice is not a legal compatibility determination
+for a combined application or a substitute for the distributor's GPL obligations.
+
+Obtaining source and build scripts
+---------------------------------
+The wrapper/core repository release tag is v12.15 (NOT v0.12.15).
+Its packages/core/package.json declares 0.12.10 and packages/ffmpeg is 0.12.15.
+Upstream snapshot:
+https://github.com/ffmpegwasm/ffmpeg.wasm/tree/71aa99d37c02a7b4c435275ca9ef50e612f6efa1
+Downloadable source:
+https://github.com/ffmpegwasm/ffmpeg.wasm/archive/71aa99d37c02a7b4c435275ca9ef50e612f6efa1.tar.gz
+Build recipe (a verbatim copy is upstream-build.txt):
+https://github.com/ffmpegwasm/ffmpeg.wasm/blob/71aa99d37c02a7b4c435275ca9ef50e612f6efa1/Dockerfile
+Also retain Makefile, build/*.sh, src/bind and src/fftools from that snapshot.
+Upstream single-thread production build command: make prd
+This invokes make build-st FFMPEG_ST=yes, using emscripten/emsdk:3.1.40,
+-O3 -msimd128, disabled pthreads and WORKERFS. Requires Docker/buildx and the
+full referenced dependency sources. No FFmpeg rebuild was performed here.
+The FFmpeg source baseline in the Dockerfile is n5.1.4:
+https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n5.1.4.tar.gz
+The npm package does not expose a gitHead. The upstream recipe contains mutable
+branches (notably x264 4-cores and lame master), so the recipe alone is NOT a
+claim of byte-reproducibility or a complete archived corresponding-source offer
+for the npm binary. Before public redistribution, the distributor must obtain
+and preserve the exact matching dependency source revisions/build materials
+from upstream (or rebuild from pinned source), provide corresponding source
+as required by the applicable GPL, and review application-license compatibility.
+This task has not published anything and has not made a written source offer
+on anyone else's behalf. Links here explain source acquisition, not an assertion
+that bare third-party links alone satisfy all distribution obligations.
+
+Compiled dependency source references and actual supplied notices
+----------------------------------------------------------------
+The following references come from the upstream recipe; each license file in
+this directory was fetched verbatim from the named revision, not paraphrased.
+Get full repositories (including submodules where present) at these revisions;
+retain per-file notices and additional license files in corresponding source.
+
+x264: https://github.com/ffmpegwasm/x264/tree/4-cores
+  COPYING -> LICENSE-x264.txt (GPL v2 or later; see source)
+x265: https://github.com/ffmpegwasm/x265/tree/3.4
+  COPYING -> LICENSE-x265.txt (GPL v2 or later; see source)
+libvpx: https://github.com/ffmpegwasm/libvpx/tree/v1.13.1
+  LICENSE -> LICENSE-libvpx.txt; PATENTS -> PATENTS-libvpx.txt
+LAME: https://github.com/ffmpegwasm/lame/tree/master
+  COPYING -> LICENSE-lame.txt (LGPL; mutable upstream branch)
+Ogg: https://github.com/ffmpegwasm/Ogg/tree/v1.3.4
+  COPYING -> LICENSE-ogg.txt
+Theora: https://github.com/ffmpegwasm/theora/tree/v1.1.1
+  COPYING -> LICENSE-theora.txt
+Opus: https://github.com/ffmpegwasm/opus/tree/v1.3.1
+  COPYING -> LICENSE-opus.txt (includes patent-license source references)
+Vorbis: https://github.com/ffmpegwasm/vorbis/tree/v1.3.3
+  COPYING -> LICENSE-vorbis.txt
+zlib: https://github.com/ffmpegwasm/zlib/tree/v1.2.11
+  README (contains full zlib license) -> LICENSE-zlib.txt
+libwebp: https://github.com/ffmpegwasm/libwebp/tree/v1.3.2
+  COPYING -> LICENSE-libwebp.txt; PATENTS -> PATENTS-libwebp.txt
+FreeType: https://github.com/ffmpegwasm/freetype2/tree/VER-2-10-4
+  docs/FTL.TXT -> LICENSE-freetype.txt (also offered under GPL v2 in source)
+FriBidi: https://github.com/fribidi/fribidi/tree/v1.0.9
+  COPYING -> LICENSE-fribidi.txt
+HarfBuzz: https://github.com/harfbuzz/harfbuzz/tree/5.2.0
+  COPYING -> LICENSE-harfbuzz.txt (consult source subdirectory notices too)
+libass: https://github.com/libass/libass/tree/0.15.0
+  COPYING -> LICENSE-libass.txt
+zimg: https://github.com/sekrit-twc/zimg/tree/release-3.0.5
+  COPYING -> LICENSE-zimg.txt
+Emscripten: https://github.com/emscripten-core/emscripten/tree/3.1.40
+  LICENSE -> LICENSE-emscripten.txt
+  system/lib/libc/musl/COPYRIGHT -> LICENSE-musl.txt
+SDL2 port used by Emscripten 3.1.40:
+https://github.com/libsdl-org/SDL/tree/release-2.24.2
+  LICENSE.txt -> LICENSE-SDL2.txt
+
+Runtime use
+-----------
+The application explicitly loads same-origin ffmpeg-core.js / ffmpeg-core.wasm.
+Serve .wasm with application/wasm and permit same-origin module workers.
+No crossOriginIsolated/SharedArrayBuffer requirement is imposed by this ST core.
+The -msimd128 build requires a modern WebAssembly SIMD-capable browser.
+All source videos and intermediates stay in memory. Exporting a user's encoded
+MP4 is distinct from distributing the FFmpeg executable/core itself.

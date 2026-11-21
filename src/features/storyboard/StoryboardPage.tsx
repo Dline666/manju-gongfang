@@ -1,0 +1,110 @@
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { Check, Copy, ArrowUp, ArrowDown, Link2 } from 'lucide-react';
+import { Button, Empty, Field, Modal, copyText } from '../../components/Ui';
+import type { Asset, PageProps, Reference, Shot } from '../../domain/types';
+import { getStudio, updateProject, useStudio } from '../../store/studio';
+import { useMediaUrl } from '../../store/media';
+import { assetPromptGroups, assetText, extractAssetsPrompt, fullAssetText, videoPrompt } from '../../lib/prompts';
+import { callApi, credentials, errorMessage } from '../../lib/api';
+import { applyAssetExtraction, extractLocalAssets } from '../script/creation';
+import { validateProject } from '../../domain/validation';
+import { fillStoryboard, updateReference } from './helpers';
+
+const roleNames = { reference_image: '参考图', first_frame: '首帧', last_frame: '尾帧' };
+function Thumbnail({ asset }: { asset: Asset }) {
+  const url = useMediaUrl(asset.imageId);
+  return url ? <img src={url} alt={asset.name} width={96} height={72} style={{ objectFit: 'contain', borderRadius: 8 }} /> : <span className="muted">{asset.imageId ? '图片不可用或读取中' : '未添加图片'}</span>;
+}
+export default function StoryboardPage(props: PageProps) { return <StoryboardEditor key={props.project.id} {...props} />; }
+function StoryboardEditor({ project, navigate }: PageProps) {
+  const [confirmation, setConfirmation] = useState<{ shots: Shot[]; assets: Asset[]; revision: number }>();
+  const { settings } = useStudio();
+  const [extraction, setExtraction] = useState<{ revision: number; prompt: string; provider: 'gemini' | 'deepseek'; model: string }>();
+  const [extracting, setExtracting] = useState(false);
+  const previewMapping = () => {
+    const draft = extractLocalAssets(project.shots, project.assets);
+    setConfirmation({ ...draft, shots: fillStoryboard(draft.shots), revision: project.revision });
+  };
+  const prepareExtraction = () => {
+    try {
+      const auth = credentials(settings.scriptProvider);
+      const prompt = extractAssetsPrompt(project);
+      if (prompt.length > 32_000) throw new Error('剧本过长，请精简后再提取；原有内容未修改。');
+      setExtraction({ revision: project.revision, prompt, provider: settings.scriptProvider, model: auth.model });
+    } catch (error) { toast.error(errorMessage(error)); }
+  };
+  const extract = async () => {
+    if (!extraction || extracting) return;
+    const task = extraction; setExtracting(true);
+    try {
+      const auth = credentials(task.provider);
+      if (auth.model !== task.model || getStudio().projects.find(p => p.id === project.id)?.revision !== task.revision) throw new Error('剧本、资产或模型已修改，请重新确认提取。');
+      const result = await callApi<unknown>('extract-assets', { ...auth, prompt: task.prompt });
+      const current = getStudio().projects.find(p => p.id === project.id);
+      if (!current || current.revision !== task.revision) throw new Error('项目已修改或删除，提取结果未覆盖现有内容。');
+      const draft = applyAssetExtraction(current, result);
+      setExtraction(undefined);
+      setConfirmation({ ...draft, shots: fillStoryboard(draft.shots), revision: task.revision });
+    } catch (error) { toast.error(errorMessage(error)); }
+    finally { setExtracting(false); }
+  };
+  const [promptShotId, setPromptShotId] = useState<string>();
+  const images = project.assets.filter(a => a.kind !== 'voice' && a.imageId);
+  const promptShot = project.shots.find(s => s.id === promptShotId);
+  const issues = validateProject(project);
+  const total = project.shots.reduce((sum, shot) => sum + shot.duration, 0);
+  const edit = (id: string, patch: Partial<Shot>) => updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: p.shots.map(s => s.id === id ? { ...s, ...patch } : s) }), true);
+  const reference = (shot: Shot, assetId: string, role?: Reference['role']) => {
+    try {
+      const next = updateReference(project, shot, assetId, role);
+      edit(shot.id, { references: next.references, assetIds: next.assetIds });
+    } catch (error) { toast.error(errorMessage(error)); }
+  };
+  const addReference = (shot: Shot, assetId: string) => {
+    const isFrames = shot.references.some(r => r.role !== 'reference_image');
+    reference(shot, assetId, !isFrames ? 'reference_image' : shot.references.some(r => r.role === 'first_frame') ? 'last_frame' : 'first_frame');
+  };
+  const moveReference = (shot: Shot, index: number, direction: number) => {
+    const list = [...shot.references]; const next = index + direction;
+    if (next < 0 || next >= list.length) return;
+    [list[index], list[next]] = [list[next], list[index]];
+    edit(shot.id, { references: list });
+  };
+  const confirmMapping = () => {
+    if (!confirmation) return;
+    const current = getStudio().projects.find(p => p.id === project.id);
+    if (!current || current.revision !== confirmation.revision) { toast.error('剧本或资产已改变，请重新预览对应关系。'); setConfirmation(undefined); return; }
+    updateProject(project.id, { shots: confirmation.shots, assets: confirmation.assets, storyboardReady: true }, true);
+    setConfirmation(undefined); toast.success('已确认分镜对应关系，空白开场、动作、终点已补齐。');
+  };
+  return <div className="stack">
+    <header className="page-heading"><div><span className="tag">03 / 分镜编排</span><h1>把文字，放进镜头里</h1><p className="muted">直接沿用已有镜头，不生成额外剧情。逐镜确认开场、动作、终点与参考图片。</p></div><Button disabled={!project.shots.length} onClick={previewMapping}><Check size={16} />{project.storyboardReady ? '重新确认对应关系' : '预览并确认对应关系'}</Button></header>
+    <div className="panel stack"><div className="section-title"><h2>{project.shots.length} 镜 / {Number(total.toFixed(2))} 秒</h2><span className="tag">{project.storyboardReady ? '对应关系已确认' : '对应关系待确认'}</span></div><p className="muted">只补空白字段：后一镜开场承接上一镜终点；已有文字保持不变。以下分镜与剧本一一对应，修改会同步回剧本并标记下游待更新。不进行额外自动衔接检查。</p><p className="muted">「固定资产」是文字设定，「实际图片附件」才会进入图片列表。参考图模式和首尾帧模式不能混用；尾帧需要首帧。图片编号就是提交附件顺序。</p></div>
+    {project.shots.length > 0 && <section className="panel stack"><h3>人物 · 场景 · 道具提取</h3><p className="muted">确认对应关系前会读取剧本中的「场景：名称：描述」「道具：名称：描述」及资产清单，关联已出现的名称。自由文本可用 AI 提取后审核；缺失类别始终标出，同名资产保留原固定短语和图片。</p><Button variant="secondary" disabled={extracting} onClick={prepareExtraction}>AI 提取三类资产（先确认）</Button></section>}
+    {project.shots.length > 0 && issues.length > 0 && <details className="alert"><summary>剧本 / 引用有 {issues.length} 项需要完善</summary><ul>{issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul></details>}
+    {!project.shots.length && <Empty title="先让故事有镜头" text="请在剧本页生成、导入或手动创建镜头，再确认分镜对应关系。"><Button onClick={() => navigate('script')}>前往剧本页</Button></Empty>}
+    {project.shots.map(shot => <article className="shot-card stack" key={shot.id}>
+      <div className="section-title"><div className="row"><span className="shot-number">{String(shot.number).padStart(2, '0')}</span><h2>第 {shot.number} 镜</h2><span className="tag">{shot.duration} 秒</span>{shot.stale && <span className="tag">下游待更新</span>}</div><Button variant="outline" onClick={() => setPromptShotId(shot.id)}><Copy size={16} />视频提示词</Button></div>
+      <Field label="画面"><textarea rows={3} value={shot.visual} onChange={e => edit(shot.id, { visual: e.target.value })} /></Field>
+      <div className="grid-3"><Field label="开场 / 起点"><textarea rows={3} value={shot.start} placeholder="为空时，确认对应关系将参考上一镜终点补齐" onChange={e => edit(shot.id, { start: e.target.value })} /></Field><Field label="动作"><textarea rows={3} value={shot.action} onChange={e => edit(shot.id, { action: e.target.value })} /></Field><Field label="终点"><textarea rows={3} value={shot.end} onChange={e => edit(shot.id, { end: e.target.value })} /></Field></div>
+      <div className="grid-2"><Field label="运镜"><input value={shot.camera} onChange={e => edit(shot.id, { camera: e.target.value })} /></Field><div className="field"><span>台词与声音</span><div>{shot.dialogues.length ? shot.dialogues.map(d => <p key={d.id}><strong>{project.assets.find(a => a.id === d.speakerId)?.name || '未指定人物'}：</strong>{d.text}</p>) : <p className="muted">无对白</p>}<small className="muted">{shot.audioMode === 'original' ? '原声模式' : shot.audioMode === 'dubbing' ? '后期配音模式' : '静音模式'} · {shot.audio ? '已关联配音轨' : '未关联外部配音轨'}</small><Button variant="ghost" onClick={() => navigate('script')}>编辑时长和台词</Button></div></div></div>
+      <div className="grid-2"><section className="panel stack"><h3>固定资产 · 文字设定</h3>{!project.assets.length && <p className="muted">还没有资产，请先到资产页创建。</p>}{project.assets.map(asset => <label className="row" key={asset.id}><input type="checkbox" checked={shot.assetIds.includes(asset.id)} onChange={e => {
+        if (!e.target.checked && shot.references.some(r => r.assetId === asset.id)) { toast.error('请先取消该资产的实际图片附件，再解除文字关联。'); return; }
+        edit(shot.id, { assetIds: e.target.checked ? [...new Set([...shot.assetIds, asset.id])] : shot.assetIds.filter(id => id !== asset.id) });
+      }} /><span>{asset.name} <small className="muted">{asset.kind === 'character' ? '人物' : asset.kind === 'scene' ? '场景' : asset.kind === 'prop' ? '道具' : '音色'}</small></span></label>)}<div className="stack">{assetPromptGroups(project, shot).map(group => <section key={group.kind} className={group.missing ? 'alert' : 'panel'}><h4>{group.label}{group.missing ? ' · 缺失待补充' : ''}</h4><pre>{group.text}</pre><Button variant="outline" onClick={() => void copyText(group.text)}>复制{group.label}</Button></section>)}<p className="muted">台词人物和已挂图片的资产也会自动进入固定资产块；音色ID由配音流程使用。</p></div><div className="toolbar"><Button variant="outline" onClick={() => void copyText(fullAssetText(project, shot))}>复制完整资产</Button><Button variant="ghost" onClick={() => navigate('assets')}>管理资产</Button></div></section>
+      <section className="panel stack"><h3><Link2 size={16} /> 实际图片附件</h3>{!images.length && <p className="muted">没有真实图片可挂载。请先到资产页上传或生成设定图。</p>}{images.map(asset => <label className="row" key={asset.id}><input type="checkbox" checked={shot.references.some(r => r.assetId === asset.id)} onChange={e => e.target.checked ? addReference(shot, asset.id) : reference(shot, asset.id)} /><Thumbnail asset={asset} /><span>{asset.name}</span></label>)}<p className="muted">要切换首尾帧模式，请先移除其他参考图，再将保留图片的角色改为「首帧」。后续勾选图片默认作为尾帧。</p></section></div>
+      {shot.references.length > 0 && <section className="stack"><h3>提交图序</h3>{shot.references.map((ref, index) => {
+        const asset = project.assets.find(a => a.id === ref.assetId);
+        return <div className="panel row" key={ref.assetId}><span className="tag">图 {index + 1}</span>{asset && <Thumbnail asset={asset} />}<strong>{asset?.name || '已失效资产'}</strong><Field label={`图${index + 1}角色`}><select value={ref.role} onChange={e => reference(shot, ref.assetId, e.target.value as Reference['role'])}>{Object.entries(roleNames).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></Field><Button variant="ghost" disabled={index === 0} aria-label={`图${index + 1}上移`} onClick={() => moveReference(shot, index, -1)}><ArrowUp size={16} /></Button><Button variant="ghost" disabled={index === shot.references.length - 1} aria-label={`图${index + 1}下移`} onClick={() => moveReference(shot, index, 1)}><ArrowDown size={16} /></Button><Button variant="ghost" onClick={() => reference(shot, ref.assetId)}>取消挂图</Button></div>;
+      })}</section>}
+      <p className="muted">视频状态：{shot.stale ? '上游已变更，需要重新审核' : shot.video ? `已关联「${shot.video.name}」` : '尚未制作（不属于剧本校验错误）'}{shot.task ? ` · 任务：${shot.task.status}` : ''}</p>
+    </article>)}
+    {project.shots.length > 0 && <div className="toolbar"><Button variant="outline" onClick={() => navigate('assets')}>返回资产设定</Button><Button disabled={!project.storyboardReady} onClick={() => navigate('generation')}>下一步：视频生成</Button>{!project.storyboardReady && <span className="muted">请先预览并确认当前对应关系。</span>}</div>}
+    <Modal open={!!confirmation} onClose={() => setConfirmation(undefined)} title="确认剧本与分镜对应关系" description="先审核三类资产和逐镜关联，保存到资产库并补空白开场、动作与终点；保留镜头ID、时长、台词、原固定短语和素材关联。">
+      {confirmation && <div className="stack"><p>剧本 {confirmation.shots.length} 镜 → 分镜 {confirmation.shots.length} 镜，一一对应。请逐项审核下面的实际保存内容。</p><div className="panel"><h3>待保存资产清单</h3>{confirmation.assets.filter(a => a.kind !== 'voice').map(a => <p key={a.id}>{a.kind === 'character' ? '人物' : a.kind === 'scene' ? '场景' : '道具'}「{a.name}」：{a.lock || a.description}{project.assets.some(old => old.id === a.id) ? '（沿用）' : '（新增）'}</p>)}</div>{confirmation.shots.map(s => <details className="panel" key={s.id}><summary>剧本第{s.number}镜 → 分镜第{s.number}镜 · {s.duration}秒</summary><p>画面：{s.visual}</p><p>开场：{s.start}</p><p>动作：{s.action}</p><p>终点：{s.end}</p><p>运镜：{s.camera}</p><pre>{assetText({ ...project, assets: confirmation.assets }, s)}</pre></details>)}<div className="toolbar"><Button onClick={confirmMapping}>确认对应并保存补全</Button><Button variant="ghost" onClick={() => setConfirmation(undefined)}>取消</Button></div></div>}
+    </Modal>
+    <Modal open={!!extraction} onClose={() => { if (!extracting) setExtraction(undefined); }} title="确认 AI 资产提取" description="只提取现有剧本的三类资产与逐镜关联，不重写剧情。确认后调用付费剧本模型，返回结果仍需预览并保存。">{extraction && <div className="stack"><p>{extraction.provider} · {extraction.model} · {project.shots.length} 镜</p><Field label="即将发送的资产提取提示词"><textarea readOnly rows={10} value={extraction.prompt} /></Field><div className="toolbar"><Button disabled={extracting} onClick={extract}>{extracting ? '正在提取…' : '确认发送并提取资产'}</Button><Button variant="ghost" disabled={extracting} onClick={() => setExtraction(undefined)}>取消</Button></div></div>}</Modal>
+    <Modal open={!!promptShot} onClose={() => setPromptShotId(undefined)} title={`第${promptShot?.number || ''}镜 · 完整视频提示词`} description="有图时侧重动作、对白和运镜；无图时明确开场。文字复制不会自动上传图片，实际附件在生成页提交。">{promptShot && <div className="stack"><textarea rows={16} readOnly aria-label="视频提示词全文" value={videoPrompt(project, promptShot)} /><div className="toolbar"><Button onClick={() => void copyText(videoPrompt(project, promptShot))}>复制提示词</Button><Button variant="ghost" onClick={() => setPromptShotId(undefined)}>关闭</Button></div></div>}</Modal>
+  </div>;
+}

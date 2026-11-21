@@ -1,0 +1,1 @@
+{"version":1,"name":"漫剧工坊","design":{"version":1,"pages":[{"id":"library","path":"/","title":"作品库"},{"id":"studio","path":"/","title":"创作工作台","hash":"#/script"},{"id":"settings","path":"/","title":"设置","hash":"#/settings"}],"capabilities":["appearance","radius","spacing","typography","motion"]}}
