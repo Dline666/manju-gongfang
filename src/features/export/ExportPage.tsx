@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Archive, Download, Film, RefreshCw, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PageProps } from '../../domain/types';
-import { Button, Empty, HelpPopover, Modal, downloadBlob } from '../../components/Ui';
+import { Button, Empty, HelpPopover, downloadBlob } from '../../components/Ui';
+import PreflightDialog from './PreflightDialog';
 import { errorMessage } from '../../lib/api';
 import { inspectProject, type MediaReport } from '../../lib/media/inputs';
 import { buildMaterialZip } from '../../lib/media/archive';
@@ -24,7 +25,6 @@ export default function ExportPage({ project, navigate }: PageProps) {
   const [zip, setZip] = useState<Blob>();
   const [outputUrl, setOutputUrl] = useState<string>();
   const [confirm, setConfirm] = useState(false);
-  const [accepted, setAccepted] = useState(false);
   const [reload, setReload] = useState(0);
   const task = useRef<AbortController | undefined>(undefined);
   const alive = useRef(true);
@@ -34,7 +34,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
     const control = new AbortController();
     task.current?.abort(); task.current = undefined;
     setJob(undefined); setProgress(undefined); setMp4(undefined); setZip(undefined);
-    setConfirm(false); setAccepted(false); setReport(undefined); setError(''); setChecking(true);
+    setConfirm(false); setReport(undefined); setError(''); setChecking(true);
     setCheckMessage('正在读取当前会话媒体…');
     void inspectProject(project, number => { if (!control.signal.aborted) setCheckMessage(`正在检查第 ${number} 镜视频与配音…`); }, control.signal)
       .then(value => { if (!control.signal.aborted) setReport(value); })
@@ -96,7 +96,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
       <div className="section-title"><div className="row"><h2>导出文件</h2><HelpPopover title="导出说明"><p>ZIP 保留原始逐镜视频、所有已关联配音与参考图、SRT、五份文档和不含密钥的 manifest.json；缺任何已关联素材均阻止完整包。不是剪映专有工程。字幕按对白均分估算，不烧录进 MP4，需手工校对。</p><p className="mt-2">MP4 生成还会由 FFmpeg 检查真实音视频轨道；“素材可读”不代表编码已成功。只显示当前实际阶段，不提供推测的总体百分比。</p><p className="mt-2">编码组件：ffmpeg.wasm wrapper（MIT）与单线程 core（GPL-2.0-or-later）。<a href={`${import.meta.env.BASE_URL}ffmpeg/SOURCE-AND-LICENSE.txt`} target="_blank" rel="noreferrer">许可证与源码获取说明</a></p></HelpPopover></div></div>
       <details className="alert"><summary><strong>画面与音频处理规则</strong></summary><ul><li>画面等比例缩放、黑边填充，不拉伸。长视频只取前「镜头时长」秒；短视频用最后一帧补足。</li><li>原声模式保留视频原声；替换配音模式彻底移除原声，使用独立配音；无台词可选静音。短音频用静音补齐。</li><li>配音超时会阻止导出，不裁剪对白。请返回生成页修改台词或调整语速后重试。原声随视频时长截取。</li><li>逐镜处理以降低内存占用，但浏览器仍需容纳源素材、中间片段及最终文件；生成期间请勿刷新或切页。</li></ul></details>
       <div className="toolbar">
-        <Button disabled={disabled || !report?.ready} onClick={() => { setAccepted(false); setConfirm(true); }}><Film size={16} />生成真实 MP4</Button>
+        <Button disabled={disabled || !report} onClick={() => setConfirm(true)}><Film size={16} />生成真实 MP4</Button>
         <Button variant="outline" disabled={disabled || !report?.ready} onClick={() => { void start('zip'); }}><Archive size={16} />生成完整素材 ZIP</Button>
         {job && <Button variant="outline" onClick={() => task.current?.abort()}><X size={16} />取消{job === 'mp4' ? '编码' : '打包'}</Button>}
       </div>
@@ -105,8 +105,6 @@ export default function ExportPage({ project, navigate }: PageProps) {
       {zip && <div className="row"><span>完整素材包已生成 · {(zip.size / 1024 / 1024).toFixed(1)} MB</span><Button variant="outline" onClick={() => downloadBlob(zip, `${safeFilename(project.name)}-素材包.zip`)}><Download size={16} />下载 ZIP</Button></div>}
     </section>
     {mp4 && outputUrl && <section className="panel stack"><div className="section-title"><h2>最终 MP4 预览</h2><span className="tag">{(mp4.size / 1024 / 1024).toFixed(1)} MB</span></div><video src={outputUrl} controls playsInline preload="metadata" aria-label="最终 MP4 预览" style={{ width: '100%', maxHeight: 560, background: '#000', objectFit: 'contain' }} /><Button onClick={() => downloadBlob(mp4, `${safeFilename(project.name)}.mp4`)}><Download size={16} />下载 MP4</Button></section>}
-    <Modal open={confirm} onClose={() => setConfirm(false)} title="确认镜头与音频处理规则" description="导出严格使用已确认的镜头时长，不自动延长对白，也不修改源文件。">
-      <div className="stack"><p>长视频只取前 duration 秒，短视频以最后一帧补齐，等比例填黑边。原声随视频截取；替换配音完全移除原声。短音频补静音，超长配音会阻止编码而不是裁剪。</p><label className="row"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)} />我已检查每镜时长和音频模式，并确认以上规则</label><Button disabled={!accepted || !report?.ready || disabled} onClick={() => { void start('mp4'); }}>确认并开始逐镜编码</Button></div>
-    </Modal>
+    <PreflightDialog open={confirm} onClose={() => setConfirm(false)} onConfirm={() => { setConfirm(false); void start('mp4'); }} project={project} report={report} disabled={disabled} />
   </div>;
 }
