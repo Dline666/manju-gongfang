@@ -12,6 +12,10 @@ export const imageModelGroups: { provider: Settings['imageProvider']; label: str
     { id: 'doubao-seedream-5-0-pro-260628', name: 'Seedream 5.0 Pro', description: '精细画面创作' },
     { id: 'doubao-seedream-5-0-flash-260915', name: 'Seedream 5.0 Flash', description: '快速设定图草稿' },
   ] },
+  { provider: 'huggingface', label: 'Hugging Face（免费）', models: [
+    { id: 'black-forest-labs/FLUX.1-schnell', name: 'FLUX.1-schnell', description: '免费 · 快速 · Apache 2.0 · 默认' },
+    { id: 'stabilityai/stable-diffusion-xl-base-1.0', name: 'SDXL', description: '免费 · 风格备选' },
+  ] },
 ];
 
 export const videoModelGroups: { provider: Settings['videoProvider']; label: string; models: ModelOption[] }[] = [

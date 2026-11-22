@@ -413,6 +413,36 @@ export function createHandler(dependencies: Dependencies = {}) {
     } finally { cancelBody(response?.body ?? null); scope.dispose(); }
   }
 
+  // Hugging Face Inference returns raw image bytes, not JSON. Separate path with
+  // the same auth/timeout discipline, a binary body read, and a PNG/JPEG magic check.
+  // Cold starts on the free tier can take 20-60s, so this uses the generation deadline.
+  async function upstreamImage(request: Request, url: string, key: string, body: ObjectValue): Promise<{ base64: string; mime: string }> {
+    const scope = deadline(timeouts.generation, request.signal, new Fault("upstream_timeout", 504));
+    let response: Response | undefined;
+    try {
+      requireValue(!request.signal.aborted, "request_aborted", 408);
+      response = await scope.run(fetcher(url, {
+        method: "POST", redirect: "manual", credentials: "omit", cache: "no-store", signal: scope.signal,
+        headers: { "Content-Type": "application/json", Accept: "image/png, image/jpeg", Authorization: `Bearer ${key}` },
+        body: JSON.stringify(body),
+      }));
+      if (!response.ok) throw upstreamHttp(response.status, false);
+      requireValue(!response.redirected, "invalid_upstream_response", 502);
+      const bytes = await readBytes(response.body, response.headers, LIMITS.image, scope, new Fault("upstream_too_large", 502));
+      const png = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+      const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      requireValue(png || jpeg, "invalid_upstream_response", 502);
+      let binary = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      return { base64: btoa(binary), mime: png ? "image/png" : "image/jpeg" };
+    } catch (error) {
+      scope.abort();
+      if (error instanceof Fault) throw error;
+      throw new Fault("upstream_unavailable", 502);
+    } finally { cancelBody(response?.body ?? null); scope.dispose(); }
+  }
+
   async function videoStatus(request: Request, provider: VideoProvider, key: string, id: string): Promise<VideoResult> {
     const url = `${provider === "seedance" ? ENDPOINTS.seedance : ENDPOINTS.minimaxQuery}/${encodeURIComponent(id)}`;
     const data = await upstream(request, url, key);
@@ -560,6 +590,18 @@ export function createHandler(dependencies: Dependencies = {}) {
         return json(validate(generated));
       }
       if (action === "image") {
+        if (provider === "huggingface") {
+          // New router endpoint only: the old api-inference.huggingface.co host is retired (404/410).
+          const selected = model(input.model, "black-forest-labs/FLUX.1-schnell", /^(?:black-forest-labs\/FLUX\.1-schnell|stabilityai\/stable-diffusion-xl-base-1\.0)$/);
+          const prompt = text(input.prompt, 32_000, "invalid_prompt");
+          const schnell = selected === "black-forest-labs/FLUX.1-schnell";
+          return json(await upstreamImage(request, `https://router.huggingface.co/hf-inference/models/${selected}`, key, {
+            inputs: prompt,
+            parameters: schnell
+              ? { guidance_scale: 0, num_inference_steps: 4, max_sequence_length: 256 }
+              : { guidance_scale: 7.5, num_inference_steps: 25 },
+          }));
+        }
         requireValue(provider === "openai" || provider === "seedream", "invalid_provider");
         const data = await upstream(request, ENDPOINTS[provider], key, { paid: true, max: LIMITS.image, body: provider === "seedream" ? {
           model: model(input.model, "doubao-seedream-5-5-261028", /^(?:doubao-seedream-|ep-)[A-Za-z0-9._-]+$/),

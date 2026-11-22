@@ -1,4 +1,4 @@
-export type Provider = 'gemini' | 'deepseek' | 'openai' | 'seedream' | 'seedance' | 'minimax';
+export type Provider = 'gemini' | 'deepseek' | 'openai' | 'seedream' | 'huggingface' | 'seedance' | 'minimax';
 export type Stage = 'library' | 'script' | 'assets' | 'storyboard' | 'generation' | 'export' | 'settings';
 export type AssetKind = 'character' | 'scene' | 'prop' | 'voice';
 export type SkillId = 'script' | 'storyboard' | 'image' | 'video';
@@ -27,7 +27,7 @@ export interface Project {
   storyboardReady: boolean;
 }
 export interface Settings {
-  scriptProvider: 'gemini' | 'deepseek'; imageProvider: 'openai' | 'seedream'; videoProvider: 'seedance' | 'minimax';
+  scriptProvider: 'gemini' | 'deepseek'; imageProvider: 'openai' | 'seedream' | 'huggingface'; videoProvider: 'seedance' | 'minimax';
   models: Record<Provider, string>; speechModel: string;
 }
 export interface ProviderStatus { status: 'available' | 'failed'; action: string; model?: string; error?: string }
@@ -40,7 +40,7 @@ export const uid = () => crypto.randomUUID();
 export const defaultStyle = '东方玄幻水墨风，冷灰 + 金色灵光';
 export const defaultSettings: Settings = {
   scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance',
-  models: { gemini: 'gemini-4-hydrogen', deepseek: 'deepseek-flash', openai: 'gpt-image-2.6-sunburst', seedream: 'doubao-seedream-5-5-261028', seedance: 'doubao-seedance-2-0-fast-260128', minimax: 'MiniMax-H3' },
+  models: { gemini: 'gemini-4-hydrogen', deepseek: 'deepseek-flash', openai: 'gpt-image-2.6-sunburst', seedream: 'doubao-seedream-5-5-261028', huggingface: 'black-forest-labs/FLUX.1-schnell', seedance: 'doubao-seedance-2-0-fast-260128', minimax: 'MiniMax-H3' },
   speechModel: 'speech-2.8-hd',
 };
 export function makeShot(number: number): Shot {
