@@ -14,6 +14,11 @@ export function assetUsage(project: Project, id: string): string[] {
   return usage;
 }
 
+/** 用到该资产的镜头 ID，用于锁定资产修改后的范围失效。 */
+export function assetShotIds(project: Project, id: string): string[] {
+  return project.shots.filter(shot => shot.assetIds.includes(id) || shot.references.some(ref => ref.assetId === id) || shot.dialogues.some(line => line.speakerId === id)).map(shot => shot.id);
+}
+
 export async function validateImage(blob: Blob): Promise<void> {
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) throw new Error('仅支持 PNG、JPEG、WebP 图片；不支持SVG或伪装为图片的文件。');
   if (!blob.size || blob.size > 5 * 1024 * 1024) throw new Error('图片不能为空且不能超过5MB。');

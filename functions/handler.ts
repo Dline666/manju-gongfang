@@ -38,6 +38,8 @@ const MEDIA_HOSTS: Record<VideoProvider, readonly string[]> = {
 };
 const ACTION_FIELDS: Record<string, readonly string[]> = {
   script: ["provider", "key", "model", "prompt"],
+  screenplay: ["provider", "key", "model", "prompt"],
+  director: ["provider", "key", "model", "prompt"],
   "extract-assets": ["provider", "key", "model", "prompt"],
   image: ["provider", "key", "model", "prompt"],
   voices: ["provider", "key"],
@@ -222,7 +224,48 @@ const ASSETS_SCHEMA = {
   required: [...ASSET_KINDS, "shots"],
 };
 const ASSET_INSTRUCTION = " Include characters, scenes and props arrays at the top level and in every shot, using empty arrays when absent. Top-level entries have name and description, with unique names per category. Shot arrays contain only declared names from the same category, without duplicates. Preserve existing asset names, fixed descriptions and phrases EXACTLY; do not paraphrase them.";
+const SHOT_SIZES = ["远景", "全景", "中景", "近景", "特写"] as const;
+const MOVEMENTS = ["固定", "推", "拉", "摇", "移", "跟", "升降", "环绕"] as const;
+const ANGLES = ["平视", "俯视", "仰视"] as const;
+const SCREENPLAY_SCHEMA = {
+  type: "object",
+  properties: {
+    title: STRING_SCHEMA, logline: STRING_SCHEMA, ...ASSET_PROPERTIES,
+    beats: { type: "array", minItems: 10, maxItems: 10, items: {
+      type: "object",
+      properties: {
+        ...SHOT_ASSET_PROPERTIES,
+        title: STRING_SCHEMA, scene: STRING_SCHEMA, summary: STRING_SCHEMA,
+        seconds: { type: "integer", minimum: 4, maximum: 15, description: "Seconds; all 10 beats must total exactly 90 seconds." },
+        dialogues: { type: "array", items: {
+          type: "object", properties: { speaker: STRING_SCHEMA, text: STRING_SCHEMA }, required: ["speaker", "text"],
+        } },
+      },
+      required: ["title", "scene", "summary", "seconds", "dialogues", ...ASSET_KINDS],
+    } },
+  },
+  required: ["beats", ...ASSET_KINDS],
+};
+const DIRECTOR_SCHEMA = {
+  type: "object",
+  properties: {
+    shots: { type: "array", minItems: 1, maxItems: 100, items: {
+      type: "object",
+      properties: {
+        number: { type: "integer", minimum: 1, maximum: 100 },
+        shotSize: { type: "string", enum: SHOT_SIZES },
+        movement: { type: "string", enum: MOVEMENTS },
+        angle: { type: "string", enum: ANGLES },
+        start: STRING_SCHEMA, action: STRING_SCHEMA, end: STRING_SCHEMA,
+      },
+      required: ["number", "shotSize", "movement", "angle", "start", "action", "end"],
+    } },
+  },
+  required: ["shots"],
+};
 const SCRIPT_INSTRUCTION = "Return only a json object matching this schema. Exactly 10 shots totaling 90 seconds. start/end are frame descriptions, not timestamps. No markdown." + ASSET_INSTRUCTION + " Schema: " + JSON.stringify(SCRIPT_SCHEMA);
+const SCREENPLAY_INSTRUCTION = "Return only a json object matching this schema. Exactly 10 beats totaling 90 seconds, each beat 4-15 integer seconds. Each beat has a title, scene, a summary of one visible event, and dialogues. Do not include camera or shot fields. No markdown." + ASSET_INSTRUCTION + " Schema: " + JSON.stringify(SCREENPLAY_SCHEMA);
+const DIRECTOR_INSTRUCTION = "Return only a json object matching this schema. Exactly one shot per supplied beat, preserving shot numbers, durations, story, dialogues and shot count. shotSize is one of 远景/全景/中景/近景/特写; movement is one of 固定/推/拉/摇/移/跟/升降/环绕; angle is one of 平视/俯视/仰视. start/action/end are frame descriptions, not timestamps. No markdown. Schema: " + JSON.stringify(DIRECTOR_SCHEMA);
 const ASSETS_INSTRUCTION = "Return only a json object matching this schema. Only extract visual assets from the supplied script; do not rewrite shots or dialogues and do not invent details. Include one association entry per source shot, preserving its original number (unique integer 1–100), shot count and order. Reuse existing names and fixed phrases. No markdown." + ASSET_INSTRUCTION + " Schema: " + JSON.stringify(ASSETS_SCHEMA);
 
 function validateAssetLists(source: ObjectValue, required: boolean, code: string): Assets {
@@ -288,6 +331,67 @@ function validateScript(raw: string): ObjectValue {
   requireValue(duration === 90, "invalid_script", 502);
   return result;
 }
+function validateScreenplay(raw: string): ObjectValue {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_screenplay", 502); }
+  const source = object(parsed, "invalid_screenplay", 502);
+  requireValue(Array.isArray(source.beats) && source.beats.length === 10, "invalid_screenplay", 502);
+  const assets = validateAssetLists(source, false, "invalid_screenplay");
+  const result: ObjectValue = { ...assets };
+  if (source.title !== undefined) result.title = text(source.title, 200, "invalid_screenplay", 502);
+  if (source.logline !== undefined) result.logline = text(source.logline, 2000, "invalid_screenplay", 502);
+  let duration = 0;
+  result.beats = source.beats.map((item) => {
+    const beat = object(item, "invalid_screenplay", 502);
+    requireValue(typeof beat.seconds === "number" && Number.isInteger(beat.seconds) && beat.seconds >= 4 && beat.seconds <= 15, "invalid_screenplay", 502);
+    duration += beat.seconds;
+    requireValue(Array.isArray(beat.dialogues) && beat.dialogues.length <= 30, "invalid_screenplay", 502);
+    return {
+      ...validateShotAssets(beat, assets, false, "invalid_screenplay"),
+      title: text(beat.title, 200, "invalid_screenplay", 502),
+      scene: text(beat.scene, 200, "invalid_screenplay", 502),
+      summary: text(beat.summary, 8000, "invalid_screenplay", 502),
+      seconds: beat.seconds,
+      dialogues: beat.dialogues.map((line) => {
+        const value = object(line, "invalid_screenplay", 502);
+        return { speaker: text(value.speaker, 100, "invalid_screenplay", 502), text: text(value.text, 3000, "invalid_screenplay", 502) };
+      }),
+    };
+  });
+  requireValue(duration === 90, "invalid_screenplay", 502);
+  return result;
+}
+function validateDirector(raw: string): ObjectValue {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_director", 502); }
+  const source = object(parsed, "invalid_director", 502);
+  requireValue(Array.isArray(source.shots) && source.shots.length >= 1 && source.shots.length <= 100, "invalid_director", 502);
+  const numbers = new Set<number>();
+  const shots = source.shots.map((item) => {
+    const shot = object(item, "invalid_director", 502);
+    requireValue(typeof shot.number === "number" && Number.isInteger(shot.number) && shot.number >= 1 && shot.number <= 100 && !numbers.has(shot.number), "invalid_director", 502);
+    numbers.add(shot.number);
+    requireValue(SHOT_SIZES.includes(shot.shotSize as typeof SHOT_SIZES[number]), "invalid_director", 502);
+    requireValue(MOVEMENTS.includes(shot.movement as typeof MOVEMENTS[number]), "invalid_director", 502);
+    requireValue(ANGLES.includes(shot.angle as typeof ANGLES[number]), "invalid_director", 502);
+    return {
+      number: shot.number,
+      shotSize: shot.shotSize as typeof SHOT_SIZES[number],
+      movement: shot.movement as typeof MOVEMENTS[number],
+      angle: shot.angle as typeof ANGLES[number],
+      start: text(shot.start, 8000, "invalid_director", 502),
+      action: text(shot.action, 8000, "invalid_director", 502),
+      end: text(shot.end, 8000, "invalid_director", 502),
+    };
+  });
+  return { shots };
+}
+const textActions: Record<string, { schema: unknown; instruction: string; validate: (raw: string) => ObjectValue; code: string }> = {
+  script: { schema: SCRIPT_SCHEMA, instruction: SCRIPT_INSTRUCTION, validate: validateScript, code: "invalid_script" },
+  "extract-assets": { schema: ASSETS_SCHEMA, instruction: ASSETS_INSTRUCTION, validate: validateAssets, code: "invalid_assets" },
+  screenplay: { schema: SCREENPLAY_SCHEMA, instruction: SCREENPLAY_INSTRUCTION, validate: validateScreenplay, code: "invalid_screenplay" },
+  director: { schema: DIRECTOR_SCHEMA, instruction: DIRECTOR_INSTRUCTION, validate: validateDirector, code: "invalid_director" },
+};
 function validateAssets(raw: string): ObjectValue {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_assets", 502); }
@@ -564,13 +668,11 @@ export function createHandler(dependencies: Dependencies = {}) {
       requireValue(/^[\x21-\x7e]+$/.test(key), "invalid_key");
       const provider = input.provider;
 
-      if (action === "script" || action === "extract-assets") {
+      const textAction = textActions[action];
+      if (textAction) {
         requireValue(provider === "gemini" || provider === "deepseek", "invalid_provider");
         const prompt = text(input.prompt, 32_000, "invalid_prompt");
-        const schema = action === "script" ? SCRIPT_SCHEMA : ASSETS_SCHEMA;
-        const instruction = action === "script" ? SCRIPT_INSTRUCTION : ASSETS_INSTRUCTION;
-        const validate = action === "script" ? validateScript : validateAssets;
-        const code = action === "script" ? "invalid_script" : "invalid_assets";
+        const { schema, instruction, validate, code } = textAction;
         let generated: string;
         if (provider === "gemini") {
           const data = await upstream(request, ENDPOINTS.gemini, key, { paid: true, gemini: true, body: {

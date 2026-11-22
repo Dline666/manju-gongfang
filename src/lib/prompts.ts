@@ -139,13 +139,23 @@ export function scriptSpec(project: Project): PromptSpec {
 export function scriptPrompt(project: Project): string {
   return renderPrompt(scriptSpec(project));
 }
+export const screenplayPrompt = scriptPrompt;
 
 /** 导演模板（PR7 接入真实生成；当前供模板编辑器预览与校验）。 */
 export function directorSpec(project: Project): PromptSpec {
   const style = styleSpecFor(project); const vars = promptVariables(project, style);
   return {
     kind: 'director',
-    blocks: ['director.contract', 'director.spec', 'director.transition', 'director.forbidden', 'director.priority'].map(id => ruleBlock(project, id, vars, style)),
+    blocks: [
+      ...['director.contract', 'director.spec', 'director.transition', 'director.forbidden', 'director.priority'].map(id => ruleBlock(project, id, vars, style)),
+      block('director.shots-input', '逐镜剧本', JSON.stringify(project.shots.map(shot => ({
+        number: shot.number, duration: shot.duration, visual: shot.visual,
+        characters: project.assets.filter(asset => shot.assetIds.includes(asset.id) && asset.kind === 'character').map(asset => asset.name),
+        scenes: project.assets.filter(asset => shot.assetIds.includes(asset.id) && asset.kind === 'scene').map(asset => asset.name),
+        props: project.assets.filter(asset => shot.assetIds.includes(asset.id) && asset.kind === 'prop').map(asset => asset.name),
+        dialogues: shot.dialogues.map(line => ({ speaker: project.assets.find(asset => asset.id === line.speakerId)?.name || '', text: line.text })),
+      }))), true, '逐镜剧本由作品数据生成，调度时不得改动。'),
+    ],
   };
 }
 export function directorPrompt(project: Project): string {

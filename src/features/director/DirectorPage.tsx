@@ -1,0 +1,88 @@
+import { useRef, useState } from 'react';
+import { toast } from 'sonner';
+import { Check, Sparkles, WandSparkles } from 'lucide-react';
+import { Button, Empty, ErrorNote, Field, IssueList, Modal, ProgressPanel } from '../../components/Ui';
+import DurationStrip from '../script/DurationStrip';
+import { normalizeDirector, type GeneratedDirector } from '../script/creation';
+import { directorPrompt } from '../../lib/prompts';
+import { callApi, credentials, errorMessage } from '../../lib/api';
+import { getStudio, updateProject, useStudio } from '../../store/studio';
+import { finishJob, startJob, updateJob } from '../../store/jobs';
+import { validateDirectorStage, withConfirmation } from '../../domain/flow';
+import { fillStoryboard } from '../storyboard/helpers';
+import type { PageProps, Project, Shot } from '../../domain/types';
+
+type Confirmation = { prompt: string; provider: 'gemini' | 'deepseek'; model: string; project: Project };
+
+export default function DirectorPage({ project, navigate }: PageProps) {
+  const { settings } = useStudio();
+  const issues = validateDirectorStage(project);
+  const [confirmation, setConfirmation] = useState<Confirmation>();
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
+  const [failure, setFailure] = useState<unknown>();
+  const abortRef = useRef<AbortController | undefined>(undefined);
+  const edit = (id: string, patch: Partial<Shot>) => updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: p.shots.map(shot => shot.id === id ? { ...shot, ...patch } : shot) }), true);
+  const localFill = () => {
+    updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: fillStoryboard(p.shots).map(shot => ({ ...shot, camera: shot.camera.trim() || '中景·固定·平视' })) }), true);
+    toast.success('已本地补全开场、动作、终点与默认运镜，请逐镜审核。');
+  };
+  const prepare = () => {
+    try {
+      const auth = credentials(settings.scriptProvider);
+      setFailure(undefined);
+      setConfirmation({ prompt: directorPrompt(project), provider: settings.scriptProvider, model: auth.model, project: structuredClone(project) });
+    } catch (error) { toast.error(errorMessage(error)); }
+  };
+  const generate = async () => {
+    if (!confirmation || busy) return;
+    const task = confirmation;
+    setBusy(true); setFailure(undefined);
+    const controller = new AbortController(); abortRef.current = controller;
+    const jobId = startJob({ kind: 'director', label: '生成导演分镜', cancel: () => controller.abort() });
+    setProgress({ stage: '提交任务', startedAt: Date.now() });
+    try {
+      const auth = credentials(task.provider);
+      const current = getStudio().projects.find(p => p.id === project.id);
+      if (!current || current.revision !== task.project.revision) throw new Error('剧本或资产已修改，请重新确认。');
+      updateJob(jobId, { detail: '模型生成中' });
+      setProgress(previous => previous && { ...previous, stage: '模型生成中' });
+      const data = await callApi<GeneratedDirector>('director', { ...auth, prompt: task.prompt }, controller.signal);
+      setProgress(previous => previous && { ...previous, stage: '校验结构' });
+      const latest = getStudio().projects.find(p => p.id === project.id);
+      if (!latest || latest.revision !== task.project.revision) throw new Error('作品已修改，本次结果未覆盖现有内容。');
+      const shots = normalizeDirector(data, latest);
+      updateProject(project.id, p => ({ ...p, shots }), true);
+      finishJob(jobId, 'done');
+      setProgress(undefined);
+      setConfirmation(undefined);
+      toast.success('导演分镜已生成，请逐镜审核。');
+    } catch (error) {
+      finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed');
+      setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
+      setProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
+    } finally { setBusy(false); abortRef.current = undefined; }
+  };
+  const confirm = () => {
+    const problems = validateDirectorStage(project);
+    if (problems.length) { toast.error(`还有 ${problems.length} 项需要完善，请先修正。`); return; }
+    updateProject(project.id, p => ({ ...p, confirmed: withConfirmation(p, 'director') }), false);
+    navigate('storyboard');
+  };
+  if (!project.shots.length) return <Empty title="先完成剧本" text="导演步骤需要剧本拍摄出的 10 个节拍。"><Button onClick={() => navigate('script')}>去写剧本</Button></Empty>;
+  return <div className="stack">
+    <header className="page-heading"><div><span className="tag">03 / 导演分镜</span><h1>把剧本，拆成可拍的镜头</h1><p className="muted">补运镜与开场、动作、终点，不改剧情、对白、时长和拍数。</p></div><div className="row wrap"><Button variant="outline" onClick={localFill}><WandSparkles size={16} />本地补全</Button><Button onClick={prepare}><Sparkles size={16} />AI 生成分镜（先确认）</Button></div></header>
+    <div className="panel"><DurationStrip project={project} /></div>
+    {issues.length > 0 ? <section className="panel stack"><div className="section-title"><h3>需要完善</h3><span className="tag">{issues.length} 项</span></div><IssueList issues={issues} /></section> : <div className="notice"><Check size={20} /><div><strong>本步已完整</strong><p>可以确认并进入分镜编排。</p></div></div>}
+    {project.shots.map(shot => <article className="shot-card stack" key={shot.id} id={`shot-${shot.number}`}>
+      <div className="section-title"><div className="row"><span className="shot-number">{String(shot.number).padStart(2, '0')}</span><h2>第 {shot.number} 镜</h2><span className="tag">{shot.duration} 秒</span></div><span className="small muted truncate">{shot.visual.slice(0, 70)}</span></div>
+      <div className="grid-2"><Field label="景别 · 运镜 · 机位" hint="例如：中景·推·平视"><input value={shot.camera} placeholder="中景·固定·平视" onChange={event => edit(shot.id, { camera: event.target.value })} /></Field><Field label="开场 / 起点"><textarea rows={2} value={shot.start} onChange={event => edit(shot.id, { start: event.target.value })} /></Field></div>
+      <div className="grid-2"><Field label="动作"><textarea rows={2} value={shot.action} onChange={event => edit(shot.id, { action: event.target.value })} /></Field><Field label="终点"><textarea rows={2} value={shot.end} onChange={event => edit(shot.id, { end: event.target.value })} /></Field></div>
+      <p className="small muted">对白：{shot.dialogues.length ? shot.dialogues.map(line => `${project.assets.find(asset => asset.id === line.speakerId)?.name || '未指定'}：${line.text}`).join('；') : '无对白'}</p>
+    </article>)}
+    <div className="toolbar"><Button variant="outline" onClick={() => navigate('assets')}>返回资产</Button><Button onClick={confirm}>确认并进入下一步</Button></div>
+    <Modal open={!!confirmation} onClose={() => { if (!busy) { setConfirmation(undefined); setFailure(undefined); setProgress(undefined); } }} title="确认导演分镜任务" description="只发送剧本节拍与资产固定短语，不修改剧情、对白、时长和拍数。确认后调用付费文本模型。">
+      {confirmation && <div className="stack"><p>{confirmation.provider} · {confirmation.model} · {project.shots.length} 镜</p><Field label="即将发送的导演提示词"><textarea readOnly rows={12} value={confirmation.prompt} /></Field>{progress && <ProgressPanel title="AI 生成导演分镜" stage={progress.stage} startedAt={progress.startedAt} detail="服务商不返回进度，按已用时等待" onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} />}<div className="toolbar"><Button disabled={busy} onClick={() => void generate()}>{busy ? '生成中，请勿重复提交…' : '确认发送并生成分镜'}</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirmation(undefined)}>取消</Button></div></div>}
+    </Modal>
+  </div>;
+}

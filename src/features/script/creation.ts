@@ -10,6 +10,14 @@ export interface GeneratedScript {
   props?: { name: string; description: string }[];
   shots: { visual: string; camera: string; start: string; action: string; end: string; duration: number; dialogues: { speaker: string; text: string }[]; characters?: string[]; scenes?: string[]; props?: string[] }[];
 }
+export interface GeneratedScreenplay {
+  title?: string;
+  logline?: string;
+  characters?: { name: string; description: string }[];
+  scenes?: { name: string; description: string }[];
+  props?: { name: string; description: string }[];
+  beats: { title: string; scene: string; characters?: string[]; summary: string; dialogues: { speaker: string; text: string }[]; seconds: number }[];
+}
 export interface ScriptDraft { title?: string; assets: Asset[]; shots: Shot[] }
 const text = (value: unknown) => typeof value === 'string' ? value : '';
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -101,8 +109,7 @@ export function applyAssetExtraction(project: Project, input: unknown): ScriptDr
   return mergeDraftAssets(project.assets, { assets, shots: project.shots.map(shot => ({ ...shot, assetIds: [...new Set([...shot.assetIds, ...rows.find(row => row.number === shot.number)!.ids])] })) });
 }
 
-export function normalizeScript(input: unknown): ScriptDraft {
-  const data = record(input);
+export function normalizeScript(input: unknown): ScriptDraft {  const data = record(input);
   if (!Array.isArray(data.shots) || !data.shots.length) throw new Error('生成结果没有有效镜头，未覆盖现有剧本。');
   const assets = readAssetLists(data);
   const byName = new Map(assets.filter(a => a.kind === 'character').map(a => [a.name, a]));
@@ -137,27 +144,112 @@ export function normalizeScript(input: unknown): ScriptDraft {
   return { title: text(data.title).trim() || undefined, assets, shots };
 }
 
+/** 把 10 节拍剧本规范化为剧本层镜头：camera/start/action/end 留给导演步骤。 */
+export function normalizeScreenplay(input: unknown): ScriptDraft {
+  const data = record(input);
+  if (!Array.isArray(data.beats) || data.beats.length !== 10) throw new Error('生成结果必须为10个节拍；现有剧本未被覆盖。');
+  const assets = readAssetLists(data);
+  const byName = new Map(assets.filter(asset => asset.kind === 'character').map(asset => [asset.name, asset]));
+  const character = (name: string) => {
+    const clean = name.trim() || '旁白';
+    let asset = byName.get(clean);
+    if (!asset) {
+      const detail = `${clean}，外观设定待完善`;
+      asset = { id: uid(), kind: 'character', name: clean, description: detail, lock: detail };
+      byName.set(clean, asset); assets.push(asset);
+    }
+    return asset;
+  };
+  const declared = (kind: Asset['kind'], name: string, index: number) => {
+    const asset = assets.find(item => item.kind === kind && item.name === name);
+    if (!asset) throw new Error(`第${index + 1}拍引用了未声明的${kind === 'scene' ? '场景' : '道具'}：${name}`);
+    return asset.id;
+  };
+  const shots = data.beats.map((value, index) => {
+    const beat = record(value);
+    const seconds = beat.seconds;
+    if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 4 || seconds > 15) throw new Error(`第${index + 1}拍时长无效，需要4–15秒的整数。`);
+    const title = text(beat.title).trim();
+    const summary = text(beat.summary).trim();
+    if (!title) throw new Error(`第${index + 1}拍缺少标题。`);
+    if (!summary) throw new Error(`第${index + 1}拍缺少可见事件摘要，未覆盖现有剧本。`);
+    if (beat.dialogues !== undefined && !Array.isArray(beat.dialogues)) throw new Error(`第${index + 1}拍台词结构无效。`);
+    const dialogues = (Array.isArray(beat.dialogues) ? beat.dialogues : []).map(line => {
+      const item = record(line);
+      if (!text(item.text).trim()) throw new Error(`第${index + 1}拍包含空台词。`);
+      return { id: uid(), speakerId: character(text(item.speaker)).id, text: text(item.text) };
+    });
+    const names = (key: string) => Array.isArray(beat[key]) ? (beat[key] as unknown[]).map(item => text(item).trim()).filter(Boolean) : [];
+    const assetIds = [
+      ...names('characters').map(name => character(name).id),
+      ...names('scenes').map(name => declared('scene', name, index)),
+      ...names('props').map(name => declared('prop', name, index)),
+    ];
+    const scene = text(beat.scene).trim();
+    return {
+      ...makeShot(index + 1), duration: seconds,
+      visual: `${scene ? `【${scene}】` : ''}${summary}`,
+      camera: '', start: '', action: '', end: '',
+      dialogues, assetIds: [...new Set(assetIds)],
+    };
+  });
+  if (Math.abs(shots.reduce((sum, shot) => sum + shot.duration, 0) - 90) > 0.001) throw new Error('10个节拍必须合计90秒；现有剧本未被覆盖。');
+  return { title: text(data.title).trim() || undefined, assets, shots };
+}
+
+export interface GeneratedDirector {
+  shots: { number: number; shotSize: string; movement: string; angle: string; start: string; action: string; end: string }[];
+}
+
+/** 把导演输出合并回现有镜头：只改运镜与开场/动作/终点，剧情和时长不动。 */
+export function normalizeDirector(input: unknown, project: Project): Shot[] {
+  const data = record(input);
+  if (!Array.isArray(data.shots) || data.shots.length !== project.shots.length) throw new Error('导演分镜数量与剧本拍数不一致，未覆盖现有内容。');
+  const byNumber = new Map(project.shots.map(shot => [shot.number, shot]));
+  const seen = new Set<number>();
+  const rows = data.shots.map(value => {
+    const raw = record(value);
+    const number = raw.number;
+    if (typeof number !== 'number' || !Number.isInteger(number) || !byNumber.has(number) || seen.has(number)) throw new Error('导演分镜镜号无效或重复，未覆盖现有内容。');
+    seen.add(number);
+    const shotSize = text(raw.shotSize).trim(); const movement = text(raw.movement).trim(); const angle = text(raw.angle).trim();
+    const start = text(raw.start).trim(); const action = text(raw.action).trim(); const end = text(raw.end).trim();
+    if (!shotSize || !movement || !angle) throw new Error(`第${number}镜缺少景别、运镜或机位。`);
+    if (!start || !action || !end) throw new Error(`第${number}镜缺少开场、动作或终点。`);
+    return { ...byNumber.get(number)!, camera: `${shotSize}·${movement}·${angle}`, start, action, end };
+  });
+  const updated = new Map(rows.map(row => [row.number, row]));
+  return project.shots.map(shot => updated.get(shot.number) ?? shot);
+}
+
 export function templateScript(theme: string): ScriptDraft {
   const subject = theme.trim();
   if (!subject) throw new Error('请先输入主题，再生成模板草稿。');
-  const beats = [
-    ['开端', '主角停在故事发生地的入口', '主角观察环境，发现与主题有关的异象', '主角抬头望向异象', '事情似乎并不简单。'],
-    ['召唤', '主角望向远方的异象', '守门人现身，向主角展示线索', '线索落入主角掌心', '答案就在前面。'],
-    ['出发', '主角握住线索', '主角向目标迈步，守门人留在原地', '主角站在阻碍之前', '我想亲眼看看。'],
-    ['阻碍', '主角面对阻碍', '主角尝试穿过阻碍，却被迫退后', '主角单膝落地稳住身体', '不能硬闯。'],
-    ['发现', '主角稳住身体', '主角再次查看线索，注意到被忽略的细节', '主角伸手指向细节', '原来如此。'],
-    ['选择', '主角望着线索中的细节', '主角放下原有计划，改用新的方式接近目标', '主角双手停在目标前方', '这一次，我换条路。'],
-    ['逆转', '主角双手停在目标前方', '主角按照线索行动，阻碍逐渐松动', '通路在主角面前打开', '路开了。'],
-    ['高潮', '通路刚刚打开', '主角穿过通路，抓住即将消失的关键事物', '主角将关键事物护在身前', '我不会再放手。'],
-    ['结果', '主角护住关键事物', '环境逐渐恢复平静，守门人走近主角', '两人并肩站定', '你找到了自己的答案。'],
-    ['余韵', '两人并肩站定', '主角回望来路，随后面向新的方向', '主角背影停留在远景中', '故事，才刚开始。'],
+  const scene = '故事发生地';
+  const beats: [string, string, string, string, string[]][] = [
+    ['开端', '主角停在故事发生地的入口，观察环境，发现与主题有关的异象。', '事情似乎并不简单。', '主角', ['主角']],
+    ['召唤', '守门人现身，向主角展示线索，线索落入主角掌心。', '答案就在前面。', '守门人', ['主角', '守门人']],
+    ['出发', '主角握住线索，向目标迈步，守门人留在原地。', '我想亲眼看看。', '主角', ['主角']],
+    ['阻碍', '主角面对阻碍，尝试穿过却被迫退后，单膝落地稳住身体。', '不能硬闯。', '主角', ['主角']],
+    ['发现', '主角再次查看线索，注意到被忽略的细节，伸手指向细节。', '原来如此。', '主角', ['主角']],
+    ['选择', '主角放下原有计划，改用新的方式接近目标，双手停在目标前方。', '这一次，我换条路。', '主角', ['主角']],
+    ['逆转', '主角按照线索行动，阻碍逐渐松动，通路在主角面前打开。', '路开了。', '主角', ['主角']],
+    ['高潮', '主角穿过通路，抓住即将消失的关键事物，将它护在身前。', '我不会再放手。', '守门人', ['主角', '守门人']],
+    ['结果', '环境恢复平静，守门人走近主角，两人并肩站定。', '你找到了自己的答案。', '守门人', ['主角', '守门人']],
+    ['余韵', '主角回望来路，随后面向新的方向，背影停留在远景中。', '故事，才刚开始。', '主角', ['主角']],
   ];
-  const draft = normalizeScript({
+  return normalizeScreenplay({
     title: `${subject.slice(0, 24)} · 模板草稿`,
+    logline: subject,
     characters: [{ name: '主角', description: '主角，深色长衣，轮廓清晰，外观细节待用户设定' }, { name: '守门人', description: '守门人，浅灰长衣，沉静姿态，外观细节待用户设定' }],
-    shots: beats.map(([beat, start, action, end, dialogue], index) => ({ visual: `【模板演练，非AI生成】主题「${subject}」· ${beat}。${action}；具体场景与道具请人工补充。`, camera: index === 9 ? '缓慢拉远至远景' : index % 2 ? '中景，缓慢横移' : '近景，缓慢推进', start, action, end, duration: 9, dialogues: [{ speaker: index === 1 || index === 8 ? '守门人' : '主角', text: dialogue }] })),
+    scenes: [{ name: scene, description: '故事发生地，具体空间待人工补充' }],
+    props: [{ name: '关键道具', description: '关键道具，轮廓与材质待人工设定' }],
+    beats: beats.map(([title, summary, dialogue, speaker, characters]) => ({
+      title, scene, characters,
+      summary: `【模板演练，非AI生成】主题「${subject}」· ${title}。${summary}；具体场景与道具请人工补充。`,
+      dialogues: [{ speaker, text: dialogue }], seconds: 9,
+    })),
   });
-  return draft;
 }
 
 export function parseScriptText(input: string): ScriptDraft {

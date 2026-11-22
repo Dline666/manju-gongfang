@@ -51,7 +51,10 @@ try {
     await page.getByLabel('名称', { exact: true }).fill('测试音色');
     await page.getByLabel('音色ID', { exact: false }).fill('test-only-not-a-real-voice');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();
-    await page.getByRole('button', { name: '下一步：分镜编排' }).click();
+    await page.getByRole('button', { name: '确认并进入下一步', exact: true }).click();
+    await page.getByRole('heading', { name: '把剧本，拆成可拍的镜头' }).waitFor();
+    await page.getByRole('button', { name: '本地补全', exact: true }).click();
+    await page.getByRole('button', { name: '确认并进入下一步', exact: true }).click();
     await page.getByRole('button', { name: '预览并确认对应关系' }).click();
     await page.getByRole('button', { name: '确认对应并保存补全' }).click();
     await checkOverflow('storyboard');

@@ -155,3 +155,19 @@ test('scoped invalidation only marks listed shots; setAssetImage marks only rela
   assert.equal(project.assets.find(asset => asset.id === a1)!.imageId, 'image-1');
   assert.deepEqual(project.shots.map(shot => !!shot.stale), [true, true, false], 'only shots using the asset are stale');
 });
+
+test('scoped invalidation writes staleReason only on affected shots', () => {
+  const p = store.createProject('原因标记');
+  const assetId = uid();
+  const video = { origin: 'upload' as const, name: 'v.mp4', duration: 9 };
+  store.updateProject(p.id, { assets: [{ id: assetId, kind: 'character' as const, name: '甲', description: '', lock: '旧布衣' }], shots: [
+    { ...makeShot(1), id: 'shot-a', assetIds: [assetId], video },
+    { ...makeShot(2), id: 'shot-b', video },
+  ] });
+  store.updateProject(p.id, {}, { only: ['shot-a'], reason: '资产「甲」已修改' });
+  const shots = store.getStudio().projects.find(item => item.id === p.id)!.shots;
+  assert.equal(shots[0].stale, true);
+  assert.equal(shots[0].staleReason, '资产「甲」已修改');
+  assert.ok(!shots[1].stale);
+  assert.equal(shots[1].staleReason, undefined);
+});
