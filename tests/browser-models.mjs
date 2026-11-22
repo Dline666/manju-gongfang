@@ -5,7 +5,7 @@ const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/
 const imageModels = [
   ['openai', 'gpt-image-2.6-sunburst'], ['openai', 'gpt-image-2.6-flare'],
   ['seedream', 'doubao-seedream-5-5-261028'], ['seedream', 'doubao-seedream-5-0-pro-260628'], ['seedream', 'doubao-seedream-5-0-flash-260915'],
-  ['siliconflow', 'black-forest-labs/FLUX.1-schnell'],
+  ['siliconflow', 'Kwai-Kolors/Kolors'],
 ];
 const videoModels = [
   ['seedance', 'doubao-seedance-2-5-260628'], ['seedance', 'doubao-seedance-2-0-260128'],

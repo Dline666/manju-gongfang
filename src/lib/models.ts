@@ -13,7 +13,7 @@ export const imageModelGroups: { provider: Settings['imageProvider']; label: str
     { id: 'doubao-seedream-5-0-flash-260915', name: 'Seedream 5.0 Flash', description: '快速设定图草稿' },
   ] },
   { provider: 'siliconflow', label: '硅基流动 SiliconFlow（免费）', models: [
-    { id: 'black-forest-labs/FLUX.1-schnell', name: 'FLUX.1-schnell', description: '免费 · 快速 · 默认' },
+    { id: 'Kwai-Kolors/Kolors', name: 'Kolors', description: '免费 · 快手可图 · 默认' },
   ] },
 ];
 

@@ -40,7 +40,7 @@ export const uid = () => crypto.randomUUID();
 export const defaultStyle = '东方玄幻水墨风，冷灰 + 金色灵光';
 export const defaultSettings: Settings = {
   scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance',
-  models: { gemini: 'gemini-4-hydrogen', deepseek: 'deepseek-flash', openai: 'gpt-image-2.6-sunburst', seedream: 'doubao-seedream-5-5-261028', siliconflow: 'black-forest-labs/FLUX.1-schnell', seedance: 'doubao-seedance-2-0-fast-260128', minimax: 'MiniMax-H3' },
+  models: { gemini: 'gemini-4-hydrogen', deepseek: 'deepseek-flash', openai: 'gpt-image-2.6-sunburst', seedream: 'doubao-seedream-5-5-261028', siliconflow: 'Kwai-Kolors/Kolors', seedance: 'doubao-seedance-2-0-fast-260128', minimax: 'MiniMax-H3' },
   speechModel: 'speech-2.8-hd',
 };
 export function makeShot(number: number): Shot {

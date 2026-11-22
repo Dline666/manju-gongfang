@@ -22,7 +22,7 @@ const ENDPOINTS = {
   deepseek: "https://api.deepseek.com/chat/completions",
   openai: "https://api.openai.com/v1/images/generations",
   seedream: "https://ark.cn-beijing.volces.com/api/v3/images/generations",
-  siliconflow: "https://api.siliconflow.com/v1/images/generations",
+  siliconflow: "https://api.siliconflow.cn/v1/images/generations",
   voices: "https://api.minimax.cn/v1/get_voice",
   speech: "https://api.minimax.cn/v1/t2a_v2",
   seedance: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
@@ -593,9 +593,9 @@ export function createHandler(dependencies: Dependencies = {}) {
       if (action === "image") {
         if (provider === "siliconflow") {
           const data = await upstream(request, ENDPOINTS.siliconflow, key, { paid: true, body: {
-            model: model(input.model, "black-forest-labs/FLUX.1-schnell", /^black-forest-labs\/FLUX\.1-schnell$/),
+            model: model(input.model, "Kwai-Kolors/Kolors", /^Kwai-Kolors\/Kolors$/),
             prompt: text(input.prompt, 32_000, "invalid_prompt"),
-            image_size: "1024x1024", batch_size: 1, num_inference_steps: 4, output_format: "png",
+            image_size: "1024x1024", batch_size: 1, output_format: "png",
           }});
           requireValue(Array.isArray(data.images) && data.images.length === 1, "invalid_upstream_response", 502);
           const image = object(data.images[0], "invalid_upstream_response", 502);

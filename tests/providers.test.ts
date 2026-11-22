@@ -425,23 +425,23 @@ test("Seedream uses Ark PNG base64, 2K and exact default/catalog/custom model ID
 });
 test("SiliconFlow submits to the image endpoint and returns the CDN image as base64", async () => {
   const pngBytes = Buffer.from(PNG, "base64");
-  for (const model of [undefined, "black-forest-labs/FLUX.1-schnell"]) {
+  for (const model of [undefined, "Kwai-Kolors/Kolors"]) {
     const { handle, calls } = fixture([
       Response.json({ images: [{ url: "https://cdn.siliconflow.cn/out.png?Expires=fixture" }] }),
       new Response(pngBytes, { headers: { "Content-Type": "image/png" } }),
     ]);
     assert.deepEqual(await success(await handle(request("image", input("siliconflow", { prompt: "固定图片模板", model })))), { base64: PNG, mime: "image/png" });
     assert.equal(calls.length, 2);
-    assert.equal(calls[0].url, "https://api.siliconflow.com/v1/images/generations");
+    assert.equal(calls[0].url, "https://api.siliconflow.cn/v1/images/generations");
     assert.equal(calls[0].headers.get("authorization"), `Bearer ${KEY}`);
-    assert.deepEqual(calls[0].body, { model: model ?? "black-forest-labs/FLUX.1-schnell", prompt: "固定图片模板", image_size: "1024x1024", batch_size: 1, num_inference_steps: 4, output_format: "png" });
+    assert.deepEqual(calls[0].body, { model: model ?? "Kwai-Kolors/Kolors", prompt: "固定图片模板", image_size: "1024x1024", batch_size: 1, output_format: "png" });
     assert.equal(calls[1].url, "https://cdn.siliconflow.cn/out.png?Expires=fixture");
     assert.equal(calls[1].headers.get("authorization"), null);
   }
 });
 test("SiliconFlow rejects unknown models and non-SiliconFlow or non-image URLs", async () => {
   const { handle, calls } = fixture([]);
-  for (const model of ["black-forest-labs/FLUX.1-dev", "stabilityai/stable-diffusion-xl-base-1.0", "gpt-image-2.6-sunburst", "doubao-seedream-5-5-261028", "owner/model/path", "model with-space"]) {
+  for (const model of ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev", "gpt-image-2.6-sunburst", "doubao-seedream-5-5-261028", "owner/model/path", "model with-space"]) {
     await error(await handle(request("image", input("siliconflow", { prompt: "test", model }))), "invalid_model", 400);
   }
   assert.equal(calls.length, 0);
