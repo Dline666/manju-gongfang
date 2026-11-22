@@ -15,7 +15,30 @@ const messages: Record<string, string> = {
   invalid_input: '请求参数不符合模型要求，请检查时长、模型和参考图。',
   upstream_error: '模型服务返回异常，请检查配置后再试。', service_unavailable: '生成服务暂不可用，请稍后重试。',
 };
-export class ApiError extends Error { constructor(public code: string, public status = 0) { super(messages[code] || '服务请求未完成，请检查模型配置和网络。'); } }
+// 只读提示：一句话解决办法，不改 message，也不进持久化。
+const hints = {
+  credential: 'Key 错了：回设置页重新粘贴，并确认平台与地区',
+  forbidden: '账号没开通该模型：到官方控制台开通',
+  balance: '余额不足：充值后重试',
+  rate: '请求太频繁：稍等片刻，或降低并发',
+  model: '模型已下线或 ID 写错：换一个模型',
+  unknown: '不确定是否已扣费：先查平台任务记录，别立刻重发',
+  unavailable: '服务商暂时不可用：稍后重试',
+};
+export function hintFor(code: string, status = 0): string | undefined {
+  if (status === 401 || code === 'invalid_key' || code === 'provider_auth_failed') return hints.credential;
+  if (status === 403 || code === 'provider_forbidden') return hints.forbidden;
+  if (status === 402 || code === 'insufficient_balance') return hints.balance;
+  if (status === 429 || code === 'rate_limited') return hints.rate;
+  if (status === 404 || code === 'provider_not_found') return hints.model;
+  if (status === 504 || code === 'submission_unknown') return hints.unknown;
+  if (status >= 500 || code === 'upstream_unavailable') return hints.unavailable;
+  return undefined;
+}
+export class ApiError extends Error {
+  readonly hint?: string;
+  constructor(public code: string, public status = 0) { super(messages[code] || '服务请求未完成，请检查模型配置和网络。'); this.hint = hintFor(code, status); }
+}
 export function credentials(provider: Provider) {
   const state = getStudio(); const key = state.keys[provider];
   if (!key) throw new ApiError('missing_key');
