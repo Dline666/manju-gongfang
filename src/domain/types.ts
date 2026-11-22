@@ -29,6 +29,7 @@ export interface Project {
 export interface Settings {
   scriptProvider: 'gemini' | 'deepseek'; imageProvider: 'openai' | 'seedream' | 'siliconflow'; videoProvider: 'seedance' | 'minimax';
   models: Record<Provider, string>; speechModel: string;
+  imageConcurrency?: number;
 }
 export interface ProviderStatus { status: 'available' | 'failed'; action: string; model?: string; error?: string; hint?: string }
 export interface StudioState {

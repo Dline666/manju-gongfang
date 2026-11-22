@@ -37,7 +37,7 @@ export function hintFor(code: string, status = 0): string | undefined {
 }
 export class ApiError extends Error {
   readonly hint?: string;
-  constructor(public code: string, public status = 0) { super(messages[code] || '服务请求未完成，请检查模型配置和网络。'); this.hint = hintFor(code, status); }
+  constructor(public code: string, public status = 0, readonly retryAfter?: number) { super(messages[code] || '服务请求未完成，请检查模型配置和网络。'); this.hint = hintFor(code, status); }
 }
 export function credentials(provider: Provider) {
   const state = getStudio(); const key = state.keys[provider];
@@ -52,7 +52,9 @@ async function request(action: string, payload: object, signal?: AbortSignal) {
   catch (error) { if (signal?.aborted) throw error; throw new ApiError('submission_unknown'); }
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new ApiError(error?.error || (response.status === 401 ? 'invalid_key' : 'service_unavailable'), response.status);
+    const header = response.headers.get('Retry-After');
+    const seconds = header === null ? 0 : Number(header);
+    throw new ApiError(error?.error || (response.status === 401 ? 'invalid_key' : 'service_unavailable'), response.status, Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined);
   }
   return response;
 }

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { ErrorNote, Field } from '../../components/Ui';
+import { imageConcurrency } from '../../lib/models';
 import { setKey, setSettings } from '../../store/studio';
 import type { Provider, StudioState } from '../../domain/types';
 
@@ -69,6 +70,7 @@ export default function ProviderGroups({ state }: { state: StudioState }) {
       {renderPanels(scriptProviders)}
     </GroupCard>
     <GroupCard id="image" title="生图" description="人物、场景与道具设定图。OpenAI、Seedream 按量付费；SiliconFlow 有免费额度。" badges={['paid', 'free']} ready={readyCount(state, imageProviders)} total={imageProviders.length}>
+      <div className="provider-group-select"><Field label="生图并发（1–5）" hint="同时生成几张图；SiliconFlow 免费渠道默认 2，其余默认 3。"><select value={imageConcurrency(state.settings)} onChange={e => setSettings({ ...state.settings, imageConcurrency: Number(e.target.value) })}>{[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value}</option>)}</select></Field></div>
       {renderPanels(imageProviders)}
     </GroupCard>
     <GroupCard id="video" title="视频" description="按分镜生成镜头视频。Seedance 首选，MiniMax H3 备选。" badges={['paid']} ready={readyCount(state, videoProviders)} total={videoProviders.length}>

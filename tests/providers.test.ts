@@ -802,6 +802,20 @@ test("HTTP errors and redirects never leak upstream bodies or automatically retr
     assert.equal(calls.length, 1); assert.equal(calls[0].init.redirect, "manual");
   }
 });
+test("429 exposes Retry-After as a header without changing the error body", async () => {
+  const { handle, calls } = fixture([new Response("", { status: 429, headers: { "Retry-After": "7" } })]);
+  const response = await handle(request("image", input("openai", { prompt: "test" })));
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("retry-after"), "7");
+  assert.deepEqual(await response.json(), { ok: false, error: "rate_limited" });
+  assert.equal(calls.length, 1);
+
+  const plain = fixture([new Response("", { status: 429 })]);
+  const withoutHeader = await plain.handle(request("image", input("openai", { prompt: "test" })));
+  assert.equal(withoutHeader.status, 429);
+  assert.equal(withoutHeader.headers.get("retry-after"), null);
+  assert.deepEqual(await withoutHeader.json(), { ok: false, error: "rate_limited" });
+});
 test("client abort during a paid submission is submission_unknown and aborts the one upstream attempt", async () => {
   const client = new AbortController();
   let signal: AbortSignal | null | undefined;

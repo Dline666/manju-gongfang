@@ -32,14 +32,26 @@ export function createProject(name: string, theme = '') {
   state = { ...state, activeId: project.id, projects: [project, ...state.projects] }; emit(); return project;
 }
 export function selectProject(id: string) { state = { ...state, activeId: id }; emit(); }
-export function updateProject(id: string, update: Partial<Project> | ((project: Project) => Project), invalidate = false) {
+export function updateProject(id: string, update: Partial<Project> | ((project: Project) => Project), invalidate: boolean | { only: string[] } = false) {
+  const only = typeof invalidate === 'object' && invalidate ? new Set(invalidate.only) : undefined;
+  const active = invalidate === true || only !== undefined;
   state = { ...state, projects: state.projects.map(project => {
     if (project.id !== id) return project;
     let next = typeof update === 'function' ? update(project) : { ...project, ...update };
     next = { ...next, id, updatedAt: new Date().toISOString(), revision: invalidate ? project.revision + 1 : project.revision };
-    if (invalidate) next.shots = next.shots.map(shot => ({ ...shot, stale: !!(shot.video || shot.audio || shot.task) }));
+    if (active) next.shots = next.shots.map(shot => {
+      if (only && !only.has(shot.id)) return shot;
+      return { ...shot, stale: !!(shot.video || shot.audio || shot.task) };
+    });
     return next;
   }) }; emit();
+}
+/** 图片生成回写：只把用到该资产的镜头标为待更新，不再让整部作品 revision 影响其他在途任务。 */
+export function setAssetImage(projectId: string, assetId: string, imageId: string) {
+  const project = state.projects.find(item => item.id === projectId);
+  if (!project) return;
+  const shotIds = project.shots.filter(shot => shot.assetIds.includes(assetId) || shot.references.some(ref => ref.assetId === assetId) || shot.dialogues.some(line => line.speakerId === assetId)).map(shot => shot.id);
+  updateProject(projectId, current => ({ ...current, assets: current.assets.map(asset => asset.id === assetId ? { ...asset, imageId } : asset) }), { only: shotIds });
 }
 export function deleteProject(id: string) {
   state = { ...state, projects: state.projects.filter(p => p.id !== id), activeId: state.activeId === id ? null : state.activeId }; emit();
