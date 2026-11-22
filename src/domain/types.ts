@@ -21,10 +21,20 @@ export interface Shot {
   assetIds: string[]; references: Reference[]; video?: VideoSource; audio?: AudioSource;
   audioMode: 'original' | 'dubbing' | 'silent'; task?: VideoTask; stale?: boolean;
 }
+export interface StyleSpec {
+  medium?: string; line?: string; palette?: string; face?: string; light?: string;
+  forbidden?: string[];
+}
+export interface PromptConfig {
+  v: 1;
+  style?: StyleSpec;
+  blocks?: Record<string, string>;
+}
 export interface Project {
   id: string; name: string; theme: string; style: string; createdAt: string; updatedAt: string;
   revision: number; skills: SkillId[]; shots: Shot[]; assets: Asset[]; source: 'empty' | 'template' | 'import' | 'ai';
   storyboardReady: boolean;
+  promptConfig?: PromptConfig;
 }
 export interface Settings {
   scriptProvider: 'gemini' | 'deepseek'; imageProvider: 'openai' | 'seedream' | 'siliconflow'; videoProvider: 'seedance' | 'minimax';
