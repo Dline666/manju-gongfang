@@ -5,7 +5,7 @@ const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/
 const imageModels = [
   ['openai', 'gpt-image-2.6-sunburst'], ['openai', 'gpt-image-2.6-flare'],
   ['seedream', 'doubao-seedream-5-5-261028'], ['seedream', 'doubao-seedream-5-0-pro-260628'], ['seedream', 'doubao-seedream-5-0-flash-260915'],
-  ['huggingface', 'black-forest-labs/FLUX.1-schnell'], ['huggingface', 'stabilityai/stable-diffusion-xl-base-1.0'],
+  ['siliconflow', 'black-forest-labs/FLUX.1-schnell'],
 ];
 const videoModels = [
   ['seedance', 'doubao-seedance-2-5-260628'], ['seedance', 'doubao-seedance-2-0-260128'],
@@ -51,14 +51,14 @@ try {
     });
     const imageSelect = page.getByRole('combobox', { name: /^生图模型/ });
     await expect(imageSelect).toHaveValue('openai:gpt-image-2.6-sunburst');
-    assert.deepEqual(await imageSelect.locator('optgroup').evaluateAll(groups => groups.map(g => g.label)), ['OpenAI', '火山引擎 / 即梦（Seedream）', 'Hugging Face（免费）']);
+    assert.deepEqual(await imageSelect.locator('optgroup').evaluateAll(groups => groups.map(g => g.label)), ['OpenAI', '火山引擎 / 即梦（Seedream）', '硅基流动 SiliconFlow（免费）']);
     await imageSelect.selectOption('seedream:doubao-seedream-5-5-261028');
     await createImage();
     await page.getByRole('heading', { name: '连接你的创作能力' }).waitFor();
     assert.equal(calls.length, 0);
     await expect(page.locator('.provider-panel .tag')).toHaveText(Array(7).fill('Key 缺失'));
     await expect(panel('MiniMax 国内版')).toContainText('仅支持国内开放平台 Key');
-    for (const name of ['OpenAI', '火山引擎 / 即梦 · Seedream', 'Hugging Face · 免费生图', '火山引擎 Seedance', 'MiniMax 国内版']) {
+    for (const name of ['OpenAI', '火山引擎 / 即梦 · Seedream', '硅基流动 SiliconFlow · 免费生图', '火山引擎 Seedance', 'MiniMax 国内版']) {
       await panel(name).getByLabel('API Key', { exact: true }).fill('fixture-key-not-transmitted');
       await expect(panel(name).locator('.tag')).toHaveText('已填写 · 待验证');
     }
