@@ -3,6 +3,7 @@ import { BookOpen, Boxes, Clapperboard, Film, FolderOpen, Settings2, Sparkles, C
 import { Toaster, toast } from 'sonner';
 import { SidebarProvider, Sidebar, SidebarContent, SidebarHeader, SidebarFooter, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import { useStudio } from './store/studio';
+import { useJobs } from './store/jobs';
 import ProjectsPage from './features/projects/ProjectsPage';
 import SettingsPage from './features/settings/SettingsPage';
 import { Button, Empty, HelpPopover } from './components/Ui';
@@ -20,6 +21,8 @@ function readStage():Stage { const route=location.hash.replace('#/','');return [
 function Studio() {
   const state=useStudio();const [stage,setStage]=useState<Stage>(readStage);const {setOpenMobile}=useSidebar();
   const project=state.projects.find(p=>p.id===state.activeId);
+  const {jobs}=useJobs();
+  useEffect(()=>{const running=jobs.some(job=>job.status==='running'||job.status==='queued');if(!running)return;const handler=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler);},[jobs]);
   useEffect(()=>{const listener=()=>setStage(readStage());window.addEventListener('hashchange',listener);return()=>window.removeEventListener('hashchange',listener);},[]);
   function navigate(next:Stage){location.hash=`/${next}`;setStage(next);setOpenMobile(false);window.scrollTo({top:0,behavior:'instant'});}
   const working=stage!=='library'&&stage!=='settings';
