@@ -86,6 +86,7 @@ try {
     await expect(panel('火山引擎 / 即梦 · Seedream').locator('.tag')).toHaveText('可用');
     await panel('火山引擎 / 即梦 · Seedream').getByRole('textbox', { name: /^模型 ID/ }).fill('ep-custom-seedream');
     await go('assets');
+    await imageSelect.selectOption('seedream:ep-custom-seedream');
     await expect(imageSelect).toHaveValue('seedream:ep-custom-seedream');
     await createImage(); await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -96,12 +97,14 @@ try {
     const beforeImage = (await saved()).projects[0].assets[0].imageId;
     await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await page.getByText('模型平台拒绝了此 Key，请检查密钥及账号地区。', { exact: true }).waitFor();
+    await page.getByText('Key 错了：回设置页重新粘贴，并确认平台与地区', { exact: true }).waitFor();
     await close();
     assert.equal(calls.filter(c => c.action === 'image').length, beforeFailure + 1, 'no automatic fallback or retry');
     assert.equal((await saved()).projects[0].assets[0].imageId, beforeImage);
     await expect(page.getByText(/当前生图渠道/)).toContainText('免费兜底暂未配置');
     await go('settings');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('调用失败');
+    await expect(panel('OpenAI')).toContainText('Key 错了：回设置页重新粘贴，并确认平台与地区');
     await panel('OpenAI').getByLabel('API Key', { exact: true }).fill('replacement-fixture-key');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('已填写 · 待验证');
     await panel('OpenAI').getByLabel('API Key', { exact: true }).fill('');

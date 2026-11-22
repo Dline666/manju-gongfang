@@ -63,7 +63,7 @@ function providerCallStatus(action: string, payload: object) {
     setProviderStatus(provider, key, {
       status, action,
       model: !['voices', 'video-status', 'video-download'].includes(action) && typeof model === 'string' ? model : undefined,
-      ...(status === 'failed' ? { error: error instanceof ApiError ? error.message : '操作未完成，请重试。' } : {}),
+      ...(status === 'failed' ? { error: error instanceof ApiError ? error.message : '操作未完成，请重试。', ...(error instanceof ApiError && error.hint ? { hint: error.hint } : {}) } : {}),
     });
   };
 }
