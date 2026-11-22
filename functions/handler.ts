@@ -595,6 +595,7 @@ export function createHandler(dependencies: Dependencies = {}) {
           const data = await upstream(request, ENDPOINTS.siliconflow, key, { paid: true, body: {
             model: model(input.model, "Kwai-Kolors/Kolors", /^Kwai-Kolors\/Kolors$/),
             prompt: text(input.prompt, 32_000, "invalid_prompt"),
+            negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊",
             image_size: "1024x1024", batch_size: 1, output_format: "png",
           }});
           requireValue(Array.isArray(data.images) && data.images.length === 1, "invalid_upstream_response", 502);
