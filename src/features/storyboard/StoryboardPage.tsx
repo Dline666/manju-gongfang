@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Check, Copy, ArrowUp, ArrowDown, Link2 } from 'lucide-react';
-import { Button, Empty, Field, HelpPopover, IssueList, Modal, copyText } from '../../components/Ui';
+import { Button, Empty, ErrorNote, Field, HelpPopover, IssueList, Modal, ProgressPanel, copyText, errorAction } from '../../components/Ui';
 import type { Asset, PageProps, Reference, Shot } from '../../domain/types';
 import { getStudio, updateProject, useStudio } from '../../store/studio';
+import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
 import { useMediaUrl } from '../../store/media';
 import { assetPromptGroups, assetText, extractAssetsPrompt, fullAssetText, videoPrompt } from '../../lib/prompts';
-import { callApi, credentials, errorMessage } from '../../lib/api';
+import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
 import { applyAssetExtraction, extractLocalAssets } from '../script/creation';
 import { validateProject } from '../../domain/validation';
 import { fillStoryboard, updateReference } from './helpers';
@@ -22,6 +23,9 @@ function StoryboardEditor({ project, navigate }: PageProps) {
   const { settings } = useStudio();
   const [extraction, setExtraction] = useState<{ revision: number; prompt: string; provider: 'gemini' | 'deepseek'; model: string }>();
   const [extracting, setExtracting] = useState(false);
+  const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
+  const [failure, setFailure] = useState<unknown>();
+  const abortRef = useRef<AbortController | undefined>(undefined);
   const previewMapping = () => {
     const draft = extractLocalAssets(project.shots, project.assets);
     setConfirmation({ ...draft, shots: fillStoryboard(draft.shots), revision: project.revision });
@@ -36,24 +40,36 @@ function StoryboardEditor({ project, navigate }: PageProps) {
   };
   const extract = async () => {
     if (!extraction || extracting) return;
-    const task = extraction; setExtracting(true);
+    const task = extraction; setExtracting(true); setFailure(undefined);
+    const controller = new AbortController(); abortRef.current = controller;
+    const jobId = startJob({ kind: 'storyboard', label: '提取三类资产', cancel: () => controller.abort() });
+    setProgress({ stage: '提交任务', startedAt: Date.now() });
     try {
       const auth = credentials(task.provider);
       if (auth.model !== task.model || getStudio().projects.find(p => p.id === project.id)?.revision !== task.revision) throw new Error('剧本、资产或模型已修改，请重新确认提取。');
-      const result = await callApi<unknown>('extract-assets', { ...auth, prompt: task.prompt });
+      updateJob(jobId, { detail: '模型生成中' });
+      setProgress(previous => previous && { ...previous, stage: '模型生成中' });
+      const result = await callApi<unknown>('extract-assets', { ...auth, prompt: task.prompt }, controller.signal);
+      setProgress(previous => previous && { ...previous, stage: '校验结构' });
       const current = getStudio().projects.find(p => p.id === project.id);
       if (!current || current.revision !== task.revision) throw new Error('项目已修改或删除，提取结果未覆盖现有内容。');
       const draft = applyAssetExtraction(current, result);
-      setExtraction(undefined);
+      setExtraction(undefined); setProgress(undefined); finishJob(jobId, 'done');
       setConfirmation({ ...draft, shots: fillStoryboard(draft.shots), revision: task.revision });
-    } catch (error) { toast.error(errorMessage(error)); }
-    finally { setExtracting(false); }
+    } catch (error) {
+      finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
+      setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
+      setProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
+    }
+    finally { setExtracting(false); abortRef.current = undefined; }
   };
   const [promptShotId, setPromptShotId] = useState<string>();
   const images = project.assets.filter(a => a.kind !== 'voice' && a.imageId);
   const promptShot = project.shots.find(s => s.id === promptShotId);
   const issues = validateProject(project);
   const total = project.shots.reduce((sum, shot) => sum + shot.duration, 0);
+  const extractSamples = durationSamples('storyboard');
+  const extractAverage = averageDuration('storyboard');
   const edit = (id: string, patch: Partial<Shot>) => updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: p.shots.map(s => s.id === id ? { ...s, ...patch } : s) }), true);
   const reference = (shot: Shot, assetId: string, role?: Reference['role']) => {
     try {
@@ -108,7 +124,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
     <Modal open={!!confirmation} onClose={() => setConfirmation(undefined)} title="确认剧本与分镜对应关系" description="先审核三类资产和逐镜关联，保存到资产库并补空白开场、动作与终点；保留镜头ID、时长、台词、原固定短语和素材关联。">
       {confirmation && <div className="stack"><p>剧本 {confirmation.shots.length} 镜 → 分镜 {confirmation.shots.length} 镜，一一对应。请逐项审核下面的实际保存内容。</p><div className="panel"><h3>待保存资产清单</h3>{confirmation.assets.filter(a => a.kind !== 'voice').map(a => <p key={a.id}>{a.kind === 'character' ? '人物' : a.kind === 'scene' ? '场景' : '道具'}「{a.name}」：{a.lock || a.description}{project.assets.some(old => old.id === a.id) ? '（沿用）' : '（新增）'}</p>)}</div>{confirmation.shots.map(s => <details className="panel" key={s.id}><summary>剧本第{s.number}镜 → 分镜第{s.number}镜 · {s.duration}秒</summary><p>画面：{s.visual}</p><p>开场：{s.start}</p><p>动作：{s.action}</p><p>终点：{s.end}</p><p>运镜：{s.camera}</p><pre>{assetText({ ...project, assets: confirmation.assets }, s)}</pre></details>)}<div className="toolbar"><Button onClick={confirmMapping}>确认对应并保存补全</Button><Button variant="ghost" onClick={() => setConfirmation(undefined)}>取消</Button></div></div>}
     </Modal>
-    <Modal open={!!extraction} onClose={() => { if (!extracting) setExtraction(undefined); }} title="确认 AI 资产提取" description="只提取现有剧本的三类资产与逐镜关联，不重写剧情。确认后调用付费剧本模型，返回结果仍需预览并保存。">{extraction && <div className="stack"><p>{extraction.provider} · {extraction.model} · {project.shots.length} 镜</p><Field label="即将发送的资产提取提示词"><textarea readOnly rows={10} value={extraction.prompt} /></Field><div className="toolbar"><Button disabled={extracting} onClick={extract}>{extracting ? '正在提取…' : '确认发送并提取资产'}</Button><Button variant="ghost" disabled={extracting} onClick={() => setExtraction(undefined)}>取消</Button></div></div>}</Modal>
+    <Modal open={!!extraction} onClose={() => { if (!extracting) { setExtraction(undefined); setFailure(undefined); setProgress(undefined); } }} title="确认 AI 资产提取" description="只提取现有剧本的三类资产与逐镜关联，不重写剧情。确认后调用付费剧本模型，返回结果仍需预览并保存。">{extraction && <div className="stack"><p>{extraction.provider} · {extraction.model} · {project.shots.length} 镜</p><Field label="即将发送的资产提取提示词"><textarea readOnly rows={10} value={extraction.prompt} /></Field>{progress && <ProgressPanel title="AI 提取资产" stage={progress.stage} startedAt={progress.startedAt} remainingMs={extractSamples ? extractAverage : undefined} detail={extractSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={extracting ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setExtraction(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={extracting} onClick={() => void extract()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={extracting} onClick={extract}>{extracting ? '正在提取…' : '确认发送并提取资产'}</Button><Button variant="ghost" disabled={extracting} onClick={() => setExtraction(undefined)}>取消</Button></div></div>}</Modal>
     <Modal open={!!promptShot} onClose={() => setPromptShotId(undefined)} title={`第${promptShot?.number || ''}镜 · 完整视频提示词`} description="有图时侧重动作、对白和运镜；无图时明确开场。文字复制不会自动上传图片，实际附件在生成页提交。">{promptShot && <div className="stack"><textarea rows={16} readOnly aria-label="视频提示词全文" value={videoPrompt(project, promptShot)} /><div className="toolbar"><Button onClick={() => void copyText(videoPrompt(project, promptShot))}>复制提示词</Button><Button variant="ghost" onClick={() => setPromptShotId(undefined)}>关闭</Button></div></div>}</Modal>
   </div>;
 }

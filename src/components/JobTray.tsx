@@ -9,11 +9,11 @@ const statusTones: Record<JobStatus, StatusTone> = { queued: 'neutral', running:
 function JobRow({ job, now }: { job: Job; now: number }) {
   const active = job.status === 'running' || job.status === 'queued';
   const elapsed = (job.finishedAt ?? now) - job.startedAt;
-  return <div className="flex items-center gap-2 border-t border-[#2b2d31] py-2 text-[12px] first:border-t-0">
+  return <div className="pointer-events-none flex items-center gap-2 border-t border-[#2b2d31] py-2 text-[12px] first:border-t-0">
     <div className="min-w-0 flex-1"><span className="block truncate">{job.label}</span><span className="muted">{active ? `已用 ${formatElapsed(elapsed)}` : formatElapsed(elapsed)}</span></div>
     <StatusChip tone={statusTones[job.status]}>{statusLabels[job.status]}</StatusChip>
-    {active && job.cancel && <button type="button" className="icon-button" aria-label={`取消 ${job.label}`} onClick={() => job.cancel?.()}><X size={14} /></button>}
-    {!active && <button type="button" className="icon-button" aria-label={`移除 ${job.label}`} onClick={() => removeJob(job.id)}><X size={14} /></button>}
+    {active && job.cancel && <button type="button" className="icon-button pointer-events-auto" aria-label={`取消 ${job.label}`} onClick={() => job.cancel?.()}><X size={14} /></button>}
+    {!active && <button type="button" className="icon-button pointer-events-auto" aria-label={`移除 ${job.label}`} onClick={() => removeJob(job.id)}><X size={14} /></button>}
   </div>;
 }
 
@@ -30,8 +30,8 @@ export default function JobTray() {
     return () => window.clearInterval(timer);
   }, [active.length]);
   if (!visible.length) return null;
-  return <aside className="panel fixed right-6 bottom-6 z-50 flex w-80 max-w-[calc(100vw-32px)] flex-col gap-1 p-4" aria-label="任务进度">
-    <div className="row between gap-2 pb-1"><strong className="text-[12px]">任务</strong>{finished.length > 0 && <button type="button" className="text-button small muted" onClick={clearFinishedJobs}>清除已完成</button>}</div>
+  return <aside className="panel fixed right-6 bottom-6 z-50 flex w-80 max-w-[calc(100vw-32px)] flex-col gap-1 p-4 pointer-events-none" aria-label="任务进度">
+    <div className="row between gap-2 pb-1 pointer-events-none"><strong className="text-[12px]">任务</strong>{finished.length > 0 && <button type="button" className="text-button small muted pointer-events-auto" onClick={clearFinishedJobs}>清除已完成</button>}</div>
     {visible.map(job => <JobRow key={job.id} job={job} now={now} />)}
   </aside>;
 }

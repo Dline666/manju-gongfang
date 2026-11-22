@@ -61,10 +61,11 @@ export function formatElapsed(milliseconds: number) {
   return minutes ? `${minutes}:${String(seconds).padStart(2, '0')}` : `${seconds}s`;
 }
 // 阶段 + 已用时 + 进度 + 取消；total 未知时显示不确定进度条。
-export function ProgressPanel({ title, stage, detail, startedAt, done, total, remainingMs, error, onCancel, cancelLabel = '取消等待', active }: {
+export function ProgressPanel({ title, stage, detail, startedAt, done, total, remainingMs, error, onCancel, cancelLabel = '取消等待', active, indeterminate, doneLabel = '已完成', failed }: {
   title?: string; stage?: string; detail?: string; startedAt?: number;
   done?: number; total?: number; remainingMs?: number;
   error?: ReactNode; onCancel?: () => void; cancelLabel?: string; active?: number;
+  indeterminate?: boolean; doneLabel?: string; failed?: number;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -73,13 +74,14 @@ export function ProgressPanel({ title, stage, detail, startedAt, done, total, re
     return () => window.clearInterval(timer);
   }, [startedAt]);
   const elapsed = startedAt === undefined ? undefined : Math.max(0, now - startedAt);
-  const known = typeof total === 'number' && total > 0 && typeof done === 'number';
+  const counted = typeof total === 'number' && typeof done === 'number';
+  const known = !indeterminate && counted && total > 0;
   const percent = known ? Math.min(100, Math.round(((done ?? 0) / (total ?? 1)) * 100)) : 0;
   return <div role="status" className="panel flex flex-col gap-2 text-[12px]">
     <div className="row between gap-3"><div className="min-w-0">{title && <strong className="block text-[13px]">{title}</strong>}{stage && <span className="muted">{stage}</span>}{elapsed !== undefined && <span className="muted"> · 已用 {formatElapsed(elapsed)}</span>}</div>{onCancel && <Button variant="outline" size="sm" onClick={onCancel}>{cancelLabel}</Button>}</div>
     <div className="progress-track"><span className={known ? undefined : 'animate-pulse'} style={{ width: known ? `${percent}%` : '38%' }} /></div>
-    <div className="row between gap-3 muted"><span>{known ? `已完成 ${done} / ${total}` : detail}</span><span>{remainingMs !== undefined ? `预计剩余 ${formatElapsed(remainingMs)}` : active ? `${active} 项进行中` : ''}</span></div>
-    {known && detail && <span className="muted">{detail}</span>}
+    <div className="row between gap-3 muted"><span>{counted ? `${doneLabel} ${done} / ${total}${failed ? ` · 失败 ${failed}` : ''}` : detail}</span><span>{remainingMs !== undefined ? `预计剩余 ${formatElapsed(remainingMs)}` : active ? `${active} 项进行中` : ''}</span></div>
+    {counted && detail && <span className="muted">{detail}</span>}
     {error}
   </div>;
 }

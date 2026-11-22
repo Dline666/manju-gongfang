@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Sparkles, Volume2, ImagePlus, Copy } from 'lucide-react';
-import { Button, Empty, ErrorNote, Field, HelpPopover, Modal, copyText, errorAction } from '../../components/Ui';
+import { Button, Empty, ErrorNote, Field, HelpPopover, Modal, ProgressPanel, copyText, errorAction } from '../../components/Ui';
 import { uid, type Asset, type AssetKind, type PageProps } from '../../domain/types';
 import { getStudio, setSettings, updateProject, useStudio } from '../../store/studio';
+import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
 import { putMedia, useMediaUrl } from '../../store/media';
-import { callApi, callBinary, credentials, errorMessage } from '../../lib/api';
+import { ApiError, callApi, callBinary, credentials, errorMessage } from '../../lib/api';
 import { fixedDescription, imagePrompt } from '../../lib/prompts';
 import { imageModelGroups } from '../../lib/models';
 import { assetUsage, generatedImageBlob, removeAsset, validateImage } from './helpers';
@@ -38,6 +39,8 @@ function AssetEditor({ project, navigate }: PageProps) {
   const [removingImage, setRemovingImage] = useState<Asset>();
   const [pending, setPending] = useState<Pending>();
   const [failure, setFailure] = useState<unknown>();
+  const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
+  const abortRef = useRef<AbortController | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [voicesBusy, setVoicesBusy] = useState(false);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
@@ -105,12 +108,18 @@ function AssetEditor({ project, navigate }: PageProps) {
     const task = pending;
     setBusy(true);
     setFailure(undefined);
+    const controller = new AbortController(); abortRef.current = controller;
+    const jobId = startJob({ kind: task.kind, label: task.kind === 'image' ? `生成「${task.asset.name}」设定图` : `试听「${task.asset.name}」`, cancel: () => controller.abort() });
+    setProgress({ stage: task.kind === 'image' ? '提交图片任务' : task.local ? '本机试听' : '提交试听', startedAt: Date.now() });
     try {
       current(task.revision, task.asset.id);
       if (task.kind === 'image') {
         const auth = credentials(task.provider);
         if (getStudio().settings.imageProvider !== task.provider || auth.model !== task.model) throw new Error('图片模型设置已改变，请重新确认。');
-        const result = await callApi<{ base64: string; mime: string }>('image', { ...auth, prompt: task.prompt });
+        updateJob(jobId, { detail: '生成图片中' });
+        setProgress(previous => previous && { ...previous, stage: '生成图片中' });
+        const result = await callApi<{ base64: string; mime: string }>('image', { ...auth, prompt: task.prompt }, controller.signal);
+        setProgress(previous => previous && { ...previous, stage: '保存图片' });
         current(task.revision, task.asset.id);
         const blob = await generatedImageBlob(result);
         const imageId = await putMedia(blob); current(task.revision, task.asset.id);
@@ -127,19 +136,33 @@ function AssetEditor({ project, navigate }: PageProps) {
           toast.info('正在使用系统声音试听，不代表服务商音色，也不能作为导出音轨。');
         } else {
           if (getStudio().settings.speechModel !== task.model) throw new Error('语音模型已改变，请重新确认。');
-          const blob = await callBinary('speech', { ...credentials('minimax'), model: task.model, text, voiceId: task.asset.voiceId, speed: task.asset.speed ?? 1 });
+          setProgress(previous => previous && { ...previous, stage: '合成语音' });
+          const blob = await callBinary('speech', { ...credentials('minimax'), model: task.model, text, voiceId: task.asset.voiceId, speed: task.asset.speed ?? 1 }, controller.signal);
           if (!blob.type.startsWith('audio/') || !blob.size) throw new Error('服务商没有返回有效音频。');
+          setProgress(previous => previous && { ...previous, stage: '保存音频' });
           current(task.revision, task.asset.id);
           const mediaId = await putMedia(blob); current(task.revision, task.asset.id);
           setPreviews(previous => ({ ...previous, [task.asset.id]: { mediaId, text } }));
           toast.success('试听音频已准备好，请使用播放器播放。');
         }
       }
+      finishJob(jobId, 'done');
+      setProgress(undefined);
       setPending(undefined);
-    } catch (error) { setFailure(error); }
-    finally { setBusy(false); }
+    } catch (error) {
+      finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
+      setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
+      setProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
+    }
+    finally { setBusy(false); abortRef.current = undefined; }
   };
   const visible = project.assets.filter(a => a.kind === kind);
+  const imageSamples = durationSamples('image');
+  const imageAverage = averageDuration('image');
+  const imageRemaining = imageSamples >= 2 && imageAverage ? Math.max(5000, Math.round(imageAverage / 5000) * 5000) : undefined;
+  const speechSamples = durationSamples('speech');
+  const speechAverage = averageDuration('speech');
+  const speechRemaining = speechSamples >= 2 && speechAverage ? Math.max(5000, Math.round(speechAverage / 5000) * 5000) : undefined;
   return <div className="stack">
     <header className="page-heading"><div><span className="tag">02 / 资产设定</span><h1>让故事，有自己的面孔</h1><p className="muted">固定人物、场景和道具描述，再为每个角色找到声音。</p></div><Button onClick={() => edit()}><Plus size={16} />新建{kinds.find(k => k.id === kind)?.name}</Button></header>
     <div className="toolbar" role="tablist" aria-label="资产类别">{kinds.map(k => <Button key={k.id} role="tab" aria-selected={kind === k.id} variant={kind === k.id ? 'default' : 'secondary'} onClick={() => setKind(k.id)}>{k.name} <span>{project.assets.filter(a => a.kind === k.id).length}</span></Button>)}</div>
@@ -176,8 +199,8 @@ function AssetEditor({ project, navigate }: PageProps) {
     </Modal>
     <Modal open={!!deleting} onClose={() => setDeleting(undefined)} title={`删除「${deleting?.name || ''}」？`} description="会解除镜头资产、参考图、台词说话者和人物音色关联。台词文字保留，但需重新选择人物。此操作不能撤销。"><div className="stack"><p>引用位置：{deleting ? assetUsage(project, deleting.id).join('、') || '未被引用' : ''}</p><div className="toolbar"><Button onClick={() => { if (deleting) updateProject(project.id, p => removeAsset(p, deleting.id), true); setDeleting(undefined); }}>确认删除并解除关联</Button><Button variant="ghost" onClick={() => setDeleting(undefined)}>取消</Button></div></div></Modal>
     <Modal open={!!removingImage} onClose={() => setRemovingImage(undefined)} title="移除图片及引用？" description="保留资产文字设定，但解除所有镜头对此图片的参考附件关联。"><div className="toolbar"><Button onClick={() => { if (removingImage) updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: p.assets.map(a => a.id === removingImage.id ? { ...a, imageId: undefined } : a), shots: p.shots.map(s => ({ ...s, references: s.references.filter(r => r.assetId !== removingImage.id) })) }), true); setRemovingImage(undefined); }}>确认移除图片</Button><Button variant="ghost" onClick={() => setRemovingImage(undefined)}>取消</Button></div></Modal>
-    <Modal open={!!pending} onClose={() => { if (!busy) { setPending(undefined); setFailure(undefined); } }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
-      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.provider === 'openai' ? 'OpenAI' : pending.provider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词"><textarea rows={12} readOnly value={pending.prompt} /></Field></> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button><Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
+    <Modal open={!!pending} onClose={() => { if (!busy) { setPending(undefined); setFailure(undefined); setProgress(undefined); } }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
+      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.provider === 'openai' ? 'OpenAI' : pending.provider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词"><textarea rows={12} readOnly value={pending.prompt} /></Field></> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{progress && <ProgressPanel title={pending.kind === 'image' ? '生成设定图' : '试听'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={pending.kind === 'image' ? imageRemaining : speechRemaining} detail={pending.kind === 'image' ? '服务商不返回进度，按已用时等待' : '服务商不返回进度'} onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button><Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
     </Modal>
   </div>;
 }

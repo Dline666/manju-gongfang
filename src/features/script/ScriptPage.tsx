@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Plus, Sparkles, Download, FileText, Trash2 } from 'lucide-react';
-import { Button, Empty, Field, IssueList, Modal, copyText, downloadBlob } from '../../components/Ui';
+import { Button, Empty, ErrorNote, Field, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
 import { defaultStyle, makeShot, uid, type PageProps, type Project, type Shot } from '../../domain/types';
 import { validateProject } from '../../domain/validation';
 import { getStudio, updateProject, useStudio } from '../../store/studio';
-import { callApi, credentials, errorMessage } from '../../lib/api';
+import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
+import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
 import { skills } from '../../lib/skills';
 import { scriptPrompt } from '../../lib/prompts';
 import { buildDocuments } from '../../lib/documents';
@@ -20,6 +21,9 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const { settings, keys } = useStudio();
   const [confirm, setConfirm] = useState<Confirmation>();
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
+  const [failure, setFailure] = useState<unknown>();
+  const abortRef = useRef<AbortController | undefined>(undefined);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
   const [preview, setPreview] = useState<{ draft: ScriptDraft; revision: number }>();
@@ -30,6 +34,8 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const total = project.shots.reduce((sum, s) => sum + s.duration, 0);
   const characters = project.assets.filter(a => a.kind === 'character');
   const sourceTag = project.source === 'template' ? '模板演练 · 非AI生成' : project.source === 'ai' ? 'AI生成 · 待人工审核' : project.source === 'import' ? '用户导入' : '空白项目';
+  const scriptSamples = durationSamples('script');
+  const scriptAverage = averageDuration('script');
   const documents = buildDocuments(project);
   const change = (patch: Partial<Project>) => updateProject(project.id, { ...patch, storyboardReady: false }, true);
   const editShot = (id: string, patch: Partial<Shot>) => updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: p.shots.map(s => s.id === id ? { ...s, ...patch } : s) }), true);
@@ -46,7 +52,11 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const generate = async () => {
     if (!confirm || busy) return;
     const task = confirm;
-    setBusy(true);
+    setBusy(true); setFailure(undefined);
+    const controller = new AbortController(); abortRef.current = controller;
+    const jobId = task.kind === 'ai' ? startJob({ kind: 'script', label: '生成剧本', cancel: () => controller.abort() }) : undefined;
+    const startedAt = Date.now();
+    if (jobId) setProgress({ stage: '提交任务', startedAt });
     try {
       current(task.project.revision);
       let draft: ScriptDraft;
@@ -54,15 +64,23 @@ function ScriptEditor({ project, navigate }: PageProps) {
       else {
         const auth = credentials(task.provider);
         if (auth.model !== task.model) throw new Error('模型设置已改变，请关闭弹窗并重新确认。');
-        const data = await callApi<GeneratedScript>('script', { ...auth, prompt: task.prompt });
+        if (jobId) updateJob(jobId, { detail: '模型生成中' });
+        setProgress(previous => previous && { ...previous, stage: '模型生成中' });
+        const data = await callApi<GeneratedScript>('script', { ...auth, prompt: task.prompt }, controller.signal);
+        setProgress(previous => previous && { ...previous, stage: '校验结构' });
         draft = normalizeScript(data);
       }
       current(task.project.revision);
       updateProject(project.id, p => draftUpdate(p, draft, task.kind === 'ai' ? 'ai' : 'template'), true);
+      if (jobId) finishJob(jobId, 'done');
+      setProgress(undefined);
       setConfirm(undefined);
       toast.success(task.kind === 'ai' ? '剧本已生成，请审核人物和每镜内容。' : '模板草稿已建立（非AI生成），请继续编辑。');
-    } catch (error) { toast.error(errorMessage(error)); }
-    finally { setBusy(false); }
+    } catch (error) {
+      if (jobId) finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
+      setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
+      setProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
+    } finally { setBusy(false); abortRef.current = undefined; }
   };
   const readImport = async (file?: File) => {
     if (!file) return;
@@ -115,8 +133,8 @@ function ScriptEditor({ project, navigate }: PageProps) {
       {project.shots.length > 0 && issues.length > 0 && <section className="panel stack"><div className="section-title"><h3>需要完善</h3><span className="tag">{issues.length} 项</span></div><IssueList issues={issues} /></section>}
       <section className="panel stack"><Button variant="secondary" disabled={!project.shots.length} onClick={() => navigate('assets')}>下一步：设定资产</Button><p className="small muted">每镜 4–15 秒，十镜合计 90 秒。点击上方问题可跳到对应镜头。</p></section>
     </aside></div>
-    <Modal open={!!confirm} onClose={() => { if (!busy) setConfirm(undefined); }} title={confirm?.kind === 'ai' ? '确认完整剧本任务' : '确认模板演练'} description="确认后替换当前镜头和人物资产；保留场景、道具、音色。旧人物图片不会自动沿用，请先导出需要保留的文档。">
-      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题建立10镜，每镜9秒。'}</div><p>主题：{confirm.project.theme}<br />风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：10 镜 / 90 秒</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词"><textarea readOnly rows={12} value={confirm.prompt} /></Field>}<div className="toolbar"><Button disabled={busy} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
+    <Modal open={!!confirm} onClose={() => { if (!busy) { setConfirm(undefined); setFailure(undefined); setProgress(undefined); } }} title={confirm?.kind === 'ai' ? '确认完整剧本任务' : '确认模板演练'} description="确认后替换当前镜头和人物资产；保留场景、道具、音色。旧人物图片不会自动沿用，请先导出需要保留的文档。">
+      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题建立10镜，每镜9秒。'}</div><p>主题：{confirm.project.theme}<br />风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：10 镜 / 90 秒</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词"><textarea readOnly rows={12} value={confirm.prompt} /></Field>}{progress && <ProgressPanel title={confirm.kind === 'ai' ? 'AI 生成剧本' : '模板演练'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={scriptSamples ? scriptAverage : undefined} detail={scriptSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={busy && confirm.kind === 'ai' ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setConfirm(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
     </Modal>
     <Modal open={importOpen} onClose={() => setImportOpen(false)} title="导入剧本 · 先预览再保存" description="按镜号分段，没有镜号时按空行分段。所有原文逐段完整保留在画面字段，不会静默丢弃未识别内容。">
       <div className="stack"><Field label="上传 UTF-8 的 .txt / .md 文件（≤2MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={e => { void readImport(e.target.files?.[0]); e.target.value = ''; }} /></Field><Field label="或粘贴原文"><textarea rows={8} value={importText} placeholder={'第1镜（9秒）\n画面：……\n开场：……\n动作：……\n终点：……\n运镜：……\n台词：人物：……'} onChange={e => { setImportText(e.target.value); setPreview(undefined); }} /></Field><Button variant="secondary" onClick={() => { try { setPreview({ draft: parseScriptText(importText), revision: project.revision }); } catch (error) { toast.error(errorMessage(error)); } }}>解析并预览</Button>
