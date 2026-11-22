@@ -9,6 +9,8 @@ const messages: Record<string, string> = {
   upstream_unavailable: '模型查询暂不可用，请稍后再试。', media_not_ready: '视频尚未完成，请等待任务结束。',
   rate_limited: '服务商请求过于频繁，请稍后查询或重试。', insufficient_balance: '服务商额度不足，请检查账户余额。',
   invalid_script: '剧本结构或总时长不符合要求，请修改主题后重新确认生成。',
+  invalid_screenplay: '剧本节拍结构或时长不符合要求，请修改主题后重新生成。',
+  invalid_director: '导演分镜结构不完整，请检查后重试，或改用本地补全。',
   invalid_assets: '资产提取结果或逐镜关联不完整，现有剧本与资产未被修改。',
   submission_unknown: '未收到服务商明确结果，请先检查已有任务，避免重复付费。',
   media_unavailable: '暂时无法下载这段素材，请从原平台下载后重新导入。',

@@ -4,14 +4,15 @@ import { Plus, Sparkles, Download, FileText, Trash2 } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
 import TemplateEditor from '../prompts/TemplateEditor';
 import { defaultStyle, makeShot, uid, type PageProps, type Project, type Shot } from '../../domain/types';
-import { validateProject } from '../../domain/validation';
+import { scriptWarnings, validateScriptStage, withConfirmation } from '../../domain/flow';
 import { getStudio, updateProject, useStudio } from '../../store/studio';
 import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
 import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
 import { skills } from '../../lib/skills';
-import { scriptPrompt } from '../../lib/prompts';
+import { screenplayPrompt } from '../../lib/prompts';
 import { buildDocuments } from '../../lib/documents';
-import { mergeDraftAssets, normalizeScript, parseScriptText, templateScript, type GeneratedScript, type ScriptDraft } from './creation';
+import { mergeDraftAssets, normalizeScreenplay, parseScriptText, templateScript, type GeneratedScreenplay, type ScriptDraft } from './creation';
+import DurationStrip from './DurationStrip';
 
 const styles = [defaultStyle, '清新日系动画，柔和色彩与自然光', '电影写实风，克制配色与戏剧光影'];
 type Confirmation = { kind: 'ai' | 'template'; project: Project; prompt: string; provider: 'gemini' | 'deepseek'; model: string };
@@ -32,10 +33,17 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [documentName, setDocumentName] = useState('剧本文档.md');
   const [templateOpen, setTemplateOpen] = useState(false);
-  const issues = validateProject(project);
+  const issues = validateScriptStage(project);
+  const warnings = scriptWarnings(project);
   const total = project.shots.reduce((sum, s) => sum + s.duration, 0);
   const characters = project.assets.filter(a => a.kind === 'character');
   const sourceTag = project.source === 'template' ? '模板演练 · 非AI生成' : project.source === 'ai' ? 'AI生成 · 待人工审核' : project.source === 'import' ? '用户导入' : '空白项目';
+  const confirmScript = () => {
+    const problems = validateScriptStage(project);
+    if (problems.length) { toast.error(`还有 ${problems.length} 项需要完善，请先修正。`); return; }
+    updateProject(project.id, p => ({ ...p, confirmed: withConfirmation(p, 'script') }), false);
+    navigate('assets');
+  };
   const scriptSamples = durationSamples('script');
   const scriptAverage = averageDuration('script');
   const documents = buildDocuments(project);
@@ -49,7 +57,7 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const prepare = (kind: Confirmation['kind']) => {
     if (!project.theme.trim()) { toast.error('请先填写故事主题。'); return; }
     if (kind === 'ai' && !keys[settings.scriptProvider]) { toast.error('请先在设置页填写剧本服务的 API Key。'); navigate('settings'); return; }
-    setConfirm({ kind, project: structuredClone(project), prompt: scriptPrompt(project), provider: settings.scriptProvider, model: settings.models[settings.scriptProvider] });
+    setConfirm({ kind, project: structuredClone(project), prompt: screenplayPrompt(project), provider: settings.scriptProvider, model: settings.models[settings.scriptProvider] });
   };
   const generate = async () => {
     if (!confirm || busy) return;
@@ -68,16 +76,16 @@ function ScriptEditor({ project, navigate }: PageProps) {
         if (auth.model !== task.model) throw new Error('模型设置已改变，请关闭弹窗并重新确认。');
         if (jobId) updateJob(jobId, { detail: '模型生成中' });
         setProgress(previous => previous && { ...previous, stage: '模型生成中' });
-        const data = await callApi<GeneratedScript>('script', { ...auth, prompt: task.prompt }, controller.signal);
+        const data = await callApi<GeneratedScreenplay>('screenplay', { ...auth, prompt: task.prompt }, controller.signal);
         setProgress(previous => previous && { ...previous, stage: '校验结构' });
-        draft = normalizeScript(data);
+        draft = normalizeScreenplay(data);
       }
       current(task.project.revision);
       updateProject(project.id, p => draftUpdate(p, draft, task.kind === 'ai' ? 'ai' : 'template'), true);
       if (jobId) finishJob(jobId, 'done');
       setProgress(undefined);
       setConfirm(undefined);
-      toast.success(task.kind === 'ai' ? '剧本已生成，请审核人物和每镜内容。' : '模板草稿已建立（非AI生成），请继续编辑。');
+      toast.success(task.kind === 'ai' ? '剧本已生成，请审核节拍和每拍内容。' : '模板草稿已建立（非AI生成），请继续编辑。');
     } catch (error) {
       if (jobId) finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
       setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
@@ -108,21 +116,21 @@ function ScriptEditor({ project, navigate }: PageProps) {
     <header className="page-heading"><div><span className="tag">01 / 故事创作</span><h1>让一个念头，成为好故事</h1><p className="muted">从主题出发，编排一部 90 秒的短篇漫剧。</p></div><Button variant="outline" onClick={() => setDocumentsOpen(true)}><Download size={16} />导出文档</Button></header>
     <div className="workbench"><div className="workbench-main stack">
     <section className="panel stack">
-      <div className="section-title"><h2>故事种子</h2><span className="tag">10 镜 · 90 秒</span></div>
+      <div className="section-title"><h2>故事种子</h2><span className="tag">10 拍 · 90 秒</span></div>
       <Field label="故事主题" hint="写下主角、目标与冲突，也可以只从一个灵感开始。"><textarea rows={3} placeholder="例如：一个失去灵力的少年，发现山门石阶每晚都会多出一级……" value={project.theme} onChange={e => change({ theme: e.target.value })} /></Field>
       <div className="grid-2"><Field label="视觉风格"><select value={project.style || defaultStyle} onChange={e => change({ style: e.target.value })}>{!styles.includes(project.style) && project.style && <option>{project.style}</option>}{styles.map(style => <option key={style}>{style}</option>)}</select></Field><div className="field"><span>剧本服务</span><div className="row"><span className="tag">{settings.scriptProvider === 'gemini' ? 'Gemini' : 'DeepSeek'} · {settings.models[settings.scriptProvider]}</span><Button variant="ghost" onClick={() => navigate('settings')}>更改设置</Button></div></div></div>
       <details className="panel"><summary><strong>高级：提示词与规则</strong><span className="small muted"> · 所选 Skill 会写入对应生成任务的完整提示词</span></summary><div className="grid-2" style={{ marginTop: 12 }}>{skills.map(skill => <label className="panel row skill-option" key={skill.id}><input type="checkbox" checked={project.skills.includes(skill.id)} onChange={e => change({ skills: e.target.checked ? [...project.skills, skill.id] : project.skills.filter(id => id !== skill.id) })} /><span><strong>{skill.name}</strong><small className="muted">{skill.description}</small></span></label>)}</div><div className="toolbar" style={{ marginTop: 12 }}><Button variant="outline" onClick={() => setTemplateOpen(true)}>编辑提示词模板</Button></div></details>
       {!keys[settings.scriptProvider] && <div className="alert">尚未配置剧本 API Key。可以前往设置，或主动使用不联网的「模板演练」。模板不是 AI 生成。<Button variant="ghost" onClick={() => navigate('settings')}>前往设置</Button></div>}
       <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={busy} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
     </section>
+    <div className="panel"><DurationStrip project={project} /></div>
     <section className="stack">
-      <div className="section-title"><div><h2>逐镜剧本</h2><p className="muted">{project.shots.length} / 10 镜 · {Number(total.toFixed(2))} / 90 秒 · 编辑自动保存</p></div><span className="tag">{sourceTag}</span></div>
+      <div className="section-title"><div><h2>逐拍剧本</h2><p className="muted">{project.shots.length} / 10 拍 · {Number(total.toFixed(2))} / 90 秒 · 编辑自动保存</p></div><span className="tag">{sourceTag}</span></div>
       {!project.shots.length && <Empty title="故事还没有开始" text="输入主题生成、主动模板演练，或导入你已经写好的剧本。这里不会预置作品或视频。" />}
       {project.shots.map(shot => <article className="shot-card stack" key={shot.id} id={`shot-${shot.number}`}>
         <div className="section-title"><div className="row"><span className="shot-number">{String(shot.number).padStart(2, '0')}</span><h3>第 {shot.number} 镜</h3>{shot.stale && <span className="tag">下游待更新</span>}</div><Button variant="ghost" aria-label={`删除第${shot.number}镜`} onClick={() => setRemove(shot)}><Trash2 size={16} />删除</Button></div>
-        <div className="grid-2"><Field label="时长（秒）" hint="每镜4–15秒，10镜合计90秒。"><input type="number" min={4} max={15} step={1} value={shot.duration} onChange={e => editShot(shot.id, { duration: e.target.value === '' ? 0 : Number(e.target.value) })} /></Field><Field label="运镜"><input value={shot.camera} onChange={e => editShot(shot.id, { camera: e.target.value })} /></Field></div>
+        <div><Field label="时长（秒）" hint="每拍4–15秒，10拍合计90秒。"><input type="number" min={4} max={15} step={1} value={shot.duration} onChange={e => editShot(shot.id, { duration: e.target.value === '' ? 0 : Number(e.target.value) })} /></Field></div>
         <Field label="画面 / 保留的导入原文"><textarea rows={3} value={shot.visual} onChange={e => editShot(shot.id, { visual: e.target.value })} /></Field>
-        <div className="grid-3"><Field label="开场 / 起点"><textarea rows={2} value={shot.start} onChange={e => editShot(shot.id, { start: e.target.value })} /></Field><Field label="动作"><textarea rows={2} value={shot.action} onChange={e => editShot(shot.id, { action: e.target.value })} /></Field><Field label="终点"><textarea rows={2} value={shot.end} onChange={e => editShot(shot.id, { end: e.target.value })} /></Field></div>
         <div className="stack"><div className="section-title"><h4>对白</h4><Button variant="ghost" onClick={() => editShot(shot.id, { dialogues: [...shot.dialogues, { id: uid(), speakerId: characters[0]?.id || '', text: '' }] })}><Plus size={14} />添加台词</Button></div>
           {!characters.length && <p className="muted">请在资产页添加人物，再为台词选择说话者。<Button variant="ghost" onClick={() => navigate('assets')}>创建人物</Button></p>}
           {shot.dialogues.map(dialogue => <div className="row" key={dialogue.id}><Field label="说话者"><select value={dialogue.speakerId} onChange={e => editShot(shot.id, { dialogues: shot.dialogues.map(d => d.id === dialogue.id ? { ...d, speakerId: e.target.value } : d) })}><option value="">未指定人物</option>{characters.map(a => <option value={a.id} key={a.id}>{a.name}</option>)}</select></Field><Field label="台词内容"><textarea rows={2} value={dialogue.text} onChange={e => editShot(shot.id, { dialogues: shot.dialogues.map(d => d.id === dialogue.id ? { ...d, text: e.target.value } : d) })} /></Field><Button variant="ghost" aria-label="删除台词" onClick={() => editShot(shot.id, { dialogues: shot.dialogues.filter(d => d.id !== dialogue.id) })}><Trash2 size={16} /></Button></div>)}
@@ -131,12 +139,13 @@ function ScriptEditor({ project, navigate }: PageProps) {
       <div className="toolbar"><Button variant="outline" onClick={() => updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: [...p.shots, makeShot(p.shots.length + 1)] }), true)}><Plus size={16} />增加镜头</Button></div>
     </section>
     </div><aside className="workbench-aside" aria-label="剧本状态">
-      <section className="panel stack"><div className="section-title"><h3>当前状态</h3><span className="tag">{sourceTag}</span></div><p className="small muted">{project.shots.length} / 10 镜 · {Number(total.toFixed(2))} / 90 秒</p><p className="small muted">{characters.length} 位人物 · {project.assets.length} 项资产 · 编辑自动保存</p></section>
+      <section className="panel stack"><div className="section-title"><h3>当前状态</h3><span className="tag">{sourceTag}</span></div><p className="small muted">{project.shots.length} / 10 拍 · {Number(total.toFixed(2))} / 90 秒</p><p className="small muted">{characters.length} 位人物 · {project.assets.length} 项资产 · 编辑自动保存</p></section>
       {project.shots.length > 0 && issues.length > 0 && <section className="panel stack"><div className="section-title"><h3>需要完善</h3><span className="tag">{issues.length} 项</span></div><IssueList issues={issues} /></section>}
-      <section className="panel stack"><Button variant="secondary" disabled={!project.shots.length} onClick={() => navigate('assets')}>下一步：设定资产</Button><p className="small muted">每镜 4–15 秒，十镜合计 90 秒。点击上方问题可跳到对应镜头。</p></section>
+      {warnings.length > 0 && <section className="panel stack"><div className="section-title"><h3>建议</h3><span className="tag subtle">{warnings.length} 项</span></div><ul className="issue-list">{warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></section>}
+      <section className="panel stack"><Button variant="secondary" disabled={!project.shots.length} onClick={confirmScript}>确认并进入下一步</Button><p className="small muted">每拍 4–15 秒，十拍合计 90 秒。确认后进入资产步骤。</p></section>
     </aside></div>
     <Modal open={!!confirm} onClose={() => { if (!busy) { setConfirm(undefined); setFailure(undefined); setProgress(undefined); } }} title={confirm?.kind === 'ai' ? '确认完整剧本任务' : '确认模板演练'} description="确认后替换当前镜头和人物资产；保留场景、道具、音色。旧人物图片不会自动沿用，请先导出需要保留的文档。">
-      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题建立10镜，每镜9秒。'}</div><p>主题：{confirm.project.theme}<br />风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：10 镜 / 90 秒</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词"><textarea readOnly rows={12} value={confirm.prompt} /></Field>}{progress && <ProgressPanel title={confirm.kind === 'ai' ? 'AI 生成剧本' : '模板演练'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={scriptSamples ? scriptAverage : undefined} detail={scriptSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={busy && confirm.kind === 'ai' ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setConfirm(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" onClick={() => { setConfirm(undefined); setTemplateOpen(true); }}>编辑模板</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
+      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题建立10拍，每拍9秒。'}</div><p>主题：{confirm.project.theme}<br />风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：10 拍 / 90 秒</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词"><textarea readOnly rows={12} value={confirm.prompt} /></Field>}{progress && <ProgressPanel title={confirm.kind === 'ai' ? 'AI 生成剧本' : '模板演练'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={scriptSamples ? scriptAverage : undefined} detail={scriptSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={busy && confirm.kind === 'ai' ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setConfirm(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" onClick={() => { setConfirm(undefined); setTemplateOpen(true); }}>编辑模板</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
     </Modal>
     <Modal open={importOpen} onClose={() => setImportOpen(false)} title="导入剧本 · 先预览再保存" description="按镜号分段，没有镜号时按空行分段。所有原文逐段完整保留在画面字段，不会静默丢弃未识别内容。">
       <div className="stack"><Field label="上传 UTF-8 的 .txt / .md 文件（≤2MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={e => { void readImport(e.target.files?.[0]); e.target.value = ''; }} /></Field><Field label="或粘贴原文"><textarea rows={8} value={importText} placeholder={'第1镜（9秒）\n画面：……\n开场：……\n动作：……\n终点：……\n运镜：……\n台词：人物：……'} onChange={e => { setImportText(e.target.value); setPreview(undefined); }} /></Field><Button variant="secondary" onClick={() => { try { setPreview({ draft: parseScriptText(importText), revision: project.revision }); } catch (error) { toast.error(errorMessage(error)); } }}>解析并预览</Button>

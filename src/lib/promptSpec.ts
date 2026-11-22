@@ -26,16 +26,16 @@ export const PROMPT_LIMITS: Record<PromptKind, number> = {
   director: 32000,
 };
 
-/** 剧本输出契约示例；键顺序与原有内联骨架一致，渲染结果逐字不变。 */
+/** 剧本输出契约示例（10 个节拍）；键顺序与原有内联骨架一致。 */
 export const SCRIPT_OUTPUT_EXAMPLE = {
   title: '作品名',
+  logline: '一句话故事',
   characters: [{ name: '人物名', description: '固定外观短语' }],
   scenes: [{ name: '场景名', description: '固定环境短语' }],
   props: [{ name: '道具名', description: '固定道具短语' }],
-  shots: [{
-    visual: '画面', camera: '运镜', start: '开场', action: '动作', end: '终点', duration: 9,
-    characters: ['人物名'], scenes: ['场景名'], props: ['道具名'],
-    dialogues: [{ speaker: '人物名', text: '台词' }],
+  beats: [{
+    title: '节拍名', scene: '场景名', characters: ['人物名'],
+    summary: '该节拍发生的可见事件', dialogues: [{ speaker: '人物名', text: '台词' }], seconds: 9,
   }],
 };
 

@@ -109,14 +109,14 @@ const priority = '【优先级】P0 固定短语逐字 > P1 本镜动作与终�
 
 export const templates: TemplateDef[] = [
   {
-    id: 'script', title: '剧本', description: '把主题写成 10 镜 / 90 秒的可拍摄脚本。',
+    id: 'script', title: '剧本', description: '把主题写成 10 个节拍、合计 90 秒的可拍摄脚本。',
     blocks: [
       { id: 'script.contract', label: '输出契约', locked: true, reason: 'JSON 输出契约与后端 Schema 绑定，不可修改。', defaultText: '你是短篇漫剧编剧。只输出合法JSON，不要Markdown代码围栏。' },
-      { id: 'script.spec', label: '硬性规格', locked: true, reason: '10 镜 / 90 秒是产品与校验约束。', defaultText: '硬性规格：10镜，总计90秒；每镜时长为4–15秒的数值。每镜包含画面、开场、动作、终点、运镜和台词。台词的speaker必须是characters中的人物名称，无对白时用空数组。' },
-      { id: 'script.drama', label: '剧作规范', defaultText: '三幕结构：开场建立目标与冲突，中段升级对抗，结尾收束并给出可见结果。每镜只写一个可见事件（谁在哪、做了什么、情绪如何转折），镜头之间有因果。' },
+      { id: 'script.spec', label: '硬性规格', locked: true, reason: '10 个节拍 / 90 秒是产品与校验约束。', defaultText: '硬性规格：10个节拍，总计90秒；每个节拍时长为4–15秒的整数。每个节拍包含标题、场景、人物、可见事件摘要与台词。台词的speaker必须是characters中的人物名称，无对白时用空数组。' },
+      { id: 'script.drama', label: '剧作规范', defaultText: '三幕结构：开场建立目标与冲突，中段升级对抗，结尾收束并给出可见结果。每拍只写一个可见事件（谁在哪、做了什么、情绪如何转折），拍与拍之间有因果。' },
       { id: 'script.forbidden', label: '禁写清单', defaultText: '不写抽象心理，改写成可见动作；不写时间戳；不写画风；每句对白不超过 18 字；不用现代词汇；人物名全篇一致。' },
       { id: 'script.genre', label: '题材补充', defaultText: '题材补充：{{project.theme}}。设定只作背景，不展开世界观说明。' },
-      { id: 'script.asset-rules', label: '资产引用规则', locked: true, reason: '只允许引用资产清单内的名称。', defaultText: '先从完整剧本提取人物characters、场景scenes、道具props三类清单，再建立逐镜对应关系。每项description是可逐字复用的固定短语：人物固定外貌服装发型，场景固定空间结构光线环境，道具固定轮廓材质细节。每镜必须给出characters、scenes、props三个名称数组，只引用各自清单中出现的名称；即使近景也标明所在场景与实际出现的道具，不得只填写人物。确实没有的类别用空数组，不编造无关资产。' },
+      { id: 'script.asset-rules', label: '资产引用规则', locked: true, reason: '只允许引用资产清单内的名称。', defaultText: '先从完整剧本提取人物characters、场景scenes、道具props三类清单，再建立逐拍对应关系。每项description是可逐字复用的固定短语：人物固定外貌服装发型，场景固定空间结构光线环境，道具固定轮廓材质细节。每个节拍必须给出characters、scenes、props三个名称数组，只引用各自清单中出现的名称；即使近景也标明所在场景与实际出现的道具，不得只填写人物。确实没有的类别用空数组，不编造无关资产。' },
       { id: 'script.output-shape', label: 'JSON 输出结构', locked: true, reason: '输出结构必须与后端校验一致。', defaultText: `输出结构：${JSON.stringify(SCRIPT_OUTPUT_EXAMPLE)}` },
       { id: 'script.priority', label: '优先级', locked: true, reason: '冲突时固定短语优先。', defaultText: priority },
       { id: 'script.extra', label: '自由补充', defaultText: '' },

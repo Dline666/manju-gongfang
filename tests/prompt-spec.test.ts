@@ -28,7 +28,7 @@ const project: Project = {
 
 test('默认模板输出保持稳定（SHA-256 基线）', () => {
   const cases: [string, string, string][] = [
-    ['scriptPrompt', scriptPrompt(project), '687af1c35b015ef6dc03c2d345fd4001623bac303eae7682ed3ee9d945ad6dc0'],
+    ['scriptPrompt', scriptPrompt(project), '256ea5d3f4750e9fdf32aad4d7fdad0a945b6cceec3b16c7ff72c94c342d5be3'],
     ['extractAssetsPrompt', extractAssetsPrompt(project), '6a7367e2b6721519ac4fd0f681b9610b774acdfbc28bc30ecfb88222a5494ee7'],
     ['imageCharacter', imagePrompt(project, hero), 'e5ba05ce2485d0f143f7161a59b52f77a60efe87b1eb19810f963cefb49b7ced'],
     ['imageScene', imagePrompt(project, scene), '1e1cfabfb08aa1bfadcd3fd0d0210a047eed8d741425dca245697eca668a5ee3'],
@@ -91,8 +91,8 @@ test('剧本输出契约是合法 JSON，镜头字段与后端一致', async () 
   const { scriptSpec } = await import('../src/lib/prompts');
   const block = promptBlock(scriptSpec(project), 'script.output-shape')!;
   const contract = JSON.parse(block.text.replace(/^输出结构：/, '')) as typeof SCRIPT_OUTPUT_EXAMPLE;
-  assert.deepEqual(Object.keys(contract), ['title', 'characters', 'scenes', 'props', 'shots']);
-  assert.deepEqual(Object.keys(contract.shots[0]), ['visual', 'camera', 'start', 'action', 'end', 'duration', 'characters', 'scenes', 'props', 'dialogues']);
-  assert.equal(contract.shots[0].duration, 9);
-  assert.deepEqual(Object.keys(contract.shots[0].dialogues[0]), ['speaker', 'text']);
+  assert.deepEqual(Object.keys(contract), ['title', 'logline', 'characters', 'scenes', 'props', 'beats']);
+  assert.deepEqual(Object.keys(contract.beats[0]), ['title', 'scene', 'characters', 'summary', 'dialogues', 'seconds']);
+  assert.equal(contract.beats[0].seconds, 9);
+  assert.deepEqual(Object.keys(contract.beats[0].dialogues[0]), ['speaker', 'text']);
 });

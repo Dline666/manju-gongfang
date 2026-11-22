@@ -28,6 +28,20 @@ const assets = () => {
   };
 };
 const ASSET_KINDS = ["characters", "scenes", "props"] as const;
+const screenplay = () => ({
+  title: "测试剧本", logline: "少年在雨夜拾起断剑",
+  characters: [{ name: "沈砚", description: "灰白布衣" }],
+  scenes: [{ name: "山门", description: "青灰石阶" }],
+  props: [{ name: "断剑", description: "红绳剑柄" }],
+  beats: Array.from({ length: 10 }, (_, i) => ({
+    title: `节拍${i + 1}`, scene: "山门", characters: ["沈砚"], summary: "沈砚走上石阶",
+    dialogues: [{ speaker: "沈砚", text: "你好。" }], seconds: 9,
+  })),
+});
+const director = () => ({ shots: Array.from({ length: 10 }, (_, i) => ({
+  number: i + 1, shotSize: "中景", movement: i === 9 ? "拉" : "推", angle: "平视",
+  start: "石阶前", action: "抬手", end: "站定",
+})) });
 const gemini = (value: unknown = script()) => ({ status: "completed", steps: [
   { type: "thought", content: [{ type: "text", text: "This is not the final JSON" }] },
   { type: "model_output", content: [{ type: "text", text: JSON.stringify(value) }] },
@@ -351,6 +365,29 @@ test("extract-assets accepts 1–100 shots with empty arrays, preserves numberin
     assert.deepEqual(await success(await handle(request("extract-assets", input(provider, { prompt: "test" })))), value);
   }
 });
+test("screenplay and director actions validate their own JSON contracts", async () => {
+  for (const [action, value] of [["screenplay", screenplay()], ["director", director()]] as const) {
+    for (const provider of ["gemini", "deepseek"] as const) {
+      const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
+      const data = await success(await handle(request(action, input(provider, { prompt: "固定模板" }))));
+      assert.deepEqual(data, value);
+      const instruction = String(provider === "gemini" ? calls[0].body.system_instruction : calls[0].body.messages[0].content);
+      assert.ok(instruction.includes(" Schema: "));
+    }
+  }
+});
+test("screenplay and director reject wrong structures with their own codes", async () => {
+  const base = screenplay();
+  const noBeats = { ...base, beats: base.beats.slice(0, 9) };
+  const shortBeat = { ...base, beats: base.beats.map((beat, i) => i === 0 ? { ...beat, seconds: 3 } : beat) };
+  const first = fixture([gemini(noBeats)]);
+  await error(await first.handle(request("screenplay", input("gemini", { prompt: "x" }))), "invalid_screenplay", 502);
+  const second = fixture([gemini(shortBeat)]);
+  await error(await second.handle(request("screenplay", input("gemini", { prompt: "x" }))), "invalid_screenplay", 502);
+  const badDirector = { shots: [{ ...director().shots[0], shotSize: "航拍" }] };
+  const third = fixture([deepseek(badDirector)]);
+  await error(await third.handle(request("director", input("deepseek", { prompt: "x" }))), "invalid_director", 502);
+});
 test("extract-assets requires all three lists and valid unique shot numbers", async () => {
   const value = assets();
   const invalid: unknown[] = [null, [], {}, script(),
@@ -487,7 +524,7 @@ test("image channels reject wrong providers/models and unsupported parameters be
       await error(await handle(request("image", input(provider, { prompt: "test", ...extra }))), "invalid_input", 400);
     }
   }
-  for (const action of ["script", "extract-assets", "voices", "speech", "video-create", "video-status", "video-download"]) {
+  for (const action of ["script", "screenplay", "director", "extract-assets", "voices", "speech", "video-create", "video-status", "video-download"]) {
     await error(await handle(request(action, input("seedream"))), "invalid_provider", 400);
   }
   assert.equal(calls.length, 0);

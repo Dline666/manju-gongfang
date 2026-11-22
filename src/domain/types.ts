@@ -1,10 +1,10 @@
 export type Provider = 'gemini' | 'deepseek' | 'openai' | 'seedream' | 'siliconflow' | 'seedance' | 'minimax';
-export type Stage = 'library' | 'script' | 'assets' | 'storyboard' | 'generation' | 'export' | 'settings';
+export type Stage = 'library' | 'script' | 'assets' | 'director' | 'storyboard' | 'generation' | 'export' | 'settings';
 export type AssetKind = 'character' | 'scene' | 'prop' | 'voice';
 export type SkillId = 'script' | 'storyboard' | 'image' | 'video';
 export interface Asset {
   id: string; kind: AssetKind; name: string; description: string; lock: string;
-  imageId?: string; voiceId?: string; voiceAssetId?: string; speed?: number;
+  imageId?: string; voiceId?: string; voiceAssetId?: string; speed?: number; locked?: boolean;
 }
 export interface Dialogue { id: string; speakerId: string; text: string }
 export interface Reference { assetId: string; role: 'reference_image' | 'first_frame' | 'last_frame' }
@@ -19,7 +19,10 @@ export interface Shot {
   id: string; number: number; duration: number; visual: string; camera: string;
   start: string; action: string; end: string; dialogues: Dialogue[];
   assetIds: string[]; references: Reference[]; video?: VideoSource; audio?: AudioSource;
-  audioMode: 'original' | 'dubbing' | 'silent'; task?: VideoTask; stale?: boolean;
+  audioMode: 'original' | 'dubbing' | 'silent'; task?: VideoTask; stale?: boolean; staleReason?: string;
+}
+export interface Confirmed {
+  script?: number; assets?: number; director?: number;
 }
 export interface StyleSpec {
   medium?: string; line?: string; palette?: string; face?: string; light?: string;
@@ -35,6 +38,7 @@ export interface Project {
   revision: number; skills: SkillId[]; shots: Shot[]; assets: Asset[]; source: 'empty' | 'template' | 'import' | 'ai';
   storyboardReady: boolean;
   promptConfig?: PromptConfig;
+  confirmed?: Confirmed;
 }
 export interface Settings {
   scriptProvider: 'gemini' | 'deepseek'; imageProvider: 'openai' | 'seedream' | 'siliconflow'; videoProvider: 'seedance' | 'minimax';
