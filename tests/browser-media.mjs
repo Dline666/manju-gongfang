@@ -69,7 +69,12 @@ try {
   await page.getByRole('button', { name: '预览成片', exact: true }).click();
   const encode = page.getByRole('button', { name: '生成真实 MP4', exact: true });
   await page.getByText(/超过镜头 9 秒；不会裁剪对白/).first().waitFor();
-  assert.equal(await encode.isDisabled(), true, 'overlong dialogue must block encoding');
+  await encode.click();
+  await page.getByRole('heading', { name: '导出前成片检查' }).waitFor();
+  await page.getByText(/配音超过镜头时长/).first().waitFor();
+  assert.equal(await page.getByRole('button', { name: '确认并开始逐镜编码', exact: true }).isDisabled(), true, 'overlong dialogue must block encoding');
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '返回生成 / 重新导入', exact: true }).click();
   await page.getByRole('button', { name: '查看第1镜视频详情', exact: true }).click();
   await page.getByRole('dialog').locator('input[type=file]').nth(1).setInputFiles({ name: 'voice-1.wav', mimeType: 'audio/wav', buffer: voice });
