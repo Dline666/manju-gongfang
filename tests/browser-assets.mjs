@@ -67,6 +67,7 @@ try {
     await page.getByLabel('上传设定图（PNG / JPEG / WebP，≤5MB）').setInputFiles({ name: 'prop.webp', mimeType: imageFiles[1].mime, buffer: Buffer.from(imageFiles[1].base64, 'base64') });
     await page.getByRole('dialog').locator('img').waitFor(); await close();
     await page.goto('http://127.0.0.1:5173/#/storyboard');
+    await page.getByRole('button', { name: '全部展开', exact: true }).click();
     await page.getByRole('button', { name: '复制人物提示词', exact: true }).nth(9).waitFor();
     for (const label of ['人物', '场景', '道具']) {
       assert.equal(await page.getByRole('button', { name: `复制${label}提示词`, exact: true }).count(), 10);

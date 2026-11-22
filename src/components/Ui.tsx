@@ -6,8 +6,8 @@ import { CircleHelp } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiError, errorMessage } from '../lib/api';
 export { Button };
-export function Modal({ open, onClose, title, description, children }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode }) {
-  return <Dialog open={open} onOpenChange={value => { if (!value) onClose(); }}><DialogContent className="studio-dialog"><DialogTitle>{title}</DialogTitle><DialogDescription>{description || '确认后保存，关闭不会提交更改。'}</DialogDescription>{children}</DialogContent></Dialog>;
+export function Modal({ open, onClose, title, description, children, wide }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode; wide?: boolean }) {
+  return <Dialog open={open} onOpenChange={value => { if (!value) onClose(); }}><DialogContent className={`studio-dialog ${wide ? 'wide-dialog' : ''}`.trim()}><DialogTitle>{title}</DialogTitle><DialogDescription>{description || '确认后保存，关闭不会提交更改。'}</DialogDescription>{children}</DialogContent></Dialog>;
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="field"><span>{label}</span>{children}{hint && <small className="muted">{hint}</small>}</label>; }
 export function Empty({ title, text, children }: { title: string; text: string; children?: ReactNode }) { return <div className="empty"><div className="empty-symbol">◇</div><h3>{title}</h3><p className="muted">{text}</p>{children}</div>; }

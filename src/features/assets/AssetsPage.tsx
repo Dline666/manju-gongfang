@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, Sparkles, Volume2, ImagePlus, Copy } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, FileText, Plus, Pencil, Trash2, Sparkles, Upload, Volume2, ImagePlus, Copy } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, HelpPopover, Modal, ProgressPanel, StatusChip, copyText, errorAction, formatElapsed } from '../../components/Ui';
-import { uid, type Asset, type AssetKind, type PageProps } from '../../domain/types';
+import { makeShot, uid, type Asset, type AssetKind, type PageProps } from '../../domain/types';
 import { getStudio, setAssetImage, setSettings, updateProject, useStudio } from '../../store/studio';
 import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
 import { putMedia, useMediaUrl } from '../../store/media';
@@ -11,6 +11,7 @@ import { fixedDescription, imagePrompt } from '../../lib/prompts';
 import { imageConcurrency, imageModelGroups } from '../../lib/models';
 import { runPool } from '../../lib/pool';
 import { assetUsage, generatedImageBlob, removeAsset, validateImage } from './helpers';
+import { extractLocalAssets, mergeDraftAssets } from '../script/creation';
 
 const kinds: { id: AssetKind; name: string; text: string }[] = [
   { id: 'character', name: '人物', text: '固定外观、服装与配音，让每一次出场都保持一致。' },
@@ -57,6 +58,12 @@ function AssetEditor({ project, navigate }: PageProps) {
   const abortRef = useRef<AbortController | undefined>(undefined);
   const [batch, setBatch] = useState<BatchState>();
   const batchAbort = useRef<AbortController | undefined>(undefined);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importPreview, setImportPreview] = useState<{ assets: Asset[]; added: number; reused: number }>();
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadPlan, setUploadPlan] = useState<{ matched: { file: File; asset: Asset }[]; unmatched: File[] }>();
   const [busy, setBusy] = useState(false);
   const [voicesBusy, setVoicesBusy] = useState(false);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
@@ -215,6 +222,47 @@ function AssetEditor({ project, navigate }: PageProps) {
       batchAbort.current = undefined;
     }
   };
+  const toggleSelected = (id: string) => setSelected(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const copyAllPrompts = (assets: Asset[]) => { const text = assets.map(asset => imagePrompt(project, asset)).join('\n\n---\n\n'); void copyText(text); };
+  const confirmAllAssets = () => {
+    const invalid = visible.filter(asset => !asset.name.trim() || (!asset.lock.trim() && !asset.description.trim()));
+    if (invalid.length) { toast.error(`有 ${invalid.length} 项资产缺少名称或固定短语：${invalid.slice(0, 3).map(asset => asset.name || '未命名').join('、')}`); return; }
+    toast.success(`已确认 ${visible.length} 项资产，固定短语会逐字用于后续生成。`);
+  };
+  const parseAssetImport = () => {
+    const text = importText.trim();
+    if (!text) { toast.error('请粘贴或上传资产清单。'); return; }
+    const draft = extractLocalAssets([{ ...makeShot(1), visual: text }], project.assets);
+    const merged = mergeDraftAssets(project.assets, draft);
+    const added = merged.assets.filter(asset => !project.assets.some(old => old.id === asset.id)).length;
+    setImportPreview({ assets: merged.assets, added, reused: merged.assets.length - added });
+  };
+  const saveAssetImport = () => {
+    if (!importPreview) return;
+    updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: importPreview.assets }), true);
+    toast.success(`已写入 ${importPreview.added} 项新资产，沿用 ${importPreview.reused} 项。`);
+    setImportOpen(false); setImportPreview(undefined); setImportText('');
+  };
+  const planUpload = (files: File[]) => {
+    const matched: { file: File; asset: Asset }[] = []; const unmatched: File[] = [];
+    for (const file of files) {
+      const name = file.name.replace(/\.[^.]+$/, '');
+      const asset = project.assets.find(item => item.kind !== 'voice' && item.name === name);
+      if (asset) matched.push({ file, asset }); else unmatched.push(file);
+    }
+    setUploadPlan({ matched, unmatched });
+  };
+  const saveUploads = async () => {
+    if (!uploadPlan) return;
+    let saved = 0; const failed: string[] = [];
+    for (const { file, asset } of uploadPlan.matched) {
+      try { await validateImage(file); const imageId = await putMedia(file); patch(asset.id, { imageId }); saved += 1; }
+      catch (error) { failed.push(`${asset.name}：${errorMessage(error)}`); }
+    }
+    setUploadOpen(false); setUploadPlan(undefined);
+    if (failed.length) toast.error(`已保存 ${saved} 张；失败 ${failed.length} 项：${failed.slice(0, 2).join('；')}`);
+    else toast.success(`已导入 ${saved} 张设定图。`);
+  };
   const visible = project.assets.filter(a => a.kind === kind);
   const imageSamples = durationSamples('image');
   const imageAverage = averageDuration('image');
@@ -223,6 +271,23 @@ function AssetEditor({ project, navigate }: PageProps) {
   const speechAverage = averageDuration('speech');
   const speechRemaining = speechSamples >= 2 && speechAverage ? Math.max(5000, Math.round(speechAverage / 5000) * 5000) : undefined;
   const missing = visible.filter(asset => !asset.imageId);
+  const visibleSelected = visible.filter(asset => selected.has(asset.id));
+  const allVisibleSelected = visible.length > 0 && visible.every(asset => selected.has(asset.id));
+  const batchTargets = visibleSelected.length ? visibleSelected : visible;
+  const batchMissing = batchTargets.filter(asset => !asset.imageId);
+  const focusIndex = focused ? visible.findIndex(asset => asset.id === focused.id) : -1;
+  const moveFocus = (direction: number) => { if (focusIndex < 0 || visible.length < 2) return; setFocusedId(visible[(focusIndex + direction + visible.length) % visible.length].id); };
+  useEffect(() => {
+    if (!focused) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (event.key === 'ArrowLeft') moveFocus(-1);
+      if (event.key === 'ArrowRight') moveFocus(1);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focused?.id, visible.map(asset => asset.id).join('|')]);
   const batchDone = batch?.items.filter(item => item.status === 'done').length ?? 0;
   const batchFailedCount = batch?.items.filter(item => item.status === 'failed').length ?? 0;
   const batchFailed = batch?.items.filter(item => item.status === 'failed').map(item => project.assets.find(asset => asset.id === item.id)).filter((asset): asset is Asset => !!asset) ?? [];
@@ -230,10 +295,11 @@ function AssetEditor({ project, navigate }: PageProps) {
     <header className="page-heading"><div><span className="tag">02 / 资产设定</span><h1>让故事，有自己的面孔</h1><p className="muted">固定人物、场景和道具描述，再为每个角色找到声音。</p></div><Button onClick={() => edit()}><Plus size={16} />新建{kinds.find(k => k.id === kind)?.name}</Button></header>
     <div className="toolbar" role="tablist" aria-label="资产类别">{kinds.map(k => <Button key={k.id} role="tab" aria-selected={kind === k.id} variant={kind === k.id ? 'default' : 'secondary'} onClick={() => setKind(k.id)}>{k.name} <span>{project.assets.filter(a => a.kind === k.id).length}</span></Button>)}</div>
     {kind !== 'voice' && <div className="panel stack"><Field label="生图模型" hint="选择的厂商和模型会随确认任务实际提交。Seedream 需要火山方舟 Key，试用额度由服务商决定。"><select disabled={busy} value={`${settings.imageProvider}:${settings.models[settings.imageProvider]}`} onChange={e => { const [provider, model] = e.target.value.split(':') as ['openai' | 'seedream' | 'siliconflow', string]; setSettings({ ...settings, imageProvider: provider, models: { ...settings.models, [provider]: model } }); }}>{imageModelGroups.map(group => <optgroup key={group.provider} label={group.label}>{group.models.map(model => <option key={model.id} value={`${group.provider}:${model.id}`}>{model.name} · {model.description}</option>)}{!group.models.some(model => model.id === settings.models[group.provider]) && <option value={`${group.provider}:${settings.models[group.provider]}`}>自定义 · {settings.models[group.provider]}</option>}</optgroup>)}</select></Field><p className="small muted">当前生图渠道：{settings.imageProvider === 'openai' ? 'OpenAI' : settings.imageProvider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {settings.models[settings.imageProvider]}。免费兜底暂未配置，失败不会自动切换到其他收费渠道。</p></div>}
-    {kind !== 'voice' && <div className="toolbar"><Button variant="secondary" disabled={!missing.length || !!batch?.running} onClick={() => void executeBatch(missing)}><Sparkles size={16} />生成缺图（{missing.length}）</Button><span className="small muted">按设置中的并发数同时生成，单张失败不中断。</span></div>}
+    {kind !== 'voice' && <div className="toolbar batch-bar" aria-label="资产批量操作"><label className="row"><input type="checkbox" aria-label="全选资产" checked={allVisibleSelected} onChange={() => setSelected(allVisibleSelected ? new Set() : new Set(visible.map(asset => asset.id)))} />全选</label><Button variant="secondary" disabled={!batchMissing.length || !!batch?.running} onClick={() => void executeBatch(batchMissing)}><Sparkles size={16} />生成缺图（{batchMissing.length}）</Button><Button variant="outline" disabled={!batchTargets.length} onClick={() => copyAllPrompts(batchTargets)}><Copy size={14} />复制全部提示词</Button><Button variant="outline" onClick={confirmAllAssets}><Check size={14} />确认全部资产</Button><Button variant="outline" onClick={() => { setImportPreview(undefined); setImportOpen(true); }}><FileText size={14} />批量导入</Button><Button variant="outline" onClick={() => { setUploadPlan(undefined); setUploadOpen(true); }}><Upload size={14} />批量导图</Button></div>}
     <div className="panel"><div className="section-title"><h2>{kinds.find(k => k.id === kind)?.name}资产库</h2><HelpPopover title="资产库说明"><p>{kinds.find(k => k.id === kind)?.text}</p><p className="mt-2">统一锁：图片与视频提示词逐字复用「固定短语」。上传或生成图片不会自动把图片发送到视频服务，请到分镜页选择实际附件。</p></HelpPopover></div></div>
     {kind === 'voice' && <div className="panel stack"><div className="toolbar"><Button variant="secondary" disabled={voicesBusy} onClick={loadVoices}>{voicesBusy ? '正在获取…' : '获取 MiniMax 音色库'}</Button><Button variant="ghost" onClick={() => navigate('settings')}>设置语音服务</Button></div><p className="muted">{voices.length ? `已加载${voices.length}个音色，新建或编辑音色时可选择。` : '未加载在线音色。可手动填写服务商音色ID，或使用明确标注的本机试听。'} API试听会先确认短句；本机试听不会生成可导出的音频。</p><Button variant="ghost" onClick={() => { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }}>停止本机试听</Button></div>}
     {!visible.length ? <Empty title={`还没有${kinds.find(k => k.id === kind)?.name}设定`} text="从一条描述开始，或创建资产后上传自己的图片。这里没有预置作品素材。"><Button variant="secondary" onClick={() => edit()}>创建第一项资产</Button></Empty> : <div className={kind === 'voice' ? 'grid-2' : 'asset-compact-grid'}>{visible.map(asset => asset.kind !== 'voice' ? <article className="panel compact-media-card" key={asset.id}>
+      <label className="asset-select"><input type="checkbox" aria-label={`选择${asset.name}`} checked={selected.has(asset.id)} onChange={() => toggleSelected(asset.id)} /></label>
       <button type="button" className="compact-media-thumbnail" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}><AssetImage asset={asset} /></button>
       <h3 className="compact-media-title">{asset.name}</h3><p className="compact-media-description muted">{asset.description || '尚未填写描述'}</p>
     </article> : <article className="panel stack" key={asset.id}>
@@ -241,19 +307,30 @@ function AssetEditor({ project, navigate }: PageProps) {
       <p>{asset.description || '尚未填写描述'}</p>
       <p className="muted">音色ID：{asset.voiceId || '未选择'} · 语速：{asset.speed ?? 1}×</p><div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => prepareSpeech(asset, false)}><Volume2 size={16} />API 试听（先确认）</Button><Button variant="outline" disabled={busy} onClick={() => prepareSpeech(asset, true)}>本机声音试听（非导出音轨）</Button></div>{previews[asset.id] && <AudioPreview preview={previews[asset.id]} />}
     </article>)}</div>}
-    {focused && <Modal open onClose={() => setFocusedId(undefined)} title={`${focused.name} · 资产详情`} description="查看完整设定、固定短语与关联镜头，或管理设定图。"><div className="stack media-detail">
-      <AssetImage asset={focused} detail />
-      <div><h3>描述</h3><p className="media-detail-text">{focused.description || '尚未填写描述'}</p></div>
-      <div className="panel"><h3>固定短语 · 逐字复用</h3><p className="media-detail-text">{fixedDescription(focused) || '尚未设置'}</p></div>
-      <p className="muted">关联镜头：{assetUsage(project, focused.id).join('、') || '未被引用'}</p>
-      {focused.kind === 'character' && <p className="muted">角色音色：{project.assets.find(a => a.id === focused.voiceAssetId)?.name || '未关联'}</p>}
-      <Field label="完整图片提示词"><textarea rows={6} readOnly value={imagePrompt(project, focused)} /></Field>
-      <div className="generation-actions"><Button variant="secondary" onClick={() => copyText(focused.description)}><Copy size={14} />复制描述</Button><Button variant="secondary" onClick={() => copyText(fixedDescription(focused))}><Copy size={14} />复制固定短语</Button><Button variant="secondary" onClick={() => copyText(imagePrompt(project, focused))}><Copy size={14} />复制图片提示词</Button></div>
-      <Field label="上传设定图（PNG / JPEG / WebP，≤5MB）"><input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e => { void upload(focused, e.target.files?.[0]); e.target.value = ''; }} /></Field>
-      <div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => { setFocusedId(undefined); prepareImage(focused); }}><Sparkles size={16} />生成设定图</Button>{focused.imageId && <Button variant="ghost" disabled={busy} onClick={() => { setFocusedId(undefined); setRemovingImage(focused); }}><ImagePlus size={16} />移除图片</Button>}</div>
-      <div className="toolbar"><Button variant="outline" aria-label={`编辑${focused.name}`} onClick={() => { setFocusedId(undefined); edit(focused); }}><Pencil size={16} />编辑资产</Button><Button variant="ghost" aria-label={`删除${focused.name}`} onClick={() => { setFocusedId(undefined); setDeleting(focused); }}><Trash2 size={16} />删除资产</Button></div>
+    {focused && <Modal wide open onClose={() => setFocusedId(undefined)} title={`${focused.name} · 资产详情`} description="查看完整设定、固定短语与关联镜头，或管理设定图。"><div className="stack media-detail">
+      <div className="row between"><span className="small muted">{focusIndex + 1} / {visible.length} · {kinds.find(k => k.id === focused.kind)?.name}</span><div className="row"><Button variant="ghost" aria-label="上一张" disabled={visible.length < 2} onClick={() => moveFocus(-1)}><ChevronLeft size={16} />上一张</Button><Button variant="ghost" aria-label="下一张" disabled={visible.length < 2} onClick={() => moveFocus(1)}>下一张<ChevronRight size={16} /></Button></div></div>
+      <div className="lightbox">
+        <div className="lightbox-media"><AssetImage asset={focused} detail /></div>
+        <div className="stack lightbox-info">
+          <div><h3>描述</h3><p className="media-detail-text">{focused.description || '尚未填写描述'}</p></div>
+          <div className="panel"><h3>固定短语 · 逐字复用</h3><p className="media-detail-text">{fixedDescription(focused) || '尚未设置'}</p></div>
+          <p className="muted">关联镜头：{assetUsage(project, focused.id).join('、') || '未被引用'}</p>
+          {focused.kind === 'character' && <p className="muted">角色音色：{project.assets.find(a => a.id === focused.voiceAssetId)?.name || '未关联'}</p>}
+          <Field label="完整图片提示词"><textarea rows={6} readOnly value={imagePrompt(project, focused)} /></Field>
+          <div className="generation-actions"><Button variant="secondary" onClick={() => copyText(focused.description)}><Copy size={14} />复制描述</Button><Button variant="secondary" onClick={() => copyText(fixedDescription(focused))}><Copy size={14} />复制固定短语</Button><Button variant="secondary" onClick={() => copyText(imagePrompt(project, focused))}><Copy size={14} />复制图片提示词</Button></div>
+          <Field label="上传设定图（PNG / JPEG / WebP，≤5MB）"><input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e => { void upload(focused, e.target.files?.[0]); e.target.value = ''; }} /></Field>
+          <div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => { setFocusedId(undefined); prepareImage(focused); }}><Sparkles size={16} />生成设定图</Button>{focused.imageId && <Button variant="ghost" disabled={busy} onClick={() => { setFocusedId(undefined); setRemovingImage(focused); }}><ImagePlus size={16} />移除图片</Button>}</div>
+          <div className="toolbar"><Button variant="outline" aria-label={`编辑${focused.name}`} onClick={() => { setFocusedId(undefined); edit(focused); }}><Pencil size={16} />编辑资产</Button><Button variant="ghost" aria-label={`删除${focused.name}`} onClick={() => { setFocusedId(undefined); setDeleting(focused); }}><Trash2 size={16} />删除资产</Button></div>
+        </div>
+      </div>
     </div></Modal>}
     <div className="toolbar"><Button variant="outline" onClick={() => navigate('script')}>返回剧本</Button><Button onClick={() => navigate('storyboard')}>下一步：分镜编排</Button></div>
+    <Modal open={importOpen} onClose={() => { setImportOpen(false); setImportPreview(undefined); }} title="批量导入资产" description="每行一条：类型：名称：描述。支持人物 / 场景 / 道具，先预览再写入。">
+      <div className="stack"><Field label="粘贴资产清单"><textarea rows={6} value={importText} placeholder={'人物：阿青：十六岁少年，黑短发，青色布衣\n场景：山门：黑色石阶，薄雾\n道具：断剑：红绳剑柄，斜断口'} onChange={e => { setImportText(e.target.value); setImportPreview(undefined); }} /></Field><Field label="或上传 UTF-8 的 .txt / .md（≤1MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={async e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; try { if (file.size > 1024 * 1024) throw new Error('清单文件请小于1MB。'); setImportText(await file.text()); setImportPreview(undefined); } catch (error) { toast.error(errorMessage(error)); } }} /></Field><div className="toolbar"><Button variant="secondary" onClick={parseAssetImport}>解析并预览</Button><Button variant="ghost" onClick={() => { setImportOpen(false); setImportPreview(undefined); }}>取消</Button></div>{importPreview && <div className="stack"><p className="small muted">共 {importPreview.assets.length} 项：新增 {importPreview.added}，沿用 {importPreview.reused}。</p><div className="stack">{importPreview.assets.map(asset => <div className="row between" key={asset.id}><span>{kinds.find(k => k.id === asset.kind)?.name}「{asset.name}」</span><StatusChip tone={project.assets.some(old => old.id === asset.id) ? 'neutral' : 'success'}>{project.assets.some(old => old.id === asset.id) ? '沿用' : '新增'}</StatusChip></div>)}</div><Button onClick={saveAssetImport}>确认导入</Button></div>}</div>
+    </Modal>
+    <Modal open={uploadOpen} onClose={() => { setUploadOpen(false); setUploadPlan(undefined); }} title="批量导入设定图" description="图片文件名需与资产名称一致（不含扩展名），按文件名匹配。先预览再写入。">
+      <div className="stack" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); planUpload([...e.dataTransfer.files].filter(file => file.type.startsWith('image/'))); }}><Field label="选择多张图片（可拖入；PNG / JPEG / WebP，≤5MB）"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => { planUpload([...(e.target.files || [])]); e.target.value = ''; }} /></Field>{uploadPlan && <div className="stack"><p className="small muted">匹配 {uploadPlan.matched.length} 张，未匹配 {uploadPlan.unmatched.length} 张。</p>{uploadPlan.matched.map(entry => <p key={entry.asset.id}>「{entry.asset.name}」← {entry.file.name}</p>)}{uploadPlan.unmatched.length > 0 && <p className="small muted">未匹配：{uploadPlan.unmatched.map(file => file.name).join('、')}</p>}{uploadPlan.matched.length > 0 && <Button onClick={() => void saveUploads()}>确认导入 {uploadPlan.matched.length} 张</Button>}</div>}</div>
+    </Modal>
     <Modal open={!!batch} onClose={() => { if (!batch?.running) setBatch(undefined); }} title="批量生成设定图" description="每张图独立提交，单张失败不影响其他。取消只停止等待，服务商可能已受理并计费。">
       {batch && <div className="stack">
         <ProgressPanel title={`生图并发 ${imageConcurrency(settings)}`} stage={batch.running ? '生成中' : '已结束'} startedAt={batch.startedAt} done={batchDone} total={batch.items.length} failed={batchFailedCount} detail="取消只停止等待，服务商可能已受理并计费。" onCancel={batch.running ? () => batchAbort.current?.abort() : undefined} cancelLabel="全部取消" />
