@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Sparkles, Volume2, ImagePlus, Copy } from 'lucide-react';
-import { Button, Empty, Field, Modal, copyText } from '../../components/Ui';
+import { Button, Empty, ErrorNote, Field, Modal, copyText, errorAction } from '../../components/Ui';
 import { uid, type Asset, type AssetKind, type PageProps } from '../../domain/types';
 import { getStudio, setSettings, updateProject, useStudio } from '../../store/studio';
 import { putMedia, useMediaUrl } from '../../store/media';
@@ -37,6 +37,7 @@ function AssetEditor({ project, navigate }: PageProps) {
   const [deleting, setDeleting] = useState<Asset>();
   const [removingImage, setRemovingImage] = useState<Asset>();
   const [pending, setPending] = useState<Pending>();
+  const [failure, setFailure] = useState<unknown>();
   const [busy, setBusy] = useState(false);
   const [voicesBusy, setVoicesBusy] = useState(false);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
@@ -80,6 +81,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     const provider = settings.imageProvider;
     if (!keys[provider]) { toast.error(`请先在设置页填写 ${provider === 'openai' ? 'OpenAI' : provider === 'seedream' ? 'Seedream（火山方舟）' : '硅基流动 SiliconFlow'} API Key。`); navigate('settings'); return; }
     if (!fixedDescription(asset).trim()) { toast.error('请先完善资产描述与固定短语。'); return; }
+    setFailure(undefined);
     setPending({ kind: 'image', asset: { ...asset }, revision: project.revision, prompt: imagePrompt(project, asset), provider, model: settings.models[provider] });
   };
   const loadVoices = async () => {
@@ -95,12 +97,14 @@ function AssetEditor({ project, navigate }: PageProps) {
   const prepareSpeech = (asset: Asset, local: boolean) => {
     if (!local && !keys.minimax) { toast.error('请配置 MiniMax API Key，或选择明确标注的本机试听。'); return; }
     if (!local && !asset.voiceId) { toast.error('请先编辑并保存音色ID。'); return; }
+    setFailure(undefined);
     setPending({ kind: 'speech', asset: { ...asset }, revision: project.revision, model: settings.speechModel, local });
   };
   const execute = async () => {
     if (!pending || busy) return;
     const task = pending;
     setBusy(true);
+    setFailure(undefined);
     try {
       current(task.revision, task.asset.id);
       if (task.kind === 'image') {
@@ -132,7 +136,7 @@ function AssetEditor({ project, navigate }: PageProps) {
         }
       }
       setPending(undefined);
-    } catch (error) { toast.error(errorMessage(error)); }
+    } catch (error) { setFailure(error); }
     finally { setBusy(false); }
   };
   const visible = project.assets.filter(a => a.kind === kind);
@@ -172,8 +176,8 @@ function AssetEditor({ project, navigate }: PageProps) {
     </Modal>
     <Modal open={!!deleting} onClose={() => setDeleting(undefined)} title={`删除「${deleting?.name || ''}」？`} description="会解除镜头资产、参考图、台词说话者和人物音色关联。台词文字保留，但需重新选择人物。此操作不能撤销。"><div className="stack"><p>引用位置：{deleting ? assetUsage(project, deleting.id).join('、') || '未被引用' : ''}</p><div className="toolbar"><Button onClick={() => { if (deleting) updateProject(project.id, p => removeAsset(p, deleting.id), true); setDeleting(undefined); }}>确认删除并解除关联</Button><Button variant="ghost" onClick={() => setDeleting(undefined)}>取消</Button></div></div></Modal>
     <Modal open={!!removingImage} onClose={() => setRemovingImage(undefined)} title="移除图片及引用？" description="保留资产文字设定，但解除所有镜头对此图片的参考附件关联。"><div className="toolbar"><Button onClick={() => { if (removingImage) updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: p.assets.map(a => a.id === removingImage.id ? { ...a, imageId: undefined } : a), shots: p.shots.map(s => ({ ...s, references: s.references.filter(r => r.assetId !== removingImage.id) })) }), true); setRemovingImage(undefined); }}>确认移除图片</Button><Button variant="ghost" onClick={() => setRemovingImage(undefined)}>取消</Button></div></Modal>
-    <Modal open={!!pending} onClose={() => { if (!busy) setPending(undefined); }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
-      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.provider === 'openai' ? 'OpenAI' : pending.provider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词"><textarea rows={12} readOnly value={pending.prompt} /></Field></> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button><Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
+    <Modal open={!!pending} onClose={() => { if (!busy) { setPending(undefined); setFailure(undefined); } }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
+      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.provider === 'openai' ? 'OpenAI' : pending.provider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词"><textarea rows={12} readOnly value={pending.prompt} /></Field></> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button><Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
     </Modal>
   </div>;
 }
