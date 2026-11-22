@@ -423,6 +423,39 @@ test("Seedream uses Ark PNG base64, 2K and exact default/catalog/custom model ID
     });
   }
 });
+test("SiliconFlow submits to the image endpoint and returns the CDN image as base64", async () => {
+  const pngBytes = Buffer.from(PNG, "base64");
+  for (const model of [undefined, "Kwai-Kolors/Kolors"]) {
+    const { handle, calls } = fixture([
+      Response.json({ images: [{ url: "https://cdn.siliconflow.cn/out.png?Expires=fixture" }] }),
+      new Response(pngBytes, { headers: { "Content-Type": "image/png" } }),
+    ]);
+    assert.deepEqual(await success(await handle(request("image", input("siliconflow", { prompt: "固定图片模板", model })))), { base64: PNG, mime: "image/png" });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, "https://api.siliconflow.cn/v1/images/generations");
+    assert.equal(calls[0].headers.get("authorization"), `Bearer ${KEY}`);
+    assert.equal(calls[0].headers.get("x-enable-watermark"), "0");
+    assert.deepEqual(calls[0].body, { model: model ?? "Kwai-Kolors/Kolors", prompt: "固定图片模板", negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊", image_size: "1024x1024", batch_size: 1, output_format: "png" });
+    assert.equal(calls[1].url, "https://cdn.siliconflow.cn/out.png?Expires=fixture");
+    assert.equal(calls[1].headers.get("authorization"), null);
+  }
+});
+test("SiliconFlow rejects unknown models and non-SiliconFlow or non-image URLs", async () => {
+  const { handle, calls } = fixture([]);
+  for (const model of ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev", "gpt-image-2.6-sunburst", "doubao-seedream-5-5-261028", "owner/model/path", "model with-space"]) {
+    await error(await handle(request("image", input("siliconflow", { prompt: "test", model }))), "invalid_model", 400);
+  }
+  assert.equal(calls.length, 0);
+  const { handle: handle2, calls: calls2 } = fixture([Response.json({ images: [{ url: "https://evil.example.com/out.png" }] })]);
+  await error(await handle2(request("image", input("siliconflow", { prompt: "test" }))), "media_unavailable", 502);
+  assert.equal(calls2.length, 1);
+  const { handle: handle3, calls: calls3 } = fixture([
+    Response.json({ images: [{ url: "https://cdn.siliconflow.cn/not-image.txt" }] }),
+    new Response("not an image", { headers: { "Content-Type": "text/plain" } }),
+  ]);
+  await error(await handle3(request("image", input("siliconflow", { prompt: "test" }))), "media_unavailable", 502);
+  assert.equal(calls3.length, 2);
+});
 test("image model is configurable and malformed/URL-only/non-PNG/multiple-image payloads are rejected without another fetch", async () => {
   const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
   await success(await handle(request("image", input("openai", { prompt: "test", model: "gpt-image-2.6-flare" }))));

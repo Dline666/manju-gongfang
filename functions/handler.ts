@@ -22,6 +22,7 @@ const ENDPOINTS = {
   deepseek: "https://api.deepseek.com/chat/completions",
   openai: "https://api.openai.com/v1/images/generations",
   seedream: "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+  siliconflow: "https://api.siliconflow.cn/v1/images/generations",
   voices: "https://api.minimax.cn/v1/get_voice",
   speech: "https://api.minimax.cn/v1/t2a_v2",
   seedance: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
@@ -159,6 +160,7 @@ function upstreamHttp(status: number, paid: boolean): Fault {
   if (status === 402) return new Fault("insufficient_balance", 402);
   if (status === 429) return new Fault("rate_limited", 429);
   if (status === 404) return new Fault("provider_not_found", 404);
+  if (status === 410) return new Fault("provider_not_found", 404);
   if (status === 408 || status >= 500) return new Fault(paid ? "submission_unknown" : "upstream_unavailable", 502);
   return new Fault("provider_rejected", 422);
 }
@@ -383,7 +385,7 @@ export function createHandler(dependencies: Dependencies = {}) {
   const timeouts = { body: 15_000, generation: 120_000, query: 20_000, media: 90_000, ...dependencies.timeouts };
 
   async function upstream(request: Request, url: string, key: string, options: {
-    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number;
+    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number; headers?: Record<string, string>;
   } = {}): Promise<ObjectValue> {
     const paid = options.paid === true;
     const scope = deadline(paid ? timeouts.generation : timeouts.query, request.signal,
@@ -394,7 +396,7 @@ export function createHandler(dependencies: Dependencies = {}) {
       response = await scope.run(fetcher(url, {
         method: options.body ? "POST" : "GET", redirect: "manual", credentials: "omit", cache: "no-store", signal: scope.signal,
         headers: { "Content-Type": "application/json", Accept: "application/json",
-          ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }) },
+          ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }), ...(options.headers ?? {}) },
         ...(options.body ? { body: JSON.stringify(options.body) } : {}),
       }));
       if (!response.ok) throw upstreamHttp(response.status, paid);
@@ -410,6 +412,35 @@ export function createHandler(dependencies: Dependencies = {}) {
       if (error instanceof Fault) throw error;
       // A POST may already have been charged. Never retry or switch providers here.
       throw new Fault(paid ? "submission_unknown" : "upstream_unavailable", paid ? 504 : 502);
+    } finally { cancelBody(response?.body ?? null); scope.dispose(); }
+  }
+
+  // SiliconFlow returns a temporary CDN URL (1h). Download it server-side so the
+  // frontend keeps the same { base64, mime } contract, with SSRF-safe host checks.
+  async function fetchImage(request: Request, url: string): Promise<{ base64: string; mime: string }> {
+    const scope = deadline(timeouts.media, request.signal, new Fault("media_unavailable", 502));
+    let response: Response | undefined;
+    try {
+      const target = publicUrl(url);
+      requireValue(target && (target.hostname === "siliconflow.cn" || target.hostname.endsWith(".siliconflow.cn")), "media_unavailable", 502);
+      requireValue(!request.signal.aborted, "request_aborted", 408);
+      response = await scope.run(fetcher(target.href, {
+        method: "GET", redirect: "manual", credentials: "omit", cache: "no-store", signal: scope.signal,
+        headers: { Accept: "image/png, image/jpeg" },
+      }));
+      requireValue(response.status === 200 && !response.redirected && response.body, "media_unavailable", 502);
+      const bytes = await readBytes(response.body, response.headers, LIMITS.image, scope, new Fault("media_unavailable", 502));
+      const png = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+      const jpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      requireValue(png || jpeg, "media_unavailable", 502);
+      let binary = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      return { base64: btoa(binary), mime: png ? "image/png" : "image/jpeg" };
+    } catch (error) {
+      scope.abort();
+      if (error instanceof Fault) throw error;
+      throw new Fault("media_unavailable", 502);
     } finally { cancelBody(response?.body ?? null); scope.dispose(); }
   }
 
@@ -560,6 +591,17 @@ export function createHandler(dependencies: Dependencies = {}) {
         return json(validate(generated));
       }
       if (action === "image") {
+        if (provider === "siliconflow") {
+          const data = await upstream(request, ENDPOINTS.siliconflow, key, { paid: true, headers: { "X-Enable-Watermark": "0" }, body: {
+            model: model(input.model, "Kwai-Kolors/Kolors", /^Kwai-Kolors\/Kolors$/),
+            prompt: text(input.prompt, 32_000, "invalid_prompt"),
+            negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊",
+            image_size: "1024x1024", batch_size: 1, output_format: "png",
+          }});
+          requireValue(Array.isArray(data.images) && data.images.length === 1, "invalid_upstream_response", 502);
+          const image = object(data.images[0], "invalid_upstream_response", 502);
+          return json(await fetchImage(request, text(image.url, 8192, "invalid_upstream_response", 502)));
+        }
         requireValue(provider === "openai" || provider === "seedream", "invalid_provider");
         const data = await upstream(request, ENDPOINTS[provider], key, { paid: true, max: LIMITS.image, body: provider === "seedream" ? {
           model: model(input.model, "doubao-seedream-5-5-261028", /^(?:doubao-seedream-|ep-)[A-Za-z0-9._-]+$/),

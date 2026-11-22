@@ -12,6 +12,9 @@ export const imageModelGroups: { provider: Settings['imageProvider']; label: str
     { id: 'doubao-seedream-5-0-pro-260628', name: 'Seedream 5.0 Pro', description: '精细画面创作' },
     { id: 'doubao-seedream-5-0-flash-260915', name: 'Seedream 5.0 Flash', description: '快速设定图草稿' },
   ] },
+  { provider: 'siliconflow', label: '硅基流动 SiliconFlow（免费）', models: [
+    { id: 'Kwai-Kolors/Kolors', name: 'Kolors', description: '免费 · 快手可图 · 默认' },
+  ] },
 ];
 
 export const videoModelGroups: { provider: Settings['videoProvider']; label: string; models: ModelOption[] }[] = [
