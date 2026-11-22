@@ -6,6 +6,7 @@ import { useStudio } from './store/studio';
 import ProjectsPage from './features/projects/ProjectsPage';
 import SettingsPage from './features/settings/SettingsPage';
 import { Button, Empty } from './components/Ui';
+import JobTray from './components/JobTray';
 import type { Stage } from './domain/types';
 const pages = {
   script: lazy(() => import('./features/script/ScriptPage')),
@@ -30,6 +31,6 @@ function Studio() {
       <div className="workspace-content">{state.storageError&&<div role="alert" className="alert">{state.storageError}</div>}{working&&project&&<><div className="project-heading"><button className="text-button muted row" onClick={()=>navigate('library')}><ArrowLeft size={15}/>返回作品库</button><span className="tag">{project.source==='template'?'模板演练 · 非 AI 生成':'独立作品'}</span></div><nav className="step-bar" aria-label="制作步骤">{navigation.slice(0,4).map((item,index)=><button className={`step ${currentStep===index?'current':''} ${currentStep>index?'past':''}`} key={item.id} onClick={()=>navigate(item.id)} aria-current={currentStep===index?'step':undefined}><span className="step-index">{currentStep>index?<Check size={14}/>:index+1}</span><span>{item.title}</span>{index<3&&<span className="step-line"/>}</button>)}</nav></>}
       {stage==='library'?<ProjectsPage navigate={navigate}/>:stage==='settings'?<SettingsPage/>:!project?<Empty title="先选择一个作品" text="每部作品都有独立的剧本、资产、镜头和成片。"><Button onClick={()=>navigate('library')}>返回作品库</Button></Empty>:Page&&<Suspense fallback={<div role="status" className="panel muted">正在载入创作工具…</div>}><Page key={project.id} project={project} navigate={navigate}/></Suspense>}
       <footer className="workspace-footer"><span>漫剧工坊 <span className="footer-divider">/</span> 让每个人都能讲好一个故事</span><span>灵感属于你，作品也是。</span></footer></div>
-    </main><Toaster theme="dark" position="top-center" richColors closeButton/></>;
+    </main><JobTray/><Toaster theme="dark" position="top-center" richColors closeButton/></>;
 }
 export default function App(){return <SidebarProvider style={{'--sidebar-width':'240px'} as CSSProperties}><Studio/></SidebarProvider>;}

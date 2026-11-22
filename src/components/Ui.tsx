@@ -1,12 +1,69 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { CircleHelp } from 'lucide-react';
 import { toast } from 'sonner';
-export { Button } from '@/components/ui/button';
+import { ApiError, errorMessage } from '../lib/api';
+export { Button };
 export function Modal({ open, onClose, title, description, children }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode }) {
   return <Dialog open={open} onOpenChange={value => { if (!value) onClose(); }}><DialogContent className="studio-dialog"><DialogTitle>{title}</DialogTitle><DialogDescription>{description || '确认后保存，关闭不会提交更改。'}</DialogDescription>{children}</DialogContent></Dialog>;
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="field"><span>{label}</span>{children}{hint && <small className="muted">{hint}</small>}</label>; }
 export function Empty({ title, text, children }: { title: string; text: string; children?: ReactNode }) { return <div className="empty"><div className="empty-symbol">◇</div><h3>{title}</h3><p className="muted">{text}</p>{children}</div>; }
+
+// 标题旁的「?」：把说明收进气泡，不占创作区。
+export function HelpPopover({ title, children, label = '查看说明' }: { title?: string; children: ReactNode; label?: string }) {
+  return <Popover><PopoverTrigger asChild><button type="button" className="icon-button" aria-label={label}><CircleHelp size={16} /></button></PopoverTrigger><PopoverContent align="start" sideOffset={6} className="w-80 text-[12px] leading-relaxed">{title && <h3 className="mb-2 text-[13px] font-semibold">{title}</h3>}<div className="muted">{children}</div></PopoverContent></Popover>;
+}
+
+export type StatusTone = 'neutral' | 'running' | 'success' | 'warning' | 'danger';
+const statusTones: Record<StatusTone, string> = {
+  neutral: '',
+  running: 'border-[#286058] bg-[#22cbb810] text-[#6fd8c8]',
+  success: 'success',
+  warning: 'border-[#6b5430] bg-[#bc9c6314] text-[#d8b26a]',
+  danger: 'border-[#7c3a41] bg-[#dc546114] text-[#e88b93]',
+};
+export function StatusChip({ tone = 'neutral', children }: { tone?: StatusTone; children: ReactNode }) {
+  return <span className={`tag ${statusTones[tone]}`.trim()}>{children}</span>;
+}
+
+// 失败提示：message 保持原文，下面补一句只读 hint，右侧放动作按钮。
+export function ErrorNote({ error, hint, action }: { error: unknown; hint?: string; action?: ReactNode }) {
+  const detail = hint ?? (error instanceof ApiError ? error.hint : undefined);
+  return <div role="alert" className="alert flex items-start justify-between gap-3 text-[12px]"><div className="min-w-0"><p>{errorMessage(error)}</p>{detail && <small className="mt-1 block opacity-80">{detail}</small>}</div>{action && <div className="shrink-0">{action}</div>}</div>;
+}
+
+export function formatElapsed(milliseconds: number) {
+  const total = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes ? `${minutes}:${String(seconds).padStart(2, '0')}` : `${seconds}s`;
+}
+// 阶段 + 已用时 + 进度 + 取消；total 未知时显示不确定进度条。
+export function ProgressPanel({ title, stage, detail, startedAt, done, total, remainingMs, error, onCancel, cancelLabel = '取消等待', active }: {
+  title?: string; stage?: string; detail?: string; startedAt?: number;
+  done?: number; total?: number; remainingMs?: number;
+  error?: ReactNode; onCancel?: () => void; cancelLabel?: string; active?: number;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt === undefined) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const elapsed = startedAt === undefined ? undefined : Math.max(0, now - startedAt);
+  const known = typeof total === 'number' && total > 0 && typeof done === 'number';
+  const percent = known ? Math.min(100, Math.round(((done ?? 0) / (total ?? 1)) * 100)) : 0;
+  return <div role="status" className="panel flex flex-col gap-2 text-[12px]">
+    <div className="row between gap-3"><div className="min-w-0">{title && <strong className="block text-[13px]">{title}</strong>}{stage && <span className="muted">{stage}</span>}{elapsed !== undefined && <span className="muted"> · 已用 {formatElapsed(elapsed)}</span>}</div>{onCancel && <Button variant="outline" size="sm" onClick={onCancel}>{cancelLabel}</Button>}</div>
+    <div className="progress-track"><span className={known ? undefined : 'animate-pulse'} style={{ width: known ? `${percent}%` : '38%' }} /></div>
+    <div className="row between gap-3 muted"><span>{known ? `已完成 ${done} / ${total}` : detail}</span><span>{remainingMs !== undefined ? `预计剩余 ${formatElapsed(remainingMs)}` : active ? `${active} 项进行中` : ''}</span></div>
+    {known && detail && <span className="muted">{detail}</span>}
+    {error}
+  </div>;
+}
 export async function copyText(text: string) { try { await navigator.clipboard.writeText(text); toast.success('已复制，可以直接粘贴使用'); } catch { toast.error('浏览器未允许复制，请选择文本手动复制。'); } }
 async function clipboardPng(blob: Blob): Promise<Blob> {
   const image = await createImageBitmap(blob);
