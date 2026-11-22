@@ -434,6 +434,7 @@ test("SiliconFlow submits to the image endpoint and returns the CDN image as bas
     assert.equal(calls.length, 2);
     assert.equal(calls[0].url, "https://api.siliconflow.cn/v1/images/generations");
     assert.equal(calls[0].headers.get("authorization"), `Bearer ${KEY}`);
+    assert.equal(calls[0].headers.get("x-enable-watermark"), "0");
     assert.deepEqual(calls[0].body, { model: model ?? "Kwai-Kolors/Kolors", prompt: "固定图片模板", negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊", image_size: "1024x1024", batch_size: 1, output_format: "png" });
     assert.equal(calls[1].url, "https://cdn.siliconflow.cn/out.png?Expires=fixture");
     assert.equal(calls[1].headers.get("authorization"), null);

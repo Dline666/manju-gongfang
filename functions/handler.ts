@@ -385,7 +385,7 @@ export function createHandler(dependencies: Dependencies = {}) {
   const timeouts = { body: 15_000, generation: 120_000, query: 20_000, media: 90_000, ...dependencies.timeouts };
 
   async function upstream(request: Request, url: string, key: string, options: {
-    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number;
+    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number; headers?: Record<string, string>;
   } = {}): Promise<ObjectValue> {
     const paid = options.paid === true;
     const scope = deadline(paid ? timeouts.generation : timeouts.query, request.signal,
@@ -396,7 +396,7 @@ export function createHandler(dependencies: Dependencies = {}) {
       response = await scope.run(fetcher(url, {
         method: options.body ? "POST" : "GET", redirect: "manual", credentials: "omit", cache: "no-store", signal: scope.signal,
         headers: { "Content-Type": "application/json", Accept: "application/json",
-          ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }) },
+          ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }), ...(options.headers ?? {}) },
         ...(options.body ? { body: JSON.stringify(options.body) } : {}),
       }));
       if (!response.ok) throw upstreamHttp(response.status, paid);
@@ -592,7 +592,7 @@ export function createHandler(dependencies: Dependencies = {}) {
       }
       if (action === "image") {
         if (provider === "siliconflow") {
-          const data = await upstream(request, ENDPOINTS.siliconflow, key, { paid: true, body: {
+          const data = await upstream(request, ENDPOINTS.siliconflow, key, { paid: true, headers: { "X-Enable-Watermark": "0" }, body: {
             model: model(input.model, "Kwai-Kolors/Kolors", /^Kwai-Kolors\/Kolors$/),
             prompt: text(input.prompt, 32_000, "invalid_prompt"),
             negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊",
