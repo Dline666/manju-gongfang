@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Archive, Download, Film, RefreshCw, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PageProps } from '../../domain/types';
-import { Button, Empty, Modal, downloadBlob } from '../../components/Ui';
+import { Button, Empty, HelpPopover, Modal, downloadBlob } from '../../components/Ui';
 import { errorMessage } from '../../lib/api';
 import { inspectProject, type MediaReport } from '../../lib/media/inputs';
 import { buildMaterialZip } from '../../lib/media/archive';
@@ -80,7 +80,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
     <header className="page-heading"><div><h1>预览与导出</h1><p className="muted">十镜同一时间轴 · 90 秒 · 720 × 1280 · 24 fps · H.264 / AAC</p></div><Button variant="outline" disabled={!!job} onClick={() => navigate('generation')}>返回生成 / 重新导入</Button></header>
     <section className="panel stack">
       <div className="section-title"><h2>当前媒体检查</h2><span className="tag">{readyCount} / {project.shots.length} 镜通过素材检查</span></div>
-      <p className="muted">视频仅在内存中保留，刷新后本地视频需重新导入。不会把视频写入 IndexedDB 或 localStorage；空文件、缺失配音、过期素材不能算就绪。</p>
+      <div className="row between wrap"><span className="small muted">视频仅在内存中保留，刷新后本地视频需重新导入。</span><HelpPopover title="素材检查说明">不会把视频写入 IndexedDB 或 localStorage；空文件、缺失配音、过期素材不能算就绪。</HelpPopover></div>
       <div className="toolbar"><Button variant="outline" disabled={disabled} onClick={() => setReload(value => value + 1)}><RefreshCw size={16} />重新检查素材</Button>{checking && <span role="status">{checkMessage}</span>}</div>
       {report?.issues.map(issue => <p key={issue} className="alert">{issue}</p>)}
       <div className="grid-2">{(report?.shots ?? project.shots.map(shot => ({ shot, issues: [] }))).map(item => <article className="panel stack" key={item.shot.id}>
@@ -93,16 +93,13 @@ export default function ExportPage({ project, navigate }: PageProps) {
     </section>
     {report && <TimelinePreview report={report} />}
     <section className="panel stack">
-      <h2>导出文件</h2>
-      <div className="alert"><strong>画面与音频处理规则</strong><ul><li>画面等比例缩放、黑边填充，不拉伸。长视频只取前「镜头时长」秒；短视频用最后一帧补足。</li><li>原声模式保留视频原声；替换配音模式彻底移除原声，使用独立配音；无台词可选静音。短音频用静音补齐。</li><li>配音超时会阻止导出，不裁剪对白。请返回生成页修改台词或调整语速后重试。原声随视频时长截取。</li><li>逐镜处理以降低内存占用，但浏览器仍需容纳源素材、中间片段及最终文件；生成期间请勿刷新或切页。</li></ul></div>
+      <div className="section-title"><div className="row"><h2>导出文件</h2><HelpPopover title="导出说明"><p>ZIP 保留原始逐镜视频、所有已关联配音与参考图、SRT、五份文档和不含密钥的 manifest.json；缺任何已关联素材均阻止完整包。不是剪映专有工程。字幕按对白均分估算，不烧录进 MP4，需手工校对。</p><p className="mt-2">MP4 生成还会由 FFmpeg 检查真实音视频轨道；“素材可读”不代表编码已成功。只显示当前实际阶段，不提供推测的总体百分比。</p><p className="mt-2">编码组件：ffmpeg.wasm wrapper（MIT）与单线程 core（GPL-2.0-or-later）。<a href={`${import.meta.env.BASE_URL}ffmpeg/SOURCE-AND-LICENSE.txt`} target="_blank" rel="noreferrer">许可证与源码获取说明</a></p></HelpPopover></div></div>
+      <details className="alert"><summary><strong>画面与音频处理规则</strong></summary><ul><li>画面等比例缩放、黑边填充，不拉伸。长视频只取前「镜头时长」秒；短视频用最后一帧补足。</li><li>原声模式保留视频原声；替换配音模式彻底移除原声，使用独立配音；无台词可选静音。短音频用静音补齐。</li><li>配音超时会阻止导出，不裁剪对白。请返回生成页修改台词或调整语速后重试。原声随视频时长截取。</li><li>逐镜处理以降低内存占用，但浏览器仍需容纳源素材、中间片段及最终文件；生成期间请勿刷新或切页。</li></ul></details>
       <div className="toolbar">
         <Button disabled={disabled || !report?.ready} onClick={() => { setAccepted(false); setConfirm(true); }}><Film size={16} />生成真实 MP4</Button>
         <Button variant="outline" disabled={disabled || !report?.ready} onClick={() => { void start('zip'); }}><Archive size={16} />生成完整素材 ZIP</Button>
         {job && <Button variant="outline" onClick={() => task.current?.abort()}><X size={16} />取消{job === 'mp4' ? '编码' : '打包'}</Button>}
       </div>
-      <p className="muted">ZIP 保留原始逐镜视频、所有已关联配音与参考图、SRT、五份文档和不含密钥的 manifest.json；缺任何已关联素材均阻止完整包。不是剪映专有工程。字幕按对白均分估算，不烧录进 MP4，需手工校对。</p>
-      <p className="muted">MP4 生成还会由 FFmpeg 检查真实音视频轨道；“素材可读”不代表编码已成功。只显示当前实际阶段，不提供推测的总体百分比。</p>
-      <p className="muted">编码组件：ffmpeg.wasm wrapper（MIT）与单线程 core（GPL-2.0-or-later）。<a href={`${import.meta.env.BASE_URL}ffmpeg/SOURCE-AND-LICENSE.txt`} target="_blank" rel="noreferrer">许可证与源码获取说明</a></p>
       {progress && <div role="status" aria-live="polite" className="panel"><strong>{progress.message}</strong>{'encodedSeconds' in progress && typeof progress.encodedSeconds === 'number' && <p className="muted">FFmpeg 报告当前镜输出时间：{progress.encodedSeconds.toFixed(2)} 秒（非整体进度）</p>}</div>}
       {error && <pre role="alert" className="alert" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{error}</pre>}
       {zip && <div className="row"><span>完整素材包已生成 · {(zip.size / 1024 / 1024).toFixed(1)} MB</span><Button variant="outline" onClick={() => downloadBlob(zip, `${safeFilename(project.name)}-素材包.zip`)}><Download size={16} />下载 ZIP</Button></div>}

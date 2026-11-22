@@ -11,6 +11,18 @@ export function Modal({ open, onClose, title, description, children }: { open: b
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="field"><span>{label}</span>{children}{hint && <small className="muted">{hint}</small>}</label>; }
 export function Empty({ title, text, children }: { title: string; text: string; children?: ReactNode }) { return <div className="empty"><div className="empty-symbol">◇</div><h3>{title}</h3><p className="muted">{text}</p>{children}</div>; }
+// 校验问题：带「第N镜：」前缀的项可点击，滚动并高亮对应镜头。
+export function IssueList({ issues }: { issues: string[] }) {
+  function jump(issue: string) {
+    const number = issue.match(/^第(\d+)镜/)?.[1];
+    const target = number ? document.getElementById(`shot-${number}`) : null;
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('shot-flash');
+    window.setTimeout(() => target.classList.remove('shot-flash'), 1600);
+  }
+  return <ul className="issue-list">{issues.map((issue, index) => /^第\d+镜/.test(issue) ? <li key={index}><button type="button" className="text-button" onClick={() => jump(issue)}>{issue}</button></li> : <li key={index}>{issue}</li>)}</ul>;
+}
 
 // 标题旁的「?」：把说明收进气泡，不占创作区。
 export function HelpPopover({ title, children, label = '查看说明' }: { title?: string; children: ReactNode; label?: string }) {
