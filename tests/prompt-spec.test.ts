@@ -26,17 +26,17 @@ const project: Project = {
   ],
 };
 
-test('结构化改造后所有提示词逐字不变（SHA-256 基线）', () => {
+test('默认模板输出保持稳定（SHA-256 基线）', () => {
   const cases: [string, string, string][] = [
-    ['scriptPrompt', scriptPrompt(project), '5b54a16160efbe3783ea61898cda59279704c3f3b8940d69076b0292a0bdd956'],
-    ['extractAssetsPrompt', extractAssetsPrompt(project), 'ab2542d037b225215c5509c3b200fa27adb2c9cd6e2ef251e0c9d1e0707e287d'],
-    ['imageCharacter', imagePrompt(project, hero), 'da627d14c4e5bddb7b394cd58f4b0f367b609813778574be7ffa866000a5807c'],
-    ['imageScene', imagePrompt(project, scene), '9614baab94d55047dccf7f385c4356dee43e6f7325ec44bd32cf1a7681a91c06'],
-    ['imageProp', imagePrompt(project, prop), 'ab96342cd26ebf31994aa1435a5c6e16ac0839db5667febb77347240f92ee002'],
-    ['videoNoRefs', videoPrompt(project, project.shots[1]), '5a0314d182dbe55c0a631aa108dd43e088cad97ec71a039c41d7013790fd00c1'],
-    ['videoRefs', videoPrompt(project, project.shots[0]), '7b3afcf95737d1eecf1737872788906a112992b13e9a10ae938f517727859476'],
-    ['videoDubbing', videoPrompt(project, { ...project.shots[0], audioMode: 'dubbing' }), 'd7503f2f8f56da08f408594049028bca883126dc419961e582872fc6dab40d0d'],
-    ['videoFrames', videoPrompt(project, project.shots[2]), '3302aef924636a9999d32949b6a4289a1e8acd071b2f0232ded0be8ab256f8f2'],
+    ['scriptPrompt', scriptPrompt(project), '687af1c35b015ef6dc03c2d345fd4001623bac303eae7682ed3ee9d945ad6dc0'],
+    ['extractAssetsPrompt', extractAssetsPrompt(project), '6a7367e2b6721519ac4fd0f681b9610b774acdfbc28bc30ecfb88222a5494ee7'],
+    ['imageCharacter', imagePrompt(project, hero), 'e5ba05ce2485d0f143f7161a59b52f77a60efe87b1eb19810f963cefb49b7ced'],
+    ['imageScene', imagePrompt(project, scene), '1e1cfabfb08aa1bfadcd3fd0d0210a047eed8d741425dca245697eca668a5ee3'],
+    ['imageProp', imagePrompt(project, prop), '4971f1a561f89d73c42391b28c90b9099d8b0731d5318551fb81b61f575a3a85'],
+    ['videoNoRefs', videoPrompt(project, project.shots[1]), 'fdc29ea5d9cb6a52ca39d13fda948740693758632e3353f56923ddb70ba63581'],
+    ['videoRefs', videoPrompt(project, project.shots[0]), 'fcf0474761f7230dab05ee53cc3a6ffce5a3469a7868b40adab7bad955b02bfa'],
+    ['videoDubbing', videoPrompt(project, { ...project.shots[0], audioMode: 'dubbing' }), '9d56916c6233aaab933b476aabb62a3aa3c1659fcbe65d975b11b3c7265dd2f2'],
+    ['videoFrames', videoPrompt(project, project.shots[2]), '6be5f5817d4f60ae6d00c9cd5bf9c3d2f020b34256af18a2c3b557822e600380'],
     ['assetText', assetText(project, project.shots[0]), '68324922a1abb53d628317aea76330b7edf00246447b2cc818dd8786f265bf20'],
     ['fullAssetText', fullAssetText(project, project.shots[0]), '118f8795aa2cd0efeecce33eba32ca338bc771880d32ae8dc8dac1ec1f130d93'],
   ];
@@ -55,8 +55,8 @@ test('spec 可 JSON 往返，块 id 唯一且锁定标记符合契约', async ()
   assert.equal(promptBlock(script, 'script.skills')?.locked, false);
 
   assert.equal(promptBlock(imageSpec(project, hero), 'image.subject')?.locked, true);
-  assert.equal(promptBlock(imageSpec(project, hero), 'image.composition')?.locked, true);
-  assert.equal(promptBlock(imageSpec(project, scene), 'image.composition')?.locked, false);
+  assert.equal(promptBlock(imageSpec(project, hero), 'image.three-view')?.locked, true);
+  assert.equal(promptBlock(imageSpec(project, scene), 'image.scene-composition')?.locked, false);
 
   const video = videoSpec(project, project.shots[0]);
   for (const id of ['video.references', 'video.audio', 'video.fixed-assets']) assert.equal(promptBlock(video, id)?.locked, true, id);

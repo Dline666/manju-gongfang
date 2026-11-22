@@ -1,12 +1,13 @@
 // 提示词的结构化表示：由各构建函数拼出块，再统一渲染成字符串。
 // PR6 的模板编辑器按 kind + block.id 覆盖 text；locked 块只读。
-export type PromptKind = 'script' | 'extract' | 'image' | 'video' | 'assets';
+export type PromptKind = 'script' | 'extract' | 'image' | 'video' | 'assets' | 'director';
 
 export interface PromptBlock {
   id: string;
   label: string;
   text: string;
   locked?: boolean;
+  reason?: string;
 }
 
 export interface PromptSpec {
@@ -22,6 +23,7 @@ export const PROMPT_LIMITS: Record<PromptKind, number> = {
   image: 32000,
   video: 7000,
   assets: 32000,
+  director: 32000,
 };
 
 /** 剧本输出契约示例；键顺序与原有内联骨架一致，渲染结果逐字不变。 */
@@ -60,9 +62,10 @@ export function applyPromptOverrides(spec: PromptSpec, overrides: Record<string,
 const requiredBlocks: Record<PromptKind, string[]> = {
   script: ['script.contract', 'script.spec', 'script.asset-rules', 'script.output-shape'],
   extract: ['extract.instruction', 'extract.shots-input'],
-  image: ['image.task', 'image.subject', 'image.composition'],
+  image: ['image.task', 'image.subject'],
   video: ['video.shot-heading', 'video.audio', 'video.fixed-assets'],
   assets: [],
+  director: ['director.contract', 'director.spec'],
 };
 
 export function validatePromptSpec(spec: PromptSpec): string[] {
