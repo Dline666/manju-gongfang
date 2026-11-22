@@ -1,5 +1,10 @@
 import type { Settings } from '../domain/types';
 
+/** 生图并发：设置优先；SiliconFlow 免费渠道默认 2，其余默认 3。 */
+export function imageConcurrency(settings: Settings): number {
+  return settings.imageConcurrency ?? (settings.imageProvider === 'siliconflow' ? 2 : 3);
+}
+
 type ModelOption = { id: string; name: string; description: string };
 
 export const imageModelGroups: { provider: Settings['imageProvider']; label: string; models: ModelOption[] }[] = [

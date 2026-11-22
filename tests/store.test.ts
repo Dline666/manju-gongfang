@@ -132,3 +132,26 @@ test('API outcomes update channel status without retrying or leaking provider er
     assert.equal(store.getStudio().providerStatus.openai, undefined);
   } finally { globalThis.fetch = originalFetch; store.clearKeys(); }
 });
+
+test('scoped invalidation only marks listed shots; setAssetImage marks only related shots', () => {
+  const p = store.createProject('范围失效');
+  const a1 = uid(); const a2 = uid();
+  const video = { origin: 'upload' as const, name: 'v.mp4', duration: 9 };
+  const assets = [
+    { id: a1, kind: 'character' as const, name: '甲', description: '', lock: '' },
+    { id: a2, kind: 'scene' as const, name: '乙', description: '', lock: '' },
+  ];
+  store.updateProject(p.id, { assets, shots: [
+    { ...makeShot(1), id: 'shot-a', assetIds: [a1], video },
+    { ...makeShot(2), id: 'shot-b', assetIds: [a1], video },
+    { ...makeShot(3), id: 'shot-c', assetIds: [a2], video },
+  ] });
+  store.updateProject(p.id, {}, { only: ['shot-b'] });
+  let shots = store.getStudio().projects.find(item => item.id === p.id)!.shots;
+  assert.deepEqual(shots.map(shot => !!shot.stale), [false, true, false]);
+
+  store.setAssetImage(p.id, a1, 'image-1');
+  const project = store.getStudio().projects.find(item => item.id === p.id)!;
+  assert.equal(project.assets.find(asset => asset.id === a1)!.imageId, 'image-1');
+  assert.deepEqual(project.shots.map(shot => !!shot.stale), [true, true, false], 'only shots using the asset are stale');
+});

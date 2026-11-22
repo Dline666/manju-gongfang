@@ -50,10 +50,12 @@ const ACTION_FIELDS: Record<string, readonly string[]> = {
 class Fault extends Error {
   code: string;
   status: number;
-  constructor(code: string, status = 400) {
+  retryAfter?: string;
+  constructor(code: string, status = 400, retryAfter?: string) {
     super(code);
     this.code = code;
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 function requireValue(condition: unknown, code = "invalid_input", status = 400): asserts condition {
@@ -85,7 +87,7 @@ function failure(error: unknown): Response {
   const fault = error instanceof Fault ? error : new Fault("internal_error", 500);
   return Response.json({ ok: false, error: fault.code }, {
     status: fault.status,
-    headers: { ...HEADERS, ...(fault.status === 405 ? { Allow: "GET, POST" } : {}) },
+    headers: { ...HEADERS, ...(fault.status === 405 ? { Allow: "GET, POST" } : {}), ...(fault.retryAfter ? { "Retry-After": fault.retryAfter } : {}) },
   });
 }
 function cancelBody(body: ReadableStream<Uint8Array> | null): void {
@@ -154,11 +156,11 @@ function parseJson(bytes: Uint8Array, code: string, status: number): unknown {
   try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
   catch { throw new Fault(code, status); }
 }
-function upstreamHttp(status: number, paid: boolean): Fault {
+function upstreamHttp(status: number, paid: boolean, retryAfter?: string): Fault {
   if (status === 401) return new Fault("provider_auth_failed", 401);
   if (status === 403) return new Fault("provider_forbidden", 403);
   if (status === 402) return new Fault("insufficient_balance", 402);
-  if (status === 429) return new Fault("rate_limited", 429);
+  if (status === 429) return new Fault("rate_limited", 429, retryAfter);
   if (status === 404) return new Fault("provider_not_found", 404);
   if (status === 410) return new Fault("provider_not_found", 404);
   if (status === 408 || status >= 500) return new Fault(paid ? "submission_unknown" : "upstream_unavailable", 502);
@@ -399,7 +401,7 @@ export function createHandler(dependencies: Dependencies = {}) {
           ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }), ...(options.headers ?? {}) },
         ...(options.body ? { body: JSON.stringify(options.body) } : {}),
       }));
-      if (!response.ok) throw upstreamHttp(response.status, paid);
+      if (!response.ok) throw upstreamHttp(response.status, paid, response.headers.get("retry-after") ?? undefined);
       requireValue(!response.redirected, "invalid_upstream_response", 502);
       const bytes = await readBytes(response.body, response.headers, options.max ?? LIMITS.json, scope, new Fault("upstream_too_large", 502));
       const data = object(parseJson(bytes, "invalid_upstream_response", 502), "invalid_upstream_response", 502);

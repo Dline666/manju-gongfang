@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Plus, Pencil, Trash2, Sparkles, Volume2, ImagePlus, Copy } from 'lucide-react';
-import { Button, Empty, ErrorNote, Field, HelpPopover, Modal, ProgressPanel, copyText, errorAction } from '../../components/Ui';
+import { Button, Empty, ErrorNote, Field, HelpPopover, Modal, ProgressPanel, StatusChip, copyText, errorAction, formatElapsed } from '../../components/Ui';
 import { uid, type Asset, type AssetKind, type PageProps } from '../../domain/types';
-import { getStudio, setSettings, updateProject, useStudio } from '../../store/studio';
+import { getStudio, setAssetImage, setSettings, updateProject, useStudio } from '../../store/studio';
 import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
 import { putMedia, useMediaUrl } from '../../store/media';
 import { ApiError, callApi, callBinary, credentials, errorMessage } from '../../lib/api';
 import { fixedDescription, imagePrompt } from '../../lib/prompts';
-import { imageModelGroups } from '../../lib/models';
+import { imageConcurrency, imageModelGroups } from '../../lib/models';
+import { runPool } from '../../lib/pool';
 import { assetUsage, generatedImageBlob, removeAsset, validateImage } from './helpers';
 
 const kinds: { id: AssetKind; name: string; text: string }[] = [
@@ -19,6 +20,19 @@ const kinds: { id: AssetKind; name: string; text: string }[] = [
 ];
 type Pending = { kind: 'image'; asset: Asset; revision: number; prompt: string; provider: 'openai' | 'seedream' | 'siliconflow'; model: string } | { kind: 'speech'; asset: Asset; revision: number; model: string; local: boolean };
 type Preview = { mediaId: string; text: string };
+type BatchStatus = 'queued' | 'running' | 'done' | 'failed' | 'canceled' | 'not_submitted';
+type BatchItem = { id: string; name: string; status: BatchStatus; error?: unknown; startedAt?: number; finishedAt?: number };
+type BatchState = { items: BatchItem[]; startedAt: number; running: boolean };
+
+const batchLabels: Record<BatchStatus, string> = { queued: '排队中', running: '生成中', done: '已完成', failed: '失败', canceled: '已取消', not_submitted: '未提交' };
+const batchTones = { queued: 'neutral', running: 'running', done: 'success', failed: 'danger', canceled: 'neutral', not_submitted: 'warning' } as const;
+function fixedHash(value: string) { let hash = 5381; for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) + hash + value.charCodeAt(index)) >>> 0; return String(hash); }
+function Elapsed({ since }: { since?: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => { if (since === undefined) return; const timer = window.setInterval(() => setTick(value => value + 1), 1000); return () => window.clearInterval(timer); }, [since]);
+  if (since === undefined) return null;
+  return <span className="small muted">已用 {formatElapsed(Date.now() - since)}</span>;
+}
 
 function AssetImage({ asset, detail = false }: { asset: Asset; detail?: boolean }) {
   const url = useMediaUrl(asset.imageId);
@@ -41,6 +55,8 @@ function AssetEditor({ project, navigate }: PageProps) {
   const [failure, setFailure] = useState<unknown>();
   const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
   const abortRef = useRef<AbortController | undefined>(undefined);
+  const [batch, setBatch] = useState<BatchState>();
+  const batchAbort = useRef<AbortController | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [voicesBusy, setVoicesBusy] = useState(false);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
@@ -156,6 +172,49 @@ function AssetEditor({ project, navigate }: PageProps) {
     }
     finally { setBusy(false); abortRef.current = undefined; }
   };
+  const executeBatch = async (assets: Asset[]) => {
+    if (!assets.length || batch?.running) return;
+    const provider = settings.imageProvider;
+    if (!keys[provider]) { toast.error(`请先在设置页填写 ${provider === 'openai' ? 'OpenAI' : provider === 'seedream' ? 'Seedream（火山方舟）' : '硅基流动 SiliconFlow'} API Key。`); navigate('settings'); return; }
+    const model = settings.models[provider]; const concurrency = imageConcurrency(settings);
+    const prepared = assets.map(asset => ({ id: asset.id, name: asset.name, prompt: imagePrompt(project, asset), hash: fixedHash(fixedDescription(asset)) }));
+    if (prepared.some(item => !item.prompt.trim())) { toast.error('请先完善资产描述与固定短语。'); return; }
+    const controller = new AbortController(); batchAbort.current = controller;
+    const jobId = startJob({ kind: 'image', label: `批量生成 ${prepared.length} 张设定图`, cancel: () => controller.abort() });
+    setBatch({ items: prepared.map(item => ({ id: item.id, name: item.name, status: 'queued' })), startedAt: Date.now(), running: true });
+    const mark = (id: string, patch: Partial<BatchItem>) => setBatch(previous => previous && { ...previous, items: previous.items.map(entry => entry.id === id ? { ...entry, ...patch } : entry) });
+    try {
+      const results = await runPool(prepared, async item => {
+        mark(item.id, { status: 'running', startedAt: Date.now() });
+        const live = getStudio().projects.find(p => p.id === project.id);
+        const asset = live?.assets.find(a => a.id === item.id);
+        if (!live || !asset) throw new Error('资产已删除，本次不生成。');
+        if (fixedHash(fixedDescription(asset)) !== item.hash) throw new Error('固定短语已修改，请重新确认。');
+        if (getStudio().settings.imageProvider !== provider || getStudio().settings.models[provider] !== model) throw new Error('图片模型设置已改变，请重新确认。');
+        const result = await callApi<{ base64: string; mime: string }>('image', { ...credentials(provider), prompt: item.prompt }, controller.signal);
+        const after = getStudio().projects.find(p => p.id === project.id);
+        const still = after?.assets.find(a => a.id === item.id);
+        if (!after || !still || fixedHash(fixedDescription(still)) !== item.hash) throw new Error('资产或固定短语已修改，本次结果未写入。');
+        const blob = await generatedImageBlob(result);
+        const imageId = await putMedia(blob);
+        setAssetImage(project.id, item.id, imageId);
+        mark(item.id, { status: 'done', finishedAt: Date.now() });
+      }, { concurrency, signal: controller.signal });
+      const byId = new Map(results.map(result => [result.item.id, result]));
+      setBatch(previous => previous && { ...previous, running: false, items: previous.items.map(entry => { const result = byId.get(entry.id); return result ? { ...entry, status: result.status, error: result.error, finishedAt: Date.now() } : entry; }) });
+      const failedCount = results.filter(result => result.status === 'failed').length;
+      const doneCount = results.filter(result => result.status === 'done').length;
+      finishJob(jobId, failedCount ? 'failed' : results.some(result => result.status === 'canceled' || result.status === 'not_submitted') ? 'canceled' : 'done');
+      if (failedCount) toast.error(`成功 ${doneCount} 张 / 失败 ${failedCount} 张`);
+      else if (doneCount) toast.success(`已生成 ${doneCount} 张设定图。`);
+    } catch (error) {
+      setBatch(previous => previous && { ...previous, running: false });
+      finishJob(jobId, 'failed');
+      toast.error(errorMessage(error));
+    } finally {
+      batchAbort.current = undefined;
+    }
+  };
   const visible = project.assets.filter(a => a.kind === kind);
   const imageSamples = durationSamples('image');
   const imageAverage = averageDuration('image');
@@ -163,10 +222,15 @@ function AssetEditor({ project, navigate }: PageProps) {
   const speechSamples = durationSamples('speech');
   const speechAverage = averageDuration('speech');
   const speechRemaining = speechSamples >= 2 && speechAverage ? Math.max(5000, Math.round(speechAverage / 5000) * 5000) : undefined;
+  const missing = visible.filter(asset => !asset.imageId);
+  const batchDone = batch?.items.filter(item => item.status === 'done').length ?? 0;
+  const batchFailedCount = batch?.items.filter(item => item.status === 'failed').length ?? 0;
+  const batchFailed = batch?.items.filter(item => item.status === 'failed').map(item => project.assets.find(asset => asset.id === item.id)).filter((asset): asset is Asset => !!asset) ?? [];
   return <div className="stack">
     <header className="page-heading"><div><span className="tag">02 / 资产设定</span><h1>让故事，有自己的面孔</h1><p className="muted">固定人物、场景和道具描述，再为每个角色找到声音。</p></div><Button onClick={() => edit()}><Plus size={16} />新建{kinds.find(k => k.id === kind)?.name}</Button></header>
     <div className="toolbar" role="tablist" aria-label="资产类别">{kinds.map(k => <Button key={k.id} role="tab" aria-selected={kind === k.id} variant={kind === k.id ? 'default' : 'secondary'} onClick={() => setKind(k.id)}>{k.name} <span>{project.assets.filter(a => a.kind === k.id).length}</span></Button>)}</div>
     {kind !== 'voice' && <div className="panel stack"><Field label="生图模型" hint="选择的厂商和模型会随确认任务实际提交。Seedream 需要火山方舟 Key，试用额度由服务商决定。"><select disabled={busy} value={`${settings.imageProvider}:${settings.models[settings.imageProvider]}`} onChange={e => { const [provider, model] = e.target.value.split(':') as ['openai' | 'seedream' | 'siliconflow', string]; setSettings({ ...settings, imageProvider: provider, models: { ...settings.models, [provider]: model } }); }}>{imageModelGroups.map(group => <optgroup key={group.provider} label={group.label}>{group.models.map(model => <option key={model.id} value={`${group.provider}:${model.id}`}>{model.name} · {model.description}</option>)}{!group.models.some(model => model.id === settings.models[group.provider]) && <option value={`${group.provider}:${settings.models[group.provider]}`}>自定义 · {settings.models[group.provider]}</option>}</optgroup>)}</select></Field><p className="small muted">当前生图渠道：{settings.imageProvider === 'openai' ? 'OpenAI' : settings.imageProvider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {settings.models[settings.imageProvider]}。免费兜底暂未配置，失败不会自动切换到其他收费渠道。</p></div>}
+    {kind !== 'voice' && <div className="toolbar"><Button variant="secondary" disabled={!missing.length || !!batch?.running} onClick={() => void executeBatch(missing)}><Sparkles size={16} />生成缺图（{missing.length}）</Button><span className="small muted">按设置中的并发数同时生成，单张失败不中断。</span></div>}
     <div className="panel"><div className="section-title"><h2>{kinds.find(k => k.id === kind)?.name}资产库</h2><HelpPopover title="资产库说明"><p>{kinds.find(k => k.id === kind)?.text}</p><p className="mt-2">统一锁：图片与视频提示词逐字复用「固定短语」。上传或生成图片不会自动把图片发送到视频服务，请到分镜页选择实际附件。</p></HelpPopover></div></div>
     {kind === 'voice' && <div className="panel stack"><div className="toolbar"><Button variant="secondary" disabled={voicesBusy} onClick={loadVoices}>{voicesBusy ? '正在获取…' : '获取 MiniMax 音色库'}</Button><Button variant="ghost" onClick={() => navigate('settings')}>设置语音服务</Button></div><p className="muted">{voices.length ? `已加载${voices.length}个音色，新建或编辑音色时可选择。` : '未加载在线音色。可手动填写服务商音色ID，或使用明确标注的本机试听。'} API试听会先确认短句；本机试听不会生成可导出的音频。</p><Button variant="ghost" onClick={() => { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }}>停止本机试听</Button></div>}
     {!visible.length ? <Empty title={`还没有${kinds.find(k => k.id === kind)?.name}设定`} text="从一条描述开始，或创建资产后上传自己的图片。这里没有预置作品素材。"><Button variant="secondary" onClick={() => edit()}>创建第一项资产</Button></Empty> : <div className={kind === 'voice' ? 'grid-2' : 'asset-compact-grid'}>{visible.map(asset => asset.kind !== 'voice' ? <article className="panel compact-media-card" key={asset.id}>
@@ -190,6 +254,13 @@ function AssetEditor({ project, navigate }: PageProps) {
       <div className="toolbar"><Button variant="outline" aria-label={`编辑${focused.name}`} onClick={() => { setFocusedId(undefined); edit(focused); }}><Pencil size={16} />编辑资产</Button><Button variant="ghost" aria-label={`删除${focused.name}`} onClick={() => { setFocusedId(undefined); setDeleting(focused); }}><Trash2 size={16} />删除资产</Button></div>
     </div></Modal>}
     <div className="toolbar"><Button variant="outline" onClick={() => navigate('script')}>返回剧本</Button><Button onClick={() => navigate('storyboard')}>下一步：分镜编排</Button></div>
+    <Modal open={!!batch} onClose={() => { if (!batch?.running) setBatch(undefined); }} title="批量生成设定图" description="每张图独立提交，单张失败不影响其他。取消只停止等待，服务商可能已受理并计费。">
+      {batch && <div className="stack">
+        <ProgressPanel title={`生图并发 ${imageConcurrency(settings)}`} stage={batch.running ? '生成中' : '已结束'} startedAt={batch.startedAt} done={batchDone} total={batch.items.length} failed={batchFailedCount} detail="取消只停止等待，服务商可能已受理并计费。" onCancel={batch.running ? () => batchAbort.current?.abort() : undefined} cancelLabel="全部取消" />
+        <div className="stack">{batch.items.map(item => <div className="stack" key={item.id}><div className="row between"><span>{item.name}</span><span className="row"><Elapsed since={item.status === 'running' ? item.startedAt : undefined} /><StatusChip tone={batchTones[item.status]}>{batchLabels[item.status]}</StatusChip></span></div>{item.status === 'failed' && <span className="small muted">{errorMessage(item.error)}</span>}</div>)}</div>
+        <div className="toolbar">{!batch.running && batchFailed.length > 0 && <Button variant="secondary" onClick={() => void executeBatch(batchFailed)}>重试失败项（{batchFailed.length}）</Button>}<Button variant="ghost" disabled={batch.running} onClick={() => setBatch(undefined)}>关闭</Button></div>
+      </div>}
+    </Modal>
     <Modal open={!!editing} onClose={() => setEditing(undefined)} title={`${editing?.isNew ? '新建' : '编辑'}${kinds.find(k => k.id === editing?.asset.kind)?.name || '资产'}`} description="保存后会使相关下游制作结果标为待更新。固定短语会原样用于后续生成。">
       {editing && <div className="stack"><Field label="名称"><input value={editing.asset.name} onChange={e => draftPatch({ name: e.target.value })} /></Field><Field label="描述"><textarea rows={3} value={editing.asset.description} onChange={e => draftPatch({ description: e.target.value, ...(!editing.asset.lock || editing.asset.lock === editing.asset.description ? { lock: e.target.value } : {}) })} /></Field>
         {editing.asset.kind !== 'voice' && <><Field label="固定短语（默认使用描述）" hint="只在这里维护角色、场景、道具的一致性描述；自定义后不会随描述自动改写。"><textarea rows={3} value={editing.asset.lock} onChange={e => draftPatch({ lock: e.target.value })} /></Field><Button variant="ghost" onClick={() => draftPatch({ lock: editing.asset.description })}>使用当前描述作为固定短语</Button></>}
