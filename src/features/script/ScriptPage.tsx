@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Plus, Sparkles, Download, FileText, Trash2 } from 'lucide-react';
+import { Plus, Sparkles, Download, FileText, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
 import TemplateEditor from '../prompts/TemplateEditor';
 import { defaultStyle, makeShot, uid, type PageProps, type Project, type Shot } from '../../domain/types';
@@ -33,6 +33,10 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [documentName, setDocumentName] = useState('剧本文档.md');
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleShot = (id: string) => setExpanded(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const allShotsOpen = project.shots.length > 0 && project.shots.every(shot => expanded.has(shot.id));
+  const toggleAllShots = () => setExpanded(allShotsOpen ? new Set() : new Set(project.shots.map(shot => shot.id)));
   const issues = validateScriptStage(project);
   const warnings = scriptWarnings(project);
   const total = project.shots.reduce((sum, s) => sum + s.duration, 0);
@@ -124,18 +128,33 @@ function ScriptEditor({ project, navigate }: PageProps) {
       <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={busy} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
     </section>
     <div className="panel"><DurationStrip project={project} /></div>
-    <section className="stack">
-      <div className="section-title"><div><h2>逐拍剧本</h2><p className="muted">{project.shots.length} / 10 拍 · {Number(total.toFixed(2))} / 90 秒 · 编辑自动保存</p></div><span className="tag">{sourceTag}</span></div>
+    <section className="panel stack">
+      <div className="section-title beat-heading"><div><h2>剧本节拍</h2><p className="muted">{project.shots.length} / 10 拍 · {Number(total.toFixed(2))} / 90 秒 · 展开编辑</p></div><div className="row"><span className="tag">{sourceTag}</span>{project.shots.length > 0 && <Button variant="outline" size="sm" onClick={toggleAllShots}>{allShotsOpen ? '全部收起' : '全部展开'}</Button>}</div></div>
       {!project.shots.length && <Empty title="故事还没有开始" text="输入主题生成、主动模板演练，或导入你已经写好的剧本。这里不会预置作品或视频。" />}
-      {project.shots.map(shot => <article className="shot-card stack" key={shot.id} id={`shot-${shot.number}`}>
-        <div className="section-title"><div className="row"><span className="shot-number">{String(shot.number).padStart(2, '0')}</span><h3>第 {shot.number} 镜</h3>{shot.stale && <span className="tag">下游待更新</span>}</div><Button variant="ghost" aria-label={`删除第${shot.number}镜`} onClick={() => setRemove(shot)}><Trash2 size={16} />删除</Button></div>
-        <div><Field label="时长（秒）" hint="每拍4–15秒，10拍合计90秒。"><input type="number" min={4} max={15} step={1} value={shot.duration} onChange={e => editShot(shot.id, { duration: e.target.value === '' ? 0 : Number(e.target.value) })} /></Field></div>
-        <Field label="画面 / 保留的导入原文"><textarea rows={3} value={shot.visual} onChange={e => editShot(shot.id, { visual: e.target.value })} /></Field>
-        <div className="stack"><div className="section-title"><h4>对白</h4><Button variant="ghost" onClick={() => editShot(shot.id, { dialogues: [...shot.dialogues, { id: uid(), speakerId: characters[0]?.id || '', text: '' }] })}><Plus size={14} />添加台词</Button></div>
-          {!characters.length && <p className="muted">请在资产页添加人物，再为台词选择说话者。<Button variant="ghost" onClick={() => navigate('assets')}>创建人物</Button></p>}
-          {shot.dialogues.map(dialogue => <div className="row" key={dialogue.id}><Field label="说话者"><select value={dialogue.speakerId} onChange={e => editShot(shot.id, { dialogues: shot.dialogues.map(d => d.id === dialogue.id ? { ...d, speakerId: e.target.value } : d) })}><option value="">未指定人物</option>{characters.map(a => <option value={a.id} key={a.id}>{a.name}</option>)}</select></Field><Field label="台词内容"><textarea rows={2} value={dialogue.text} onChange={e => editShot(shot.id, { dialogues: shot.dialogues.map(d => d.id === dialogue.id ? { ...d, text: e.target.value } : d) })} /></Field><Button variant="ghost" aria-label="删除台词" onClick={() => editShot(shot.id, { dialogues: shot.dialogues.filter(d => d.id !== dialogue.id) })}><Trash2 size={16} /></Button></div>)}
-        </div>
-      </article>)}
+      {project.shots.length > 0 && <div className="stack">{project.shots.map(shot => {
+        const open = expanded.has(shot.id);
+        return <article className="shot-row" key={shot.id} id={`shot-${shot.number}`}>
+          <div className="row between">
+            <button type="button" className="text-button beat-summary" aria-expanded={open} onClick={() => toggleShot(shot.id)}>
+              <span className="shot-number">{String(shot.number).padStart(2, '0')}</span>
+              <strong>第 {shot.number} 镜</strong>
+              <span className="tag">{shot.duration} 秒</span>
+              {shot.dialogues.length > 0 && <span className="tag subtle">{shot.dialogues.length} 句台词</span>}
+              {shot.stale && <span className="tag">下游待更新</span>}
+              <span className="muted small truncate">{shot.visual || '尚未填写画面'}</span>
+            </button>
+            <div className="row"><Button variant="ghost" aria-label={`删除第${shot.number}镜`} onClick={() => setRemove(shot)}><Trash2 size={16} /></Button><button type="button" className="icon-button" aria-label={open ? `收起第${shot.number}镜` : `展开第${shot.number}镜`} onClick={() => toggleShot(shot.id)}>{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</button></div>
+          </div>
+          {open && <div className="stack" style={{ marginTop: 18 }}>
+            <Field label="时长（秒）" hint="每拍4–15秒，10拍合计90秒。"><input type="number" min={4} max={15} step={1} value={shot.duration} onChange={e => editShot(shot.id, { duration: e.target.value === '' ? 0 : Number(e.target.value) })} /></Field>
+            <Field label="画面 / 保留的导入原文"><textarea rows={3} value={shot.visual} onChange={e => editShot(shot.id, { visual: e.target.value })} /></Field>
+            <div className="stack"><div className="section-title"><h4>对白</h4><Button variant="ghost" onClick={() => editShot(shot.id, { dialogues: [...shot.dialogues, { id: uid(), speakerId: characters[0]?.id || '', text: '' }] })}><Plus size={14} />添加台词</Button></div>
+              {!characters.length && <p className="muted">请在资产页添加人物，再为台词选择说话者。<Button variant="ghost" onClick={() => navigate('assets')}>创建人物</Button></p>}
+              {shot.dialogues.map(dialogue => <div className="row" key={dialogue.id}><Field label="说话者"><select value={dialogue.speakerId} onChange={e => editShot(shot.id, { dialogues: shot.dialogues.map(d => d.id === dialogue.id ? { ...d, speakerId: e.target.value } : d) })}><option value="">未指定人物</option>{characters.map(a => <option value={a.id} key={a.id}>{a.name}</option>)}</select></Field><Field label="台词内容"><textarea rows={2} value={dialogue.text} onChange={e => editShot(shot.id, { dialogues: shot.dialogues.map(d => d.id === dialogue.id ? { ...d, text: e.target.value } : d) })} /></Field><Button variant="ghost" aria-label="删除台词" onClick={() => editShot(shot.id, { dialogues: shot.dialogues.filter(d => d.id !== dialogue.id) })}><Trash2 size={16} /></Button></div>)}
+            </div>
+          </div>}
+        </article>;
+      })}</div>}
       <div className="toolbar"><Button variant="outline" onClick={() => updateProject(project.id, p => ({ ...p, storyboardReady: false, shots: [...p.shots, makeShot(p.shots.length + 1)] }), true)}><Plus size={16} />增加镜头</Button></div>
     </section>
     </div><aside className="workbench-aside" aria-label="剧本状态">

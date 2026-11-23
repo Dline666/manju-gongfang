@@ -29,8 +29,9 @@ try {
     await page.getByRole('button', { name: '开始创作', exact: true }).click();
     await page.getByRole('button', { name: '模板演练', exact: true }).click();
     await page.getByRole('button', { name: '建立模板草稿（非AI）' }).click();
-    await page.locator('.shot-card').nth(9).waitFor();
-    assert.equal(await page.locator('.shot-card').count(), 10);
+    await page.locator('.shot-row').nth(9).waitFor();
+    assert.equal(await page.locator('.shot-row').count(), 10);
+    assert.equal(await page.locator('.beat-summary').count(), 10);
     await checkOverflow('script');
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     await page.evaluate(() => window.scrollTo(0, 0));

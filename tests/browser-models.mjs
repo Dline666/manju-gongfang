@@ -120,6 +120,13 @@ try {
       await page.getByRole('button', { name: `查看第${index + 1}镜视频详情`, exact: true }).click();
       await page.getByRole('button', { name: 'API 生成', exact: true }).click();
       await expect(page.getByRole('dialog')).toContainText(model);
+      if (index === 0) {
+        const box = page.getByLabel('即将发送的完整视频提示词');
+        const originalPrompt = await box.inputValue();
+        assert.ok(originalPrompt.includes('第1镜'));
+        await box.fill(`${originalPrompt}\n补充运镜：缓慢推进`);
+        await page.getByRole('button', { name: '恢复默认提示词', exact: true }).waitFor();
+      }
       const before = calls.filter(c => c.action === 'video-create').length;
       assert.equal(before, index);
       await page.getByRole('button', { name: '确认并开始生成', exact: true }).click();
@@ -127,6 +134,7 @@ try {
       const call = calls.filter(c => c.action === 'video-create').at(-1);
       assert.equal(call.body.provider, provider); assert.equal(call.body.model, model);
       assert.equal(call.body.duration, 9);
+      if (index === 0) assert.ok(call.body.prompt.includes('补充运镜：缓慢推进'));
       assert.equal((await saved()).projects[0].shots[index].task.model, model);
     }
     await overflow();
