@@ -1,4 +1,25 @@
-import type { Project } from '../../domain/types';
+import type { Asset, Project } from '../../domain/types';
+
+/**
+ * 人物资产与剧本说话人按名字对齐：新建或改名人物后，台词自动挂到这个人身上。
+ * 剧本阶段不建人物，所以这一步是「资产真正产生」的时刻。
+ */
+export function linkSpeakersToCharacter(project: Project, character: Asset): Project {
+  if (character.kind !== 'character' || !character.name.trim()) return project;
+  const name = character.name.trim();
+  return {
+    ...project,
+    shots: project.shots.map(shot => ({
+      ...shot,
+      dialogues: shot.dialogues.map(line => {
+        const speaker = (line.speaker || '').trim();
+        if (!speaker || speaker !== name) return line;
+        if (line.speakerId === character.id) return line;
+        return { ...line, speakerId: character.id };
+      }),
+    })),
+  };
+}
 
 export function removeAsset(project: Project, id: string): Project {
   return {

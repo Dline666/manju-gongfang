@@ -37,10 +37,12 @@ const MEDIA_HOSTS: Record<VideoProvider, readonly string[]> = {
   minimax: ["video-product.cdn.minimax.io", "cdn.hailuoai.com"],
 };
 const ACTION_FIELDS: Record<string, readonly string[]> = {
-  script: ["provider", "key", "model", "prompt"],
+  contracts: ["for"],
   screenplay: ["provider", "key", "model", "prompt"],
   director: ["provider", "key", "model", "prompt"],
-  "extract-assets": ["provider", "key", "model", "prompt"],
+  "extract-characters": ["provider", "key", "model", "prompt"],
+  "extract-scenes": ["provider", "key", "model", "prompt"],
+  "extract-props": ["provider", "key", "model", "prompt"],
   image: ["provider", "key", "model", "prompt"],
   voices: ["provider", "key"],
   speech: ["provider", "key", "model", "text", "voiceId", "speed"],
@@ -182,69 +184,62 @@ function minimaxResult(value: ObjectValue, required: boolean): void {
 }
 
 const STRING_SCHEMA = { type: "string" };
-const ASSET_KINDS = ["characters", "scenes", "props"] as const;
-type AssetKind = typeof ASSET_KINDS[number];
-type Assets = Partial<Record<AssetKind, { name: string; description: string }[]>>;
 const ASSET_NAME_SCHEMA = { type: "string", minLength: 1, maxLength: 100 };
 const ASSET_LIST_SCHEMA = { type: "array", maxItems: 30, items: {
   type: "object", properties: { name: ASSET_NAME_SCHEMA, description: { type: "string", minLength: 1, maxLength: 4000 } }, required: ["name", "description"],
 } };
-const ASSET_PROPERTIES = { characters: ASSET_LIST_SCHEMA, scenes: ASSET_LIST_SCHEMA, props: ASSET_LIST_SCHEMA };
 const ASSET_REFS_SCHEMA = { type: "array", maxItems: 30, uniqueItems: true, items: ASSET_NAME_SCHEMA };
-const SHOT_ASSET_PROPERTIES = { characters: ASSET_REFS_SCHEMA, scenes: ASSET_REFS_SCHEMA, props: ASSET_REFS_SCHEMA };
-const SCRIPT_SCHEMA = {
+/**
+ * 资产提取按品类分开：人物、场景、道具各自一次调用、各自一份提示词。
+ * 三个 action 共用同一套 schema 工厂，只换清单的 key 与逐镜关联的 key。
+ */
+const EXTRACT_KINDS = ["characters", "scenes", "props"] as const;
+type ExtractKind = typeof EXTRACT_KINDS[number];
+const EXTRACT_KIND_SCHEMA = (key: ExtractKind) => ({
   type: "object",
   properties: {
-    title: STRING_SCHEMA,
-    ...ASSET_PROPERTIES,
-    shots: { type: "array", minItems: 10, maxItems: 10, items: {
-      type: "object",
-      properties: {
-        ...SHOT_ASSET_PROPERTIES,
-        visual: STRING_SCHEMA, camera: STRING_SCHEMA, start: STRING_SCHEMA, action: STRING_SCHEMA, end: STRING_SCHEMA,
-        duration: { type: "integer", minimum: 4, maximum: 15, description: "Seconds; all 10 shots must total exactly 90 seconds." },
-        dialogues: { type: "array", items: {
-          type: "object", properties: { speaker: STRING_SCHEMA, text: STRING_SCHEMA }, required: ["speaker", "text"],
-        } },
-      },
-      required: ["visual", "camera", "start", "action", "end", "duration", "dialogues", ...ASSET_KINDS],
-    } },
-  },
-  required: ["shots", ...ASSET_KINDS],
-};
-const ASSETS_SCHEMA = {
-  type: "object",
-  properties: {
-    ...ASSET_PROPERTIES,
+    [key]: ASSET_LIST_SCHEMA,
     shots: { type: "array", minItems: 1, maxItems: 100, items: {
-      type: "object", properties: { number: { type: "integer", minimum: 1, maximum: 100 }, ...SHOT_ASSET_PROPERTIES },
-      required: ["number", ...ASSET_KINDS],
+      type: "object",
+      properties: { number: { type: "integer", minimum: 1, maximum: 100 }, [key]: ASSET_REFS_SCHEMA },
+      required: ["number", key],
     } },
   },
-  required: [...ASSET_KINDS, "shots"],
-};
-const ASSET_INSTRUCTION = " Include characters, scenes and props arrays at the top level and in every shot, using empty arrays when absent. Top-level entries have name and description, with unique names per category. Shot arrays contain only declared names from the same category, without duplicates. Preserve existing asset names, fixed descriptions and phrases EXACTLY; do not paraphrase them.";
+  required: [key, "shots"],
+});
+const EXTRACT_CHARACTERS_SCHEMA = EXTRACT_KIND_SCHEMA("characters");
+const EXTRACT_SCENES_SCHEMA = EXTRACT_KIND_SCHEMA("scenes");
+const EXTRACT_PROPS_SCHEMA = EXTRACT_KIND_SCHEMA("props");
+/**
+ * 机器契约：只要求返回符合 schema 的 JSON，不含任何业务规则。
+ * 业务规则由用户自己的提示词决定——后端不再注入任何默认提示词。
+ */
+const CONTRACT_PREFIX = "Return only a json object matching the schema below. Do not use markdown code fences. Schema: ";
+const EXTRACT_CHARACTERS_INSTRUCTION = CONTRACT_PREFIX + JSON.stringify(EXTRACT_CHARACTERS_SCHEMA);
+const EXTRACT_SCENES_INSTRUCTION = CONTRACT_PREFIX + JSON.stringify(EXTRACT_SCENES_SCHEMA);
+const EXTRACT_PROPS_INSTRUCTION = CONTRACT_PREFIX + JSON.stringify(EXTRACT_PROPS_SCHEMA);
 const SHOT_SIZES = ["远景", "全景", "中景", "近景", "特写"] as const;
 const MOVEMENTS = ["固定", "推", "拉", "摇", "移", "跟", "升降", "环绕"] as const;
 const ANGLES = ["平视", "俯视", "仰视"] as const;
+/**
+ * 景别允许单值，也允许「远景→中景」式拍内连镜（拍摄标准的节奏要求）。
+ * 轻微偏差（如「中近景」）收敛到最近的合法值；完全没有合法景别才判非法。
+ */
+function normalizeShotSize(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const parts = value.split("→").map(part => part.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 3) return undefined;
+  const resolved = parts.map(part => SHOT_SIZES.find(size => part.includes(size)));
+  if (resolved.some(size => !size)) return undefined;
+  return resolved.join("→");
+}
 const SCREENPLAY_SCHEMA = {
   type: "object",
   properties: {
-    title: STRING_SCHEMA, logline: STRING_SCHEMA, ...ASSET_PROPERTIES,
-    beats: { type: "array", minItems: 10, maxItems: 10, items: {
-      type: "object",
-      properties: {
-        ...SHOT_ASSET_PROPERTIES,
-        title: STRING_SCHEMA, scene: STRING_SCHEMA, summary: STRING_SCHEMA,
-        seconds: { type: "integer", minimum: 4, maximum: 15, description: "Seconds; all 10 beats must total exactly 90 seconds." },
-        dialogues: { type: "array", items: {
-          type: "object", properties: { speaker: STRING_SCHEMA, text: STRING_SCHEMA }, required: ["speaker", "text"],
-        } },
-      },
-      required: ["title", "scene", "summary", "seconds", "dialogues", ...ASSET_KINDS],
-    } },
+    title: STRING_SCHEMA, logline: STRING_SCHEMA,
+    screenplay: STRING_SCHEMA,
   },
-  required: ["beats", ...ASSET_KINDS],
+  required: ["title", "screenplay"],
 };
 const DIRECTOR_SCHEMA = {
   type: "object",
@@ -253,7 +248,7 @@ const DIRECTOR_SCHEMA = {
       type: "object",
       properties: {
         number: { type: "integer", minimum: 1, maximum: 100 },
-        shotSize: { type: "string", enum: SHOT_SIZES },
+        shotSize: { type: "string", description: "远景/全景/中景/近景/特写" },
         movement: { type: "string", enum: MOVEMENTS },
         angle: { type: "string", enum: ANGLES },
         start: STRING_SCHEMA, action: STRING_SCHEMA, end: STRING_SCHEMA,
@@ -263,102 +258,19 @@ const DIRECTOR_SCHEMA = {
   },
   required: ["shots"],
 };
-const SCRIPT_INSTRUCTION = "Return only a json object matching this schema. Exactly 10 shots totaling 90 seconds. start/end are frame descriptions, not timestamps. No markdown." + ASSET_INSTRUCTION + " Schema: " + JSON.stringify(SCRIPT_SCHEMA);
-const SCREENPLAY_INSTRUCTION = "Return only a json object matching this schema. Exactly 10 beats totaling 90 seconds, each beat 4-15 integer seconds. Each beat has a title, scene, a summary of one visible event, and dialogues. Do not include camera or shot fields. No markdown." + ASSET_INSTRUCTION + " Schema: " + JSON.stringify(SCREENPLAY_SCHEMA);
-const DIRECTOR_INSTRUCTION = "Return only a json object matching this schema. Exactly one shot per supplied beat, preserving shot numbers, durations, story, dialogues and shot count. shotSize is one of 远景/全景/中景/近景/特写; movement is one of 固定/推/拉/摇/移/跟/升降/环绕; angle is one of 平视/俯视/仰视. start/action/end are frame descriptions, not timestamps. No markdown. Schema: " + JSON.stringify(DIRECTOR_SCHEMA);
-const ASSETS_INSTRUCTION = "Return only a json object matching this schema. Only extract visual assets from the supplied script; do not rewrite shots or dialogues and do not invent details. Include one association entry per source shot, preserving its original number (unique integer 1–100), shot count and order. Reuse existing names and fixed phrases. No markdown." + ASSET_INSTRUCTION + " Schema: " + JSON.stringify(ASSETS_SCHEMA);
+const SCREENPLAY_INSTRUCTION = CONTRACT_PREFIX + JSON.stringify(SCREENPLAY_SCHEMA);
+const DIRECTOR_INSTRUCTION = CONTRACT_PREFIX + JSON.stringify(DIRECTOR_SCHEMA);
 
-function validateAssetLists(source: ObjectValue, required: boolean, code: string): Assets {
-  const assets: Assets = {};
-  for (const kind of ASSET_KINDS) {
-    const list = source[kind];
-    if (list === undefined && !required) continue;
-    requireValue(Array.isArray(list) && list.length <= 30, code, 502);
-    const names = new Set<string>();
-    assets[kind] = list.map((item) => {
-      const asset = object(item, code, 502);
-      const name = text(asset.name, 100, code, 502);
-      requireValue(!names.has(name), code, 502);
-      names.add(name);
-      return { name, description: text(asset.description, 4000, code, 502) };
-    });
-  }
-  return assets;
-}
-function validateShotAssets(shot: ObjectValue, assets: Assets, required: boolean, code: string): Partial<Record<AssetKind, string[]>> {
-  const result: Partial<Record<AssetKind, string[]>> = {};
-  for (const kind of ASSET_KINDS) {
-    const list = shot[kind];
-    if (list === undefined && !required) continue;
-    requireValue(Array.isArray(list) && list.length <= 30, code, 502);
-    const declared = new Set(assets[kind]?.map((asset) => asset.name));
-    const names = new Set<string>();
-    result[kind] = list.map((item) => {
-      const name = text(item, 100, code, 502);
-      requireValue(declared.has(name) && !names.has(name), code, 502);
-      names.add(name);
-      return name;
-    });
-  }
-  return result;
-}
-
-function validateScript(raw: string): ObjectValue {
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_script", 502); }
-  const source = object(parsed, "invalid_script", 502);
-  requireValue(Array.isArray(source.shots) && source.shots.length === 10, "invalid_script", 502);
-  const assets = validateAssetLists(source, false, "invalid_script");
-  const result: ObjectValue = { ...assets };
-  if (source.title !== undefined) result.title = text(source.title, 200, "invalid_script", 502);
-  let duration = 0;
-  result.shots = source.shots.map((item) => {
-    const shot = object(item, "invalid_script", 502);
-    requireValue(typeof shot.duration === "number" && Number.isInteger(shot.duration) && shot.duration >= 4 && shot.duration <= 15, "invalid_script", 502);
-    duration += shot.duration;
-    requireValue(Array.isArray(shot.dialogues) && shot.dialogues.length <= 30, "invalid_script", 502);
-    return {
-      ...validateShotAssets(shot, assets, false, "invalid_script"),
-      visual: text(shot.visual, 8000, "invalid_script", 502), camera: text(shot.camera, 8000, "invalid_script", 502),
-      start: text(shot.start, 8000, "invalid_script", 502), action: text(shot.action, 8000, "invalid_script", 502), end: text(shot.end, 8000, "invalid_script", 502),
-      duration: shot.duration,
-      dialogues: shot.dialogues.map((item) => {
-        const line = object(item, "invalid_script", 502);
-        return { speaker: text(line.speaker, 100, "invalid_script", 502), text: text(line.text, 3000, "invalid_script", 502) };
-      }),
-    };
-  });
-  requireValue(duration === 90, "invalid_script", 502);
-  return result;
-}
 function validateScreenplay(raw: string): ObjectValue {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_screenplay", 502); }
   const source = object(parsed, "invalid_screenplay", 502);
-  requireValue(Array.isArray(source.beats) && source.beats.length === 10, "invalid_screenplay", 502);
-  const assets = validateAssetLists(source, false, "invalid_screenplay");
-  const result: ObjectValue = { ...assets };
+  // 剧本结构由用户自己的提示词决定：后端只校验「是一份非空文本」，不再强制四部分、
+  // 【镜头：类型】标记与时长区间。拆不出镜头由前端降级处理。
+  const screenplay = text(source.screenplay, 60000, "invalid_screenplay", 502);
+  const result: ObjectValue = { screenplay };
   if (source.title !== undefined) result.title = text(source.title, 200, "invalid_screenplay", 502);
   if (source.logline !== undefined) result.logline = text(source.logline, 2000, "invalid_screenplay", 502);
-  let duration = 0;
-  result.beats = source.beats.map((item) => {
-    const beat = object(item, "invalid_screenplay", 502);
-    requireValue(typeof beat.seconds === "number" && Number.isInteger(beat.seconds) && beat.seconds >= 4 && beat.seconds <= 15, "invalid_screenplay", 502);
-    duration += beat.seconds;
-    requireValue(Array.isArray(beat.dialogues) && beat.dialogues.length <= 30, "invalid_screenplay", 502);
-    return {
-      ...validateShotAssets(beat, assets, false, "invalid_screenplay"),
-      title: text(beat.title, 200, "invalid_screenplay", 502),
-      scene: text(beat.scene, 200, "invalid_screenplay", 502),
-      summary: text(beat.summary, 8000, "invalid_screenplay", 502),
-      seconds: beat.seconds,
-      dialogues: beat.dialogues.map((line) => {
-        const value = object(line, "invalid_screenplay", 502);
-        return { speaker: text(value.speaker, 100, "invalid_screenplay", 502), text: text(value.text, 3000, "invalid_screenplay", 502) };
-      }),
-    };
-  });
-  requireValue(duration === 90, "invalid_screenplay", 502);
   return result;
 }
 function validateDirector(raw: string): ObjectValue {
@@ -371,12 +283,13 @@ function validateDirector(raw: string): ObjectValue {
     const shot = object(item, "invalid_director", 502);
     requireValue(typeof shot.number === "number" && Number.isInteger(shot.number) && shot.number >= 1 && shot.number <= 100 && !numbers.has(shot.number), "invalid_director", 502);
     numbers.add(shot.number);
-    requireValue(SHOT_SIZES.includes(shot.shotSize as typeof SHOT_SIZES[number]), "invalid_director", 502);
+    const shotSize = normalizeShotSize(shot.shotSize);
+    requireValue(shotSize !== undefined, "invalid_director", 502);
     requireValue(MOVEMENTS.includes(shot.movement as typeof MOVEMENTS[number]), "invalid_director", 502);
     requireValue(ANGLES.includes(shot.angle as typeof ANGLES[number]), "invalid_director", 502);
     return {
       number: shot.number,
-      shotSize: shot.shotSize as typeof SHOT_SIZES[number],
+      shotSize,
       movement: shot.movement as typeof MOVEMENTS[number],
       angle: shot.angle as typeof ANGLES[number],
       start: text(shot.start, 8000, "invalid_director", 502),
@@ -387,25 +300,45 @@ function validateDirector(raw: string): ObjectValue {
   return { shots };
 }
 const textActions: Record<string, { schema: unknown; instruction: string; validate: (raw: string) => ObjectValue; code: string }> = {
-  script: { schema: SCRIPT_SCHEMA, instruction: SCRIPT_INSTRUCTION, validate: validateScript, code: "invalid_script" },
-  "extract-assets": { schema: ASSETS_SCHEMA, instruction: ASSETS_INSTRUCTION, validate: validateAssets, code: "invalid_assets" },
+  "extract-characters": { schema: EXTRACT_CHARACTERS_SCHEMA, instruction: EXTRACT_CHARACTERS_INSTRUCTION, validate: raw => validateExtractCategory(raw, "characters"), code: "invalid_assets" },
+  "extract-scenes": { schema: EXTRACT_SCENES_SCHEMA, instruction: EXTRACT_SCENES_INSTRUCTION, validate: raw => validateExtractCategory(raw, "scenes"), code: "invalid_assets" },
+  "extract-props": { schema: EXTRACT_PROPS_SCHEMA, instruction: EXTRACT_PROPS_INSTRUCTION, validate: raw => validateExtractCategory(raw, "props"), code: "invalid_assets" },
   screenplay: { schema: SCREENPLAY_SCHEMA, instruction: SCREENPLAY_INSTRUCTION, validate: validateScreenplay, code: "invalid_screenplay" },
   director: { schema: DIRECTOR_SCHEMA, instruction: DIRECTOR_INSTRUCTION, validate: validateDirector, code: "invalid_director" },
 };
-function validateAssets(raw: string): ObjectValue {
+function validateExtractCategory(raw: string, key: ExtractKind): ObjectValue {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_assets", 502); }
   const source = object(parsed, "invalid_assets", 502);
-  const assets = validateAssetLists(source, true, "invalid_assets");
-  requireValue(Array.isArray(source.shots) && source.shots.length >= 1 && source.shots.length <= 100, "invalid_assets", 502);
+  const list = source[key];
+  requireValue(Array.isArray(list) && list.length <= 30, "invalid_assets", 502);
+  const names = new Set<string>();
+  const assets = list.map(item => {
+    const asset = object(item, "invalid_assets", 502);
+    const name = text(asset.name, 100, "invalid_assets", 502);
+    requireValue(!names.has(name), "invalid_assets", 502);
+    names.add(name);
+    return { name, description: text(asset.description, 4000, "invalid_assets", 502) };
+  });
+  // 逐镜关联是可选的：用户没在提示词里要求逐镜对应时，模型可能不返回 shots。
+  const rows = source.shots === undefined ? [] : source.shots;
+  requireValue(Array.isArray(rows) && rows.length <= 100, "invalid_assets", 502);
   const numbers = new Set<number>();
-  const shots = source.shots.map((item) => {
+  const shots = rows.map((item) => {
     const shot = object(item, "invalid_assets", 502);
     requireValue(typeof shot.number === "number" && Number.isInteger(shot.number) && shot.number >= 1 && shot.number <= 100 && !numbers.has(shot.number), "invalid_assets", 502);
     numbers.add(shot.number);
-    return { number: shot.number, ...validateShotAssets(shot, assets, true, "invalid_assets") };
+    const refs = shot[key];
+    requireValue(Array.isArray(refs) && refs.length <= 30, "invalid_assets", 502);
+    const seen = new Set<string>();
+    return { number: shot.number, [key]: refs.map(ref => {
+      const name = text(ref, 100, "invalid_assets", 502);
+      requireValue(names.has(name) && !seen.has(name), "invalid_assets", 502);
+      seen.add(name);
+      return name;
+    }) };
   });
-  return { ...assets, shots };
+  return { [key]: assets, shots };
 }
 // REST output is steps/model_output/content/text, NOT the SDK's output_text helper.
 // https://aistudio.google.com/api-reference/interactions-api/create-interaction
@@ -664,6 +597,13 @@ export function createHandler(dependencies: Dependencies = {}) {
         throw new Fault(request.signal.aborted ? "request_aborted" : "invalid_json", request.signal.aborted ? 408 : 400);
       } finally { scope.dispose(); }
       fields(input, ACTION_FIELDS[action]);
+      // 只读契约：告诉前端模型会收到的固定指令与返回结构。不需要 key、不调用上游、不计费。
+      if (action === "contracts") {
+        const target = text(input.for, 40, "invalid_action");
+        const textAction = textActions[target];
+        requireValue(textAction !== undefined, "invalid_action");
+        return json({ instruction: textAction.instruction, schema: textAction.schema });
+      }
       const key = text(input.key, 4096, "invalid_key");
       requireValue(/^[\x21-\x7e]+$/.test(key), "invalid_key");
       const provider = input.provider;

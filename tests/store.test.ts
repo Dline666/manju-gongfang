@@ -171,3 +171,20 @@ test('scoped invalidation writes staleReason only on affected shots', () => {
   assert.ok(!shots[1].stale);
   assert.equal(shots[1].staleReason, undefined);
 });
+
+test('旧存档里的剧本占位人物在载入时清掉，台词保留说话人名字', () => {
+  const empty = { id: 'ghost-1', kind: 'character' as const, name: '沈砚', description: '', lock: '' };
+  const imported = { id: 'ghost-2', kind: 'character' as const, name: '阿青', description: '阿青，导入人物，外观待完善', lock: '阿青，导入人物，外观待完善' };
+  const real = { id: 'real-1', kind: 'character' as const, name: '主角', description: '深色长衣', lock: '深色长衣' };
+  const project = {
+    ...store.createProject('旧作品', '断剑'),
+    assets: [empty, imported, real],
+    shots: [{ ...makeShot(1), assetIds: ['ghost-1', 'real-1'], dialogues: [{ id: 'd1', speakerId: 'ghost-1', text: '我回来了。' }, { id: 'd2', speakerId: 'real-1', text: '走吧。' }] }],
+  };
+  const next = store.dropPlaceholderCharacters(project);
+  assert.deepEqual(next.assets.map(asset => asset.id), ['real-1'], '空占位与机器文案占位都清掉，真人物保留');
+  assert.deepEqual(next.shots[0].assetIds, ['real-1']);
+  assert.equal(next.shots[0].dialogues[0].speakerId, '');
+  assert.equal(next.shots[0].dialogues[0].speaker, '沈砚', '台词保留说话人名字，等提取后再关联');
+  assert.equal(next.shots[0].dialogues[1].speakerId, 'real-1');
+});

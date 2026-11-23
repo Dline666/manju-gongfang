@@ -13,6 +13,7 @@ dist/
 .qoder/
 .qoder-sites/
 .qoder-sites.json
+.claude/
 .vscode/
 .idea/
 coverage/

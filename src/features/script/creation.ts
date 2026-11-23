@@ -1,6 +1,6 @@
 import { makeShot, uid, type Asset, type Project, type Shot } from '../../domain/types';
+import { blocksToShots, parseScreenplay, readScreenplayMeta } from './screenplay';
 
-const assetLists = [{ key: 'characters', kind: 'character' }, { key: 'scenes', kind: 'scene' }, { key: 'props', kind: 'prop' }] as const;
 const shotHeading = /^\s*(?:#{1,6}\s*)?(?:第\s*[\d一二三四五六七八九十百零〇]+\s*镜(?:头)?|(?:镜头|分镜|SHOT)\s*[\d一二三四五六七八九十百零〇]+)(?=$|[\s:：、.．（(\-—])/i;
 
 export interface GeneratedScript {
@@ -13,41 +13,13 @@ export interface GeneratedScript {
 export interface GeneratedScreenplay {
   title?: string;
   logline?: string;
-  characters?: { name: string; description: string }[];
-  scenes?: { name: string; description: string }[];
-  props?: { name: string; description: string }[];
-  beats: { title: string; scene: string; characters?: string[]; summary: string; dialogues: { speaker: string; text: string }[]; seconds: number }[];
+  /** 完整剧本正文（Markdown）；镜头由它解析得到，模型不再另报一份镜头清单。 */
+  screenplay: string;
 }
-export interface ScriptDraft { title?: string; assets: Asset[]; shots: Shot[] }
+export interface ScriptDraft { title?: string; logline?: string; screenplay?: string; assets: Asset[]; shots: Shot[]; notes?: string[] }
 const text = (value: unknown) => typeof value === 'string' ? value : '';
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-function readAssetLists(data: Record<string, unknown>): Asset[] {
-  return assetLists.flatMap(({ key, kind }) => {
-    const list = data[key];
-    if (list === undefined) return [];
-    if (!Array.isArray(list) || list.length > 30) throw new Error(`${key}资产清单格式无效。`);
-    const names = new Set<string>();
-    return list.map(value => {
-      const item = record(value); const name = text(item.name).trim(); const description = text(item.description);
-      if (!name || names.has(name) || !description.trim()) throw new Error('资产名称或固定描述为空，或同类资产重名。');
-      names.add(name);
-      return { id: uid(), kind, name, description, lock: description };
-    });
-  });
-}
-function readAssetReferences(raw: Record<string, unknown>, assets: Asset[]): string[] {
-  return assetLists.flatMap(({ key, kind }) => {
-    const names = raw[key];
-    if (names === undefined) return [];
-    if (!Array.isArray(names) || names.length > 30) throw new Error(`分镜${key}关联格式无效。`);
-    return names.map(name => {
-      const asset = assets.find(a => a.kind === kind && a.name === text(name).trim());
-      if (!asset) throw new Error(`分镜引用了未声明的${key}资产：${text(name)}`);
-      return asset.id;
-    });
-  });
-}
 
 export function mergeDraftAssets(existing: Asset[], draft: ScriptDraft): ScriptDraft {
   const assets = [...existing]; const ids = new Map<string, string>();
@@ -56,10 +28,12 @@ export function mergeDraftAssets(existing: Asset[], draft: ScriptDraft): ScriptD
     if (found) ids.set(asset.id, found.id);
     else assets.push(asset);
   }
+  // 台词按名字认领人物资产：重新生成剧本后，说话人仍能挂回已建的人物。
+  const byName = new Map(assets.filter(a => a.kind === 'character').map(a => [a.name, a.id]));
   return { ...draft, assets, shots: draft.shots.map(shot => ({ ...shot,
     assetIds: [...new Set(shot.assetIds.map(id => ids.get(id) || id))],
     references: shot.references.map(r => ({ ...r, assetId: ids.get(r.assetId) || r.assetId })),
-    dialogues: shot.dialogues.map(d => ({ ...d, speakerId: ids.get(d.speakerId) || d.speakerId })),
+    dialogues: shot.dialogues.map(d => ({ ...d, speakerId: ids.get(d.speakerId) || d.speakerId || byName.get((d.speaker || '').trim()) || '' })),
   })) };
 }
 
@@ -92,109 +66,113 @@ export function extractLocalAssets(shots: Shot[], existing: Asset[]): ScriptDraf
   return { assets, shots: shots.map(shot => {
     const lines = shot.visual.split('\n'); const start = lines.findIndex(line => shotHeading.test(line));
     const content = [(start >= 0 ? lines.slice(start).join('\n') : shot.visual), shot.start, shot.action, shot.end].join('\n');
-    return { ...shot, assetIds: [...new Set([...shot.assetIds, ...assets.filter(a => a.kind !== 'voice' && (content.includes(a.name) || shot.dialogues.some(d => d.speakerId === a.id))).map(a => a.id)])] };
+    return { ...shot, assetIds: [...new Set([...shot.assetIds, ...assets.filter(a => a.kind !== 'voice' && (content.includes(a.name) || shot.dialogues.some(d => (d.speaker || '').trim() === a.name))).map(a => a.id)])] };
   }) };
 }
 
-export function applyAssetExtraction(project: Project, input: unknown): ScriptDraft {
-  const data = record(input);
-  if (!assetLists.every(({ key }) => Array.isArray(data[key])) || !Array.isArray(data.shots) || data.shots.length !== project.shots.length) throw new Error('资产提取结果不完整，未修改现有分镜。');
-  const assets = readAssetLists(data); const seen = new Set<number>();
-  const rows = data.shots.map(value => {
-    const row = record(value);
-    if (typeof row.number !== 'number' || seen.has(row.number) || !project.shots.some(s => s.number === row.number) || !assetLists.every(({ key }) => Array.isArray(row[key]))) throw new Error('资产提取镜号或三类关联无效。');
-    seen.add(row.number);
-    return { number: row.number, ids: readAssetReferences(row, assets) };
-  });
-  return mergeDraftAssets(project.assets, { assets, shots: project.shots.map(shot => ({ ...shot, assetIds: [...new Set([...shot.assetIds, ...rows.find(row => row.number === shot.number)!.ids])] })) });
-}
 
-export function normalizeScript(input: unknown): ScriptDraft {  const data = record(input);
-  if (!Array.isArray(data.shots) || !data.shots.length) throw new Error('生成结果没有有效镜头，未覆盖现有剧本。');
-  const assets = readAssetLists(data);
-  const byName = new Map(assets.filter(a => a.kind === 'character').map(a => [a.name, a]));
-  const character = (name: string, description = '') => {
-    name = name.trim() || '旁白';
-    let asset = byName.get(name);
-    if (!asset) {
-      const detail = description || `${name}，外观设定待完善`;
-      asset = { id: uid(), kind: 'character', name, description: detail, lock: detail };
-      byName.set(name, asset); assets.push(asset);
-    }
-    return asset;
-  };
-  const shots = data.shots.map((value, index) => {
-    const raw = record(value);
-    if (typeof raw.duration !== 'number' || !Number.isFinite(raw.duration) || raw.duration < 4 || raw.duration > 15) throw new Error(`第${index + 1}镜时长无效，需要4–15秒。`);
-    if (!text(raw.visual).trim()) throw new Error(`第${index + 1}镜缺少画面，未覆盖现有剧本。`);
-    if (raw.dialogues !== undefined && !Array.isArray(raw.dialogues)) throw new Error(`第${index + 1}镜台词结构无效。`);
-    const dialogues = (Array.isArray(raw.dialogues) ? raw.dialogues : []).map(value => {
-      const d = record(value);
-      if (!text(d.text).trim()) throw new Error(`第${index + 1}镜包含空台词。`);
-      return { id: uid(), speakerId: character(text(d.speaker)).id, text: text(d.text) };
-    });
-    return { ...makeShot(index + 1), duration: raw.duration, visual: text(raw.visual), camera: text(raw.camera), start: text(raw.start), action: text(raw.action), end: text(raw.end), dialogues, assetIds: readAssetReferences(raw, assets) };
-  });
-  if (shots.length !== 10 || Math.abs(shots.reduce((sum, shot) => sum + shot.duration, 0) - 90) > 0.001) throw new Error('生成结果必须为10镜、合计90秒；现有剧本未被覆盖。');
-  shots.forEach((shot, index) => {
-    const raw = record((data.shots as unknown[])[index]);
-    const content = [shot.visual, shot.start, shot.action, shot.end].join('\n');
-    shot.assetIds = [...new Set([...shot.assetIds, ...assets.filter(a => shot.dialogues.some(d => d.speakerId === a.id) || (raw[assetLists.find(list => list.kind === a.kind)!.key] === undefined && content.includes(a.name))).map(a => a.id)])];
-  });
-  return { title: text(data.title).trim() || undefined, assets, shots };
-}
-
-/** 把 10 节拍剧本规范化为剧本层镜头：camera/start/action/end 留给导演步骤。 */
+/**
+ * 把模型返回的剧本解析成剧本层镜头：剧本是唯一事实来源，镜头由剧本拆出来，
+ * 不再让模型另外报一份镜头清单。camera/start/action/end 留给导演步骤。
+ * 这一步不产出任何资产：台词只记下说话人名字，人物资产等提取或手动创建后再关联。
+ */
 export function normalizeScreenplay(input: unknown): ScriptDraft {
   const data = record(input);
-  if (!Array.isArray(data.beats) || data.beats.length !== 10) throw new Error('生成结果必须为10个节拍；现有剧本未被覆盖。');
-  const assets = readAssetLists(data);
-  const byName = new Map(assets.filter(asset => asset.kind === 'character').map(asset => [asset.name, asset]));
-  const character = (name: string) => {
-    const clean = name.trim() || '旁白';
-    let asset = byName.get(clean);
-    if (!asset) {
-      const detail = `${clean}，外观设定待完善`;
-      asset = { id: uid(), kind: 'character', name: clean, description: detail, lock: detail };
-      byName.set(clean, asset); assets.push(asset);
+  const screenplay = text(data.screenplay).trim();
+  if (!screenplay) throw new Error('生成结果没有剧本正文，未覆盖现有剧本。');
+  const parsed = parseScreenplay(screenplay);
+  if (!parsed.blocks.length) throw new Error('剧本里没有找到可拆镜的内容（既没有【镜头：…】标记，也没有带动作或台词的段落）；现有剧本未被覆盖。');
+  const shots = blocksToShots(parsed, name => name.trim() || '未知人物', () => uid());
+  const meta = readScreenplayMeta(screenplay);
+  const notes = parsed.degraded ? [`未检测到【镜头：类型】标记，已按段落降级拆镜（${shots.length} 镜）。`] : [];
+  return {
+    title: text(data.title).trim() || meta.title || undefined,
+    logline: text(data.logline).trim() || meta.logline || undefined,
+    screenplay, assets: [], shots, ...(notes.length ? { notes } : {}),
+  };
+}
+
+/**
+ * 资产步骤的提取结果：沿用已有资产的 ID 与固定短语，只补全仍是空白的占位描述；
+ * 逐镜关联只允许指向本次声明过的资产，引用不存在的名称直接报错，不静默丢弃。
+ */
+/**
+ * 资产提取按品类分开：人物、场景、道具各自一次调用、各自一份清单。
+ * 这里只处理本类的清单与本类逐镜关联，其它品类的资产与关联完全不碰。
+ * 同名同类的已有资产保留原固定短语（模型描述被忽略），只有仍是空白占位的才补全。
+ */
+import type { ExtractCategory } from '../../lib/prompts';
+export type { ExtractCategory };
+const extractCategoryKeys = { character: 'characters', scene: 'scenes', prop: 'props' } as const;
+const extractCategoryLabels = { character: '人物', scene: '场景', prop: '道具' } as const;
+
+export function applyCategoryExtraction(project: Project, input: unknown, category: ExtractCategory): ScriptDraft {
+  const key = extractCategoryKeys[category];
+  const label = extractCategoryLabels[category];
+  const data = record(input);
+  const list = data[key];
+  if (!Array.isArray(list)) throw new Error(`${label}提取结果不完整，未修改现有资产。`);
+  const warnings: string[] = [];
+  const assets: Asset[] = [...project.assets];
+  const declared = new Map<string, Asset>();
+  for (const value of list) {
+    const item = record(value);
+    const name = text(item.name).trim();
+    const description = text(item.description).trim();
+    if (!name || !description) throw new Error(`${label}名称或固定描述为空，未修改现有资产。`);
+    const found = assets.find(asset => asset.kind === category && asset.name === name);
+    if (found) {
+      const blank = !found.description.trim() && !found.lock.trim();
+      if (!blank) { declared.set(name, found); continue; }
+      const upgraded: Asset = { ...found, description, lock: description };
+      assets[assets.indexOf(found)] = upgraded;
+      declared.set(name, upgraded);
+    } else {
+      const asset: Asset = { id: uid(), kind: category, name, description, lock: description };
+      assets.push(asset);
+      declared.set(name, asset);
     }
-    return asset;
-  };
-  const declared = (kind: Asset['kind'], name: string, index: number) => {
-    const asset = assets.find(item => item.kind === kind && item.name === name);
-    if (!asset) throw new Error(`第${index + 1}拍引用了未声明的${kind === 'scene' ? '场景' : '道具'}：${name}`);
-    return asset.id;
-  };
-  const shots = data.beats.map((value, index) => {
-    const beat = record(value);
-    const seconds = beat.seconds;
-    if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 4 || seconds > 15) throw new Error(`第${index + 1}拍时长无效，需要4–15秒的整数。`);
-    const title = text(beat.title).trim();
-    const summary = text(beat.summary).trim();
-    if (!title) throw new Error(`第${index + 1}拍缺少标题。`);
-    if (!summary) throw new Error(`第${index + 1}拍缺少可见事件摘要，未覆盖现有剧本。`);
-    if (beat.dialogues !== undefined && !Array.isArray(beat.dialogues)) throw new Error(`第${index + 1}拍台词结构无效。`);
-    const dialogues = (Array.isArray(beat.dialogues) ? beat.dialogues : []).map(line => {
-      const item = record(line);
-      if (!text(item.text).trim()) throw new Error(`第${index + 1}拍包含空台词。`);
-      return { id: uid(), speakerId: character(text(item.speaker)).id, text: text(item.text) };
-    });
-    const names = (key: string) => Array.isArray(beat[key]) ? (beat[key] as unknown[]).map(item => text(item).trim()).filter(Boolean) : [];
-    const assetIds = [
-      ...names('characters').map(name => character(name).id),
-      ...names('scenes').map(name => declared('scene', name, index)),
-      ...names('props').map(name => declared('prop', name, index)),
-    ];
-    const scene = text(beat.scene).trim();
-    return {
-      ...makeShot(index + 1), duration: seconds,
-      visual: `${scene ? `【${scene}】` : ''}${summary}`,
-      camera: '', start: '', action: '', end: '',
-      dialogues, assetIds: [...new Set(assetIds)],
-    };
+  }
+  // 逐镜关联是可选的：模型没按提示词要求返回时，缺失就按无关联写入，跳过的问题条目计数提示，不整单拒绝。
+  const rawRows = Array.isArray(data.shots) ? data.shots : [];
+  if (!Array.isArray(data.shots)) warnings.push(`模型没有返回逐镜关联，本次只写入${label}清单。`);
+  const byNumber = new Map<number, string[]>();
+  let badRows = 0;
+  let unknownRefs = 0;
+  for (const value of rawRows) {
+    const row = record(value);
+    if (typeof row.number !== 'number' || !project.shots.some(shot => shot.number === row.number)) { badRows++; continue; }
+    const refs = row[key];
+    if (!Array.isArray(refs)) { badRows++; continue; }
+    const ids: string[] = [];
+    for (const raw of refs) {
+      const name = text(raw).trim();
+      const asset = declared.get(name);
+      if (!asset) { unknownRefs++; continue; }
+      ids.push(asset.id);
+    }
+    byNumber.set(row.number, ids);
+  }
+  const missing = project.shots.filter(shot => !byNumber.has(shot.number)).map(shot => shot.number);
+  if (missing.length) warnings.push(`第 ${missing.join('、')} 镜没有返回${label}关联。`);
+  if (badRows) warnings.push(`跳过 ${badRows} 条镜号无效或格式不对的关联。`);
+  if (unknownRefs) warnings.push(`跳过 ${unknownRefs} 条引用了未声明${label}的关联。`);
+  const characterIds = new Map(assets.filter(a => a.kind === 'character').map(a => [a.name, a.id]));
+  const shots = project.shots.map(shot => {
+    const ids = byNumber.get(shot.number) ?? [];
+    // 人物提取完成后，台词按名字挂到对应的人物资产上。
+    const dialogues = category === 'character'
+      ? shot.dialogues.map(d => {
+        const name = (d.speaker || '').trim();
+        const id = d.speakerId && assets.some(a => a.id === d.speakerId) ? d.speakerId : characterIds.get(name);
+        return id && id !== d.speakerId ? { ...d, speakerId: id } : d;
+      })
+      : shot.dialogues;
+    return { ...shot, assetIds: [...new Set([...shot.assetIds, ...ids])], dialogues };
   });
-  if (Math.abs(shots.reduce((sum, shot) => sum + shot.duration, 0) - 90) > 0.001) throw new Error('10个节拍必须合计90秒；现有剧本未被覆盖。');
-  return { title: text(data.title).trim() || undefined, assets, shots };
+  const unlinked = [...new Set(shots.flatMap(s => s.dialogues).filter(d => !d.speakerId && (d.speaker || '').trim()).map(d => (d.speaker || '').trim()))];
+  if (unlinked.length) warnings.push(`以下说话人还没有对应的人物资产：${unlinked.join('、')}。请在资产页手动新建，或检查剧本里的人物名是否一致。`);
+  return { assets, shots, ...(warnings.length ? { warnings } : {}) };
 }
 
 export interface GeneratedDirector {
@@ -204,7 +182,7 @@ export interface GeneratedDirector {
 /** 把导演输出合并回现有镜头：只改运镜与开场/动作/终点，剧情和时长不动。 */
 export function normalizeDirector(input: unknown, project: Project): Shot[] {
   const data = record(input);
-  if (!Array.isArray(data.shots) || data.shots.length !== project.shots.length) throw new Error('导演分镜数量与剧本拍数不一致，未覆盖现有内容。');
+  if (!Array.isArray(data.shots) || data.shots.length !== project.shots.length) throw new Error('导演分镜数量与剧本镜头数不一致，未覆盖现有内容。');
   const byNumber = new Map(project.shots.map(shot => [shot.number, shot]));
   const seen = new Set<number>();
   const rows = data.shots.map(value => {
@@ -225,36 +203,118 @@ export function normalizeDirector(input: unknown, project: Project): Shot[] {
 export function templateScript(theme: string): ScriptDraft {
   const subject = theme.trim();
   if (!subject) throw new Error('请先输入主题，再生成模板草稿。');
-  const scene = '故事发生地';
-  const beats: [string, string, string, string, string[]][] = [
-    ['开端', '主角停在故事发生地的入口，观察环境，发现与主题有关的异象。', '事情似乎并不简单。', '主角', ['主角']],
-    ['召唤', '守门人现身，向主角展示线索，线索落入主角掌心。', '答案就在前面。', '守门人', ['主角', '守门人']],
-    ['出发', '主角握住线索，向目标迈步，守门人留在原地。', '我想亲眼看看。', '主角', ['主角']],
-    ['阻碍', '主角面对阻碍，尝试穿过却被迫退后，单膝落地稳住身体。', '不能硬闯。', '主角', ['主角']],
-    ['发现', '主角再次查看线索，注意到被忽略的细节，伸手指向细节。', '原来如此。', '主角', ['主角']],
-    ['选择', '主角放下原有计划，改用新的方式接近目标，双手停在目标前方。', '这一次，我换条路。', '主角', ['主角']],
-    ['逆转', '主角按照线索行动，阻碍逐渐松动，通路在主角面前打开。', '路开了。', '主角', ['主角']],
-    ['高潮', '主角穿过通路，抓住即将消失的关键事物，将它护在身前。', '我不会再放手。', '守门人', ['主角', '守门人']],
-    ['结果', '环境恢复平静，守门人走近主角，两人并肩站定。', '你找到了自己的答案。', '守门人', ['主角', '守门人']],
-    ['余韵', '主角回望来路，随后面向新的方向，背影停留在远景中。', '故事，才刚开始。', '主角', ['主角']],
-  ];
-  return normalizeScreenplay({
-    title: `${subject.slice(0, 24)} · 模板草稿`,
-    logline: subject,
-    characters: [{ name: '主角', description: '主角，深色长衣，轮廓清晰，外观细节待用户设定' }, { name: '守门人', description: '守门人，浅灰长衣，沉静姿态，外观细节待用户设定' }],
-    scenes: [{ name: scene, description: '故事发生地，具体空间待人工补充' }],
-    props: [{ name: '关键道具', description: '关键道具，轮廓与材质待人工设定' }],
-    beats: beats.map(([title, summary, dialogue, speaker, characters]) => ({
-      title, scene, characters,
-      summary: `【模板演练，非AI生成】主题「${subject}」· ${title}。${summary}；具体场景与道具请人工补充。`,
-      dialogues: [{ speaker, text: dialogue }], seconds: 9,
-    })),
-  });
+  const place = '故事发生地';
+  const screenplay = `# 第一部分｜核心前提
+
+【核心前提】
+主题「${subject}」：主角要拿到答案，代价是交出唯一能证明自己的东西；拿不到就失去留下来的资格。
+
+【黄金3秒钩子】
+类型：反常细节
+开场画面：
+△ 主角停在门口不动，门缝里的光一寸一寸暗下去。
+△ 守门人手里的钥匙停在半空，没有递出。
+
+【三幕结构】
+- **第一幕｜铺垫建立（30%）**：主角拿到线索，却拿不到门。
+- **第二幕｜核心冲突危机（50%）**：主角绕开正门，代价是暴露自己。
+- **第三幕｜转折爆发与卡点（20%）**：门开了，门后的人却是主角自己。
+
+【结尾卡点】
+门后站着另一个主角，手里握着同一把钥匙——到底谁才是真的。
+
+# 第二部分｜场景因果节拍表
+
+| 场次 | 场景目标 | 遭遇阻碍 | 升级行动 | 意外转折 | 不可逆新局面 |
+|---|---|---|---|---|---|
+| 1 | 让主角拿到线索 | 守门人拒绝交出钥匙 | 主角用旧物换钥匙 | 钥匙背面刻着主角的名字 | 守门人开始提防主角 |
+| 2 | 让主角打开门 | 门后站着另一个自己 | 主角没有后退 | 另一个主角先开口 | 主角的身份彻底动摇 |
+
+# 第三部分｜世界观与人物关系确认
+
+【世界边界】
+- 时代：模板演练用的架空时代。
+- 体系：线索靠交换获得，不靠抢夺。
+- 核心禁忌：同一把钥匙不能被两个人同时持有。
+
+【人物关系】
+- 主角：唯一持有线索的人，不轻易交出旧物。
+- 守门人：看门的执行者，听命于规矩，不看人情。
+
+# 第四部分｜标准漫剧剧本
+
+## 第一章  模板演练
+
+### 场景1 外景 · ${place} — 清晨
+
+**剧情：**主角求线索，守门人拿规矩挡回去。
+**人物：**主角、守门人
+
+【镜头：远景】
+△ 晨光斜切过石阶，主角站在门外三步远的地方，没有再往前。（时长3s）
+
+【镜头：中景】
+守门人（冷淡）：“规矩如此，钥匙不能给你。”（时长2s）
+
+【镜头：特写】
+△ 守门人掌心里的钥匙旧得发黑，齿口磨平了一半。（时长1.5s）
+
+【镜头：近景】
+△ 主角的目光落在钥匙上，肩膀松了一寸，又绷回去。（时长1.5s）
+
+【镜头：中景】
+主角（平静）：“那我拿别的换。”（时长1.5s）
+
+【镜头：特写】
+△ 守门人抬起眼，钥匙在指间转了半圈。（时长1s）
+
+【镜头：特写】
+△ 钥匙背面刻着一个字，和主角胸口的旧牌一模一样。（时长2s）
+
+【镜头：近景】
+守门人（迟疑）：“这钥匙……你从哪来的。”（时长2s）
+
+### 场景2 内景 · 门前石室 — 正午
+
+**剧情：**主角换到钥匙，门后站着另一个自己。
+**人物：**主角、守门人
+
+【镜头：中景】
+△ 主角把旧牌按进门侧的凹槽，石门向内滑开一道缝。（时长3s）
+
+【镜头：跟拍】
+△ 主角侧身挤进门缝，石室里的光比外面暗。（时长2s）
+
+【镜头：远景】
+△ 石室正中立着一个人，背对门口，轮廓与主角一模一样。（时长3s）
+
+【镜头：特写】
+△ 那人转过身，手里握着同一把钥匙。（时长2s）
+
+【镜头：近景】
+那人（平静）：“你来晚了。”（时长1.5s）
+
+【镜头：俯拍】
+△ 主角僵在门口，手里的旧牌掉在地上。（时长2s）
+
+**卡点。**
+`;
+  // 模板演练只产出剧本与镜头：不预置人物资产，资产由提取或手动创建产生。
+  return normalizeScreenplay({ title: `${subject.slice(0, 24)} · 模板演练`, logline: subject, screenplay });
 }
 
 export function parseScriptText(input: string): ScriptDraft {
   const source = input.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   if (!source.trim()) throw new Error('请输入或上传剧本文本。');
+  if (/【镜头\s*[：:]/.test(source)) {
+    const parsed = parseScreenplay(source);
+    if (!parsed.blocks.length) throw new Error('剧本里没有找到【镜头：…】标记，拆不出镜头。');
+    const shots = blocksToShots(parsed, name => name.trim() || '未知人物', () => uid());
+    const meta = readScreenplayMeta(source);
+    // 剧本里显式写出的资产清单行（人物：X：描述）才建资产；说话人只留名字。
+    const assets = extractLocalAssets(shots, []).assets;
+    return { title: meta.title || undefined, logline: meta.logline || undefined, screenplay: source, assets, shots };
+  }
   const lines = source.split('\n');
   const heading = shotHeading;
   const starts = lines.flatMap((line, i) => heading.test(line) ? [i] : []);
@@ -262,12 +322,7 @@ export function parseScriptText(input: string): ScriptDraft {
     ? starts.map((start, i) => lines.slice(i === 0 ? 0 : start, starts[i + 1] ?? lines.length).join('\n'))
     : source.split(/\n\s*\n+/).filter(block => block.trim());
   const assets = extractLocalAssets([{ ...makeShot(1), visual: source }], []).assets;
-  const getSpeaker = (name: string) => {
-    const clean = name.trim() || '旁白';
-    let asset = assets.find(a => a.kind === 'character' && a.name === clean);
-    if (!asset) { asset = { id: uid(), kind: 'character', name: clean, description: `${clean}，导入人物，外观待完善`, lock: `${clean}，导入人物，外观待完善` }; assets.push(asset); }
-    return asset.id;
-  };
+  const getSpeaker = (name: string) => name.trim() || '旁白';
   const shots = blocks.map((block, index) => {
     const shot = makeShot(index + 1);
     // Keep every source line in visual, even unrecognised metadata and preambles.
@@ -288,12 +343,11 @@ export function parseScriptText(input: string): ScriptDraft {
       const quoted = line.match(/^\s*([^:：\n]{1,30})\s*[:：]\s*[“「"](.+)[”」"]\s*$/);
       const match = dialogue || quoted;
       if (match && !/^(?:画面|开场|起点|终点|动作|运镜|时长|风格|镜头|备注|visual|start|end|action|camera|duration)$/i.test(match[1].trim())) {
-        shot.dialogues.push({ id: uid(), speakerId: getSpeaker(match[1]), text: match[2] });
+        shot.dialogues.push({ id: uid(), speakerId: '', speaker: getSpeaker(match[1]), text: match[2] });
       } else if (label?.[1]?.trim() && !/^(?:无|无对白|无台词)$/.test(label[1].trim())) {
-        shot.dialogues.push({ id: uid(), speakerId: getSpeaker('旁白'), text: label[1] });
+        shot.dialogues.push({ id: uid(), speakerId: '', speaker: getSpeaker('旁白'), text: label[1] });
       } else if (line.trim() && !label) dialogueSection = false;
     }
-    shot.assetIds = [...new Set(shot.dialogues.map(d => d.speakerId))];
     return shot;
   });
   return extractLocalAssets(shots, assets);

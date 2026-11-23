@@ -24,11 +24,10 @@ export function locateTime(timeline: TimelineEntry[], seconds: number) {
 
 export function projectIssues(project: Project): string[] {
   const issues: string[] = [];
-  if (project.shots.length !== 10) issues.push('需要完整的 10 镜分镜。');
+  if (!project.shots.length) issues.push('需要完整的分镜。');
   if (new Set(project.shots.map(shot => shot.id)).size !== project.shots.length) issues.push('镜头 ID 重复，请修复分镜。');
   try {
     const timeline = buildTimeline(project.shots);
-    if (Math.abs((timeline.at(-1)?.end ?? 0) - 90) > 0.001) issues.push('分镜总时长必须为 90 秒（默认每镜 9 秒）。');
     for (const { shot, frames } of timeline) {
       if (!frames || Math.abs(frames / FPS - shot.duration) > 0.000001) issues.push(`第 ${shot.number} 镜时长无法对齐 24 fps，请使用整数秒或 1/24 秒的倍数。`);
     }

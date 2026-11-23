@@ -1,6 +1,8 @@
-// 提示词的结构化表示：由各构建函数拼出块，再统一渲染成字符串。
-// PR6 的模板编辑器按 kind + block.id 覆盖 text；locked 块只读。
-export type PromptKind = 'script' | 'extract' | 'image' | 'video' | 'assets' | 'director';
+// 提示词的结构化表示：由用户排好的块拼出，再统一渲染成字符串。
+// 没有必填块，也没有锁定块——发往模型的内容完全由用户的模板决定。
+import type { PromptKindId } from '../domain/types';
+
+export type PromptKind = PromptKindId;
 
 export interface PromptBlock {
   id: string;
@@ -19,24 +21,12 @@ export interface PromptSpec {
 /** 与后端 handler 的 prompt 字段上限保持一致。 */
 export const PROMPT_LIMITS: Record<PromptKind, number> = {
   script: 32000,
-  extract: 32000,
+  'extract-characters': 32000,
+  'extract-scenes': 32000,
+  'extract-props': 32000,
   image: 32000,
   video: 7000,
-  assets: 32000,
   director: 32000,
-};
-
-/** 剧本输出契约示例（10 个节拍）；键顺序与原有内联骨架一致。 */
-export const SCRIPT_OUTPUT_EXAMPLE = {
-  title: '作品名',
-  logline: '一句话故事',
-  characters: [{ name: '人物名', description: '固定外观短语' }],
-  scenes: [{ name: '场景名', description: '固定环境短语' }],
-  props: [{ name: '道具名', description: '固定道具短语' }],
-  beats: [{
-    title: '节拍名', scene: '场景名', characters: ['人物名'],
-    summary: '该节拍发生的可见事件', dialogues: [{ speaker: '人物名', text: '台词' }], seconds: 9,
-  }],
 };
 
 export function renderPrompt(spec: PromptSpec): string {
@@ -47,27 +37,6 @@ export function promptBlock(spec: PromptSpec, id: string): PromptBlock | undefin
   return spec.blocks.find(block => block.id === id);
 }
 
-/** 只覆盖未锁定且已存在的块；未知 id 忽略。供 PR6 保存模板时使用。 */
-export function applyPromptOverrides(spec: PromptSpec, overrides: Record<string, string>): PromptSpec {
-  return {
-    ...spec,
-    blocks: spec.blocks.map(block => {
-      if (block.locked) return block;
-      const text = overrides[block.id];
-      return text === undefined ? block : { ...block, text };
-    }),
-  };
-}
-
-const requiredBlocks: Record<PromptKind, string[]> = {
-  script: ['script.contract', 'script.spec', 'script.asset-rules', 'script.output-shape'],
-  extract: ['extract.instruction', 'extract.shots-input'],
-  image: ['image.task', 'image.subject'],
-  video: ['video.shot-heading', 'video.audio', 'video.fixed-assets'],
-  assets: [],
-  director: ['director.contract', 'director.spec'],
-};
-
 export function validatePromptSpec(spec: PromptSpec): string[] {
   const issues: string[] = [];
   const seen = new Set<string>();
@@ -77,12 +46,9 @@ export function validatePromptSpec(spec: PromptSpec): string[] {
     seen.add(block.id);
     if (typeof block.text !== 'string') issues.push(`块 ${block.id} 的 text 不是字符串`);
   }
-  for (const id of requiredBlocks[spec.kind]) {
-    const block = spec.blocks.find(item => item.id === id);
-    if (!block || !block.text.trim()) issues.push(`缺少必需块：${id}`);
-  }
   const length = renderPrompt(spec).length;
   const limit = PROMPT_LIMITS[spec.kind];
   if (length > limit) issues.push(`提示词长度 ${length} 超过上限 ${limit}`);
+  if (!length) issues.push('提示词为空');
   return issues;
 }

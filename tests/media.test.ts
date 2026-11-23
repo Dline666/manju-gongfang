@@ -41,9 +41,8 @@ test('invalid durations, wrong counts and non-frame-aligned durations are blocke
   const value = project();
   value.shots[0].duration = 9.01; value.shots[1].duration = 8.99;
   assert.ok(projectIssues(value).some(issue => issue.includes('24 fps')));
-  value.shots.pop();
-  assert.ok(projectIssues(value).some(issue => issue.includes('10 镜')));
-  assert.ok(projectIssues(value).some(issue => issue.includes('90 秒')));
+  value.shots = [];
+  assert.ok(projectIssues(value).some(issue => issue.includes('需要完整的分镜')));
 });
 
 test('dubbing overruns are rejected instead of truncated', () => {

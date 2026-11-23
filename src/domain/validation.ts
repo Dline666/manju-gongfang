@@ -1,10 +1,11 @@
 import type { Project } from './types';
+import { speakerName } from './types';
 
 export function validateProject(project: Project): string[] {
   const errors: string[] = [];
-  if (project.shots.length !== 10) errors.push(`需要10个镜头，当前${project.shots.length}个。`);
+  if (!project.shots.length) errors.push('剧本还没有镜头。');
   const total = project.shots.reduce((sum, shot) => sum + shot.duration, 0);
-  if (!Number.isFinite(total) || Math.abs(total - 90) > 0.001) errors.push(`总时长需要90秒，当前${Number.isFinite(total) ? Number(total.toFixed(2)) : '无效'}秒。`);
+  if (!Number.isFinite(total) || total < 20 || total > 400) errors.push(`总时长需要在20–400秒之间，当前${Number.isFinite(total) ? Number(total.toFixed(2)) : '无效'}秒。`);
   const assets = new Map(project.assets.map(a => [a.id, a]));
   if (assets.size !== project.assets.length) errors.push('存在重复的资产ID。');
   if (new Set(project.shots.map(s => s.id)).size !== project.shots.length) errors.push('存在重复的镜头ID。');
@@ -14,9 +15,10 @@ export function validateProject(project: Project): string[] {
   project.shots.forEach((shot, index) => {
     const prefix = `第${index + 1}镜：`;
     if (shot.number !== index + 1) errors.push(prefix + '镜号需要按顺序排列。');
-    if (!Number.isInteger(shot.duration) || shot.duration < 4 || shot.duration > 15) errors.push(prefix + '时长必须为4–15秒之间的整数。');
+    if (!Number.isFinite(shot.duration) || shot.duration <= 0 || shot.duration > 30) errors.push(prefix + '时长必须大于0且不超过30秒。');
     if (shot.assetIds.some(id => !assets.has(id))) errors.push(prefix + '存在已删除或未知的资产ID。');
-    if (shot.dialogues.some(d => !d.speakerId || assets.get(d.speakerId)?.kind !== 'character')) errors.push(prefix + '台词说话者必须关联有效人物。');
+    if (shot.dialogues.some(d => !speakerName(project, d).trim())) errors.push(prefix + '台词缺少说话人。');
+    if (shot.dialogues.some(d => d.speakerId && assets.get(d.speakerId)?.kind !== 'character')) errors.push(prefix + '台词关联的人物资产无效。');
     if (shot.references.some(r => !assets.has(r.assetId) || !assets.get(r.assetId)?.imageId || assets.get(r.assetId)?.kind === 'voice')) errors.push(prefix + '参考图必须关联真实图片资产。');
     if (new Set(shot.references.map(r => r.assetId)).size !== shot.references.length) errors.push(prefix + '同一图片资产不能重复挂载。');
     if (shot.references.some(r => !['reference_image', 'first_frame', 'last_frame'].includes(r.role))) errors.push(prefix + '参考图角色无效。');

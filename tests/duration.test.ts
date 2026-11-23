@@ -14,20 +14,21 @@ function project(assets: Asset[], dialogue: string, duration: number): Project {
   };
 }
 
-test('时长表标记超出 4–15 秒的镜头', () => {
-  const rows = durationRows(project([hero], '', 3));
+test('时长表标记越界的镜头', () => {
+  const rows = durationRows(project([hero], '', 0.2));
   assert.equal(rows[0].invalid, true);
+  assert.equal(durationRows(project([hero], '', 31))[0].invalid, true);
   assert.equal(durationRows(project([hero], '', 9))[0].invalid, false);
 });
 
 test('台词所需时间超过时长时标记不够，语速会改变判断', () => {
-  const normal = durationRows(project([hero], '一'.repeat(20), 4));
-  assert.equal(normal[0].needed, 6);
+  const normal = durationRows(project([hero], '一'.repeat(20), 2));
+  assert.equal(normal[0].needed, 2.5);
   assert.equal(normal[0].short, true);
-  const fast = durationRows(project([{ ...hero, voiceAssetId: voice.id }, voice], '一'.repeat(20), 4));
-  assert.equal(fast[0].needed, 3.5);
+  const fast = durationRows(project([{ ...hero, voiceAssetId: voice.id }, voice], '一'.repeat(20), 2));
+  assert.equal(fast[0].needed, 1.25);
   assert.equal(fast[0].short, false);
-  const noDialogue = durationRows(project([hero], '', 4));
+  const noDialogue = durationRows(project([hero], '', 2));
   assert.equal(noDialogue[0].needed, 0);
   assert.equal(noDialogue[0].short, false);
 });

@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { directorPrompt, directorSpec, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
-import { applyPromptOverrides, promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
-import { findUnknownVariables, styleSpecFor, templates } from '../src/lib/promptTemplates';
+import { promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
+import { findUnknownVariables, styleSpecFor } from '../src/lib/promptTemplates';
+import { builtinBlocks, builtinBlocksFor, dataBlocksFor, defaultBlocksFor, migratePromptConfig } from '../src/lib/promptBlocks';
 import { savedStudioSchema } from '../src/store/schema';
 import { defaultSettings, defaultStyle, makeShot, type Asset, type Project } from '../src/domain/types';
 
@@ -19,48 +20,70 @@ function makeProject(promptConfig?: Project['promptConfig']): Project {
   };
 }
 
-test('五个模板齐全，默认渲染包含可编辑规则与锁定契约', () => {
-  assert.deepEqual(templates.map(template => template.id), ['script', 'assets', 'director', 'image', 'video']);
-  const project = makeProject();
-  const script = scriptPrompt(project);
-  assert.ok(script.includes('三幕结构'));
-  assert.ok(script.includes('不写抽象心理'));
-  assert.ok(script.includes('【优先级】P0'));
-  assert.ok(script.includes('总计90秒'));
-  assert.ok(imagePrompt(project, hero).includes('只输出一张角色三视图'));
-  assert.ok(videoPrompt(project, project.shots[0]).includes('动作按时间顺序描述'));
-  const director = directorSpec(project);
-  assert.equal(promptBlock(director, 'director.contract')?.locked, true);
-  assert.ok(directorPrompt(project).includes('shotSize'));
+test('内置块目录齐全：39 条，只有标题没有默认文案', () => {
+  assert.equal(builtinBlocks.length, 39);
+  for (const block of builtinBlocks) {
+    assert.equal(typeof block.id, 'string');
+    assert.ok(block.title.length > 0, `${block.id} 必须有标题`);
+    assert.equal((block as { defaultText?: unknown }).defaultText, undefined, `${block.id} 不得带默认文案`);
+    assert.equal((block as { locked?: unknown }).locked, undefined, `${block.id} 不得锁定`);
+  }
+  assert.deepEqual(builtinBlocksFor('script').map(block => block.id).slice(0, 3), ['script.contract', 'script.structure', 'script.screenplay-format']);
+  assert.deepEqual(builtinBlocksFor('extract-characters').map(block => block.id), ['extract.characters.instruction', 'extract.characters.phrase-style', 'extract.characters.forbidden']);
+  assert.deepEqual(builtinBlocksFor('extract-scenes').map(block => block.group), ['场景', '场景', '场景']);
+  assert.deepEqual(builtinBlocksFor('extract-props').map(block => block.group), ['道具', '道具', '道具']);
 });
 
-test('可编辑块被作品配置覆盖，锁定块忽略覆盖', () => {
-  const project = makeProject({ v: 1, blocks: { 'script.drama': '自定义剧作规范：只写雨夜。', 'script.contract': '篡改契约', 'video.motion': '动作只写一个。' } });
+test('没有默认提示词：渲染只包含作品数据', () => {
+  const project = makeProject();
   const script = scriptPrompt(project);
-  assert.ok(script.includes('自定义剧作规范：只写雨夜。'));
-  assert.ok(!script.includes('三幕结构'));
-  assert.ok(script.includes('只输出合法JSON'), 'locked contract must stay');
-  assert.ok(!script.includes('篡改契约'));
-  const video = videoPrompt(project, project.shots[0]);
-  assert.ok(video.includes('动作只写一个。'));
-  assert.ok(!video.includes('动作按时间顺序描述'));
+  assert.ok(!script.includes('【剧本结构】'));
+  assert.ok(!script.includes('【时长可行性】'));
+  assert.ok(!script.includes('【优先级】'));
+  assert.ok(!imagePrompt(project, hero).includes('只输出一张角色三视图'));
+  assert.ok(!videoPrompt(project, project.shots[0]).includes('动作按时间顺序描述'));
+  assert.ok(!directorPrompt(project).includes('【镜头分配规则】'));
+  const director = directorSpec(project);
+  for (const block of director.blocks) assert.notEqual(block.locked, true, `${block.id} 不应是锁定块`);
+});
+
+test('数据块清单按 kind 覆盖三类提取与四个步骤', () => {
+  assert.deepEqual(dataBlocksFor('script').map(item => item.source), ['script.theme', 'script.source', 'script.characters', 'script.skills']);
+  assert.deepEqual(dataBlocksFor('extract-characters').map(item => item.source), ['extract.characters.shots', 'extract.characters.existing']);
+  assert.deepEqual(dataBlocksFor('extract-scenes').map(item => item.source), ['extract.scenes.shots', 'extract.scenes.existing']);
+  assert.deepEqual(dataBlocksFor('extract-props').map(item => item.source), ['extract.props.shots', 'extract.props.existing']);
+  assert.ok(dataBlocksFor('director').some(item => item.source === 'director.shots'));
+  assert.ok(dataBlocksFor('image').some(item => item.source === 'image.subject'));
+  assert.ok(dataBlocksFor('video').some(item => item.source === 'video.assets'));
+  for (const kind of ['script', 'director', 'image', 'video'] as const) {
+    assert.ok(dataBlocksFor(kind).some(item => item.source.endsWith('skills')), `${kind} 必须有 Skill 数据块`);
+  }
+  assert.ok(defaultBlocksFor('script').every(block => block.text === '' && block.source));
+});
+
+test('用户块计划按顺序渲染，空块被跳过', () => {
+  const project = makeProject({ v: 2, templates: { script: { blocks: [
+    { id: 'a', title: '甲', text: '第一条规则' },
+    { id: 'b', title: '乙', text: '' },
+    { id: 'c', title: '丙', text: '第三条规则' },
+  ] } } });
+  const script = scriptPrompt(project);
+  assert.equal(script, '第一条规则\n\n第三条规则');
+  assert.ok(script.indexOf('第一条规则') < script.indexOf('第三条规则'));
 });
 
 test('变量白名单：已知变量替换，未知变量被报告', () => {
-  const project = makeProject({ v: 1, blocks: { 'script.genre': '题材：{{project.theme}}，{{unknown.extra}}' } });
-  assert.ok(scriptPrompt(project).includes('题材：少年拾起断剑，{{unknown.extra}}'));
   assert.deepEqual(findUnknownVariables('{{project.theme}} {{style.medium}}'), []);
   assert.deepEqual(findUnknownVariables('{{unknown.extra}} {{project.theme}} {{bad}}'), ['unknown.extra', 'bad']);
+  const project = makeProject({ v: 2, templates: { script: { blocks: [{ id: 'g', title: '题材', text: '题材：{{project.theme}}，{{unknown.extra}}' }] } } });
+  assert.ok(scriptPrompt(project).includes('题材：少年拾起断剑，{{unknown.extra}}'));
 });
 
 test('风格设定展开到图片/视频提示词，project.style 仍保留', () => {
-  const project = makeProject({ v: 1, style: { medium: '测试介质', palette: '测试配色', forbidden: ['水印', '文字'] } });
+  const project = makeProject({ v: 2, style: { medium: '测试介质', palette: '测试配色', forbidden: ['水印', '文字'] } });
   const image = imagePrompt(project, scene);
   assert.ok(image.includes('介质：测试介质'));
   assert.ok(image.includes('配色：测试配色'));
-  assert.ok(image.includes('禁写：水印、文字'));
-  assert.ok(image.startsWith('为漫剧制作场景设定图'));
-  assert.ok(image.includes(defaultStyle));
   const video = videoPrompt(project, project.shots[0]);
   assert.ok(video.includes('【风格块】'));
   assert.ok(video.includes('测试介质'));
@@ -68,25 +91,45 @@ test('风格设定展开到图片/视频提示词，project.style 仍保留', ()
 });
 
 test('预算校验：视频提示词超过 7000 字会报告', () => {
-  const project = makeProject({ v: 1, blocks: { 'video.forbidden': `禁写：${'x'.repeat(8000)}` } });
+  const project = makeProject({ v: 2, templates: { video: { blocks: [{ id: 'long', title: '禁写', text: `禁写：${'x'.repeat(8000)}` }] } } });
   const prompt = videoPrompt(project, project.shots[0]);
   assert.ok(prompt.length > 7000);
   const issues = validatePromptSpec(videoSpec(project, project.shots[0]));
   assert.ok(issues.some(issue => issue.includes('超过上限')), issues.join('；'));
 });
 
-test('覆盖入口保护锁定块，并可恢复默认', () => {
-  const project = makeProject();
-  const spec = scriptSpec(project);
-  const overridden = applyPromptOverrides(spec, { 'script.contract': '篡改', 'script.drama': '新规范' });
-  assert.equal(promptBlock(overridden, 'script.contract')?.text, promptBlock(spec, 'script.contract')?.text);
-  assert.equal(promptBlock(overridden, 'script.drama')?.text, '新规范');
+test('存档迁移：v1 的用户覆盖变成块计划，未改过的内置块不出现，style 保留', () => {
+  const migrated = migratePromptConfig({ v: 1, style: { medium: '宣纸' }, blocks: { 'script.drama': '只写雨夜', 'extract.characters.instruction': '只认有台词的', 'extract.instruction': '旧合并键' } });
+  assert.ok(migrated);
+  assert.equal(migrated!.v, 2);
+  assert.deepEqual(migrated!.style, { medium: '宣纸' });
+  const script = migrated!.templates!.script!;
+  assert.equal(script.blocks.length, 1, '只迁移用户改过的块');
+  assert.equal(script.blocks[0].text, '只写雨夜');
+  assert.equal(script.blocks[0].title, '剧作规范');
+  assert.equal(script.blocks[0].builtin, 'script.drama');
+  const characters = migrated!.templates!['extract-characters']!;
+  assert.equal(characters.blocks.length, 1);
+  assert.equal(characters.blocks[0].text, '只认有台词的');
+  assert.equal(migrated!.templates!['extract-scenes'], undefined, '旧合并键不迁入其它品类');
+  assert.equal(migratePromptConfig(undefined), undefined);
 });
 
 test('promptConfig 可选字段能通过存档 schema，旧作品不受影响', () => {
-  const withConfig = makeProject({ v: 1, style: { medium: '宣纸' }, blocks: { 'script.drama': '只写雨夜' } });
+  const withConfig = makeProject({ v: 2, style: { medium: '宣纸' }, templates: { script: { blocks: [{ id: 'a', title: '甲', text: '只写雨夜' }] } } });
   const saved = savedStudioSchema.parse({ version: 1, projects: [withConfig], activeId: withConfig.id, settings: defaultSettings });
   assert.deepEqual(saved.projects[0].promptConfig, withConfig.promptConfig);
   const legacy = makeProject();
   assert.equal(savedStudioSchema.parse({ version: 1, projects: [legacy], activeId: legacy.id, settings: defaultSettings }).projects[0].promptConfig, undefined);
+  const v1 = makeProject({ v: 1, blocks: { 'script.drama': '只写雨夜' } });
+  assert.doesNotThrow(() => savedStudioSchema.parse({ version: 1, projects: [v1], activeId: v1.id, settings: defaultSettings }));
+});
+
+test('剧本层与导演层互不串块', () => {
+  const project = makeProject();
+  const script = scriptSpec(project);
+  assert.ok(!script.blocks.some(block => block.id.startsWith('director.')));
+  const director = directorSpec(project);
+  assert.ok(director.blocks.some(block => block.id === 'data.director.shots'));
+  assert.ok(promptBlock(director, 'data.director.shots'));
 });

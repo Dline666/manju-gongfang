@@ -141,7 +141,7 @@ export async function renderProject(project: Project, onProgress: OnProgress = (
       }
     }
     throwIfAborted(signal);
-    onProgress({ stage: 'concat', message: '正在拼接 10 镜，并统一编码 AAC 音轨（避免逐镜音频填充造成漂移）…' });
+    onProgress({ stage: 'concat', message: '正在拼接全部分镜，并统一编码 AAC 音轨（避免逐镜音频填充造成漂移）…' });
     const blob = await mounted(ffmpeg, '/parts', parts, async () => {
       await ffmpeg.writeFile('concat.txt', concatList(snapshot.shots.map(shot => shot.duration)));
       await exec(ffmpeg, ['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-map', '0:v:0', '-map', '0:a:0', '-c:v', 'copy', ...audioOptions, '-t', '90', '-map_metadata', '-1', '-movflags', '+faststart', 'final.mp4']);

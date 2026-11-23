@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Copy, Download, Film, Link2, Mic, Play, RefreshCw, Upload, WandSparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Asset, PageProps, Project, Shot, VideoTask } from '../../domain/types';
+import { speakerName } from '../../domain/types';
 import { getStudio, setSettings, updateProject, useStudio } from '../../store/studio';
 import { blobDataUrl, getMedia, mediaDuration, putMedia, releaseVideo, setVideo, useMediaUrl, useVideo } from '../../store/media';
 import { ApiError, callApi, callBinary, credentials, errorMessage } from '../../lib/api';
@@ -26,9 +27,10 @@ function patchShot(projectId: string, shotId: string, patch: Partial<Shot>) { up
 function currentShot(projectId: string, shotId: string, revision?: number) { const p=getStudio().projects.find(p=>p.id===projectId); return p && (revision===undefined||p.revision===revision) ? p.shots.find(s=>s.id===shotId) : undefined; }
 function speechLines(project: Project, shot: Shot) {
   return shot.dialogues.filter(d=>d.text.trim()).map(d=>{
-    const speaker=project.assets.find(a=>a.id===d.speakerId);
-    const voice=project.assets.find(a=>a.kind==='voice'&&a.id===speaker?.voiceAssetId) || (!d.speakerId?project.assets.find(a=>a.kind==='voice'):undefined);
-    if(!voice?.voiceId)throw new Error(`镜头 ${shot.number} 的${speaker?.name||'旁白'}尚未绑定音色，请到资产页选择。`);
+    const name=speakerName(project,d);
+    const speaker=project.assets.find(a=>a.id===d.speakerId) || (name?project.assets.find(a=>a.kind==='character'&&a.name===name):undefined);
+    const voice=project.assets.find(a=>a.kind==='voice'&&a.id===speaker?.voiceAssetId) || (!speaker?project.assets.find(a=>a.kind==='voice'):undefined);
+    if(!voice?.voiceId)throw new Error(`镜头 ${shot.number} 的${speaker?.name||name||'旁白'}尚未绑定音色，请到资产页选择。`);
     return {text:d.text,voiceId:voice.voiceId,speed:voice.speed||1};
   });
 }
@@ -151,7 +153,7 @@ export default function GenerationPage({project,navigate}:PageProps) {
   function defaultVideoPrompt(shot:Shot){return videoPrompt(project,{...shot,audioMode:shot.dialogues.some(d=>d.text.trim())?'dubbing':'silent'});}
   function updatePrompt(id:string,value:string){setConfirmation(previous=>previous&&previous.kind==='video'?{...previous,prompts:{...previous.prompts,[id]:value}}:previous);}
   function resetPrompt(id:string){const shot=project.shots.find(s=>s.id===id);if(shot)updatePrompt(id,defaultVideoPrompt(shot));}
-  function prepare(kind:'video'|'speech',ids:string[]){try{const provider=state.settings.videoProvider;credentials(kind==='video'?provider:'minimax');if(kind==='video'){const issues=validateProject(project);if(issues.length)throw new Error(issues.join('；'));}const prompts:Record<string,string>={};const speech:Record<string,ReturnType<typeof speechLines>>={};for(const id of ids){const shot=project.shots.find(s=>s.id===id)!;if(kind==='video')prompts[id]=defaultVideoPrompt(shot);else speech[id]=speechLines(project,shot);}setConfirmation({kind,ids,revision:project.revision,provider,model:kind==='video'?state.settings.models[provider]:state.settings.speechModel,prompts,speech});}catch(e){toast.error(errorMessage(e));}}
+  function prepare(kind:'video'|'speech',ids:string[]){try{const provider=state.settings.videoProvider;credentials(kind==='video'?provider:'minimax');if(kind==='video'){const issues=validateProject(project);if(issues.length)throw new Error(issues.join('；'));}const prompts:Record<string,string>={};const speech:Record<string,ReturnType<typeof speechLines>>={};for(const id of ids){const shot=project.shots.find(s=>s.id===id)!;if(kind==='video'){const text=defaultVideoPrompt(shot);if(!text.trim())throw new Error('提示词不能为空：请在模板编辑器里添加内容。');prompts[id]=text;}else speech[id]=speechLines(project,shot);}setConfirmation({kind,ids,revision:project.revision,provider,model:kind==='video'?state.settings.models[provider]:state.settings.speechModel,prompts,speech});}catch(e){toast.error(errorMessage(e));}}
   async function run(){if(!confirmation)return;const batch=confirmation;setConfirmation(null);setBusy(true);stop.current=false;
     const jobId=startJob({kind:batch.kind,label:batch.kind==='video'?`批量生成视频（${batch.ids.length} 镜）`:`批量生成配音（${batch.ids.length} 镜）`,cancel:()=>{stop.current=true;}});
     setProgress({startedAt:Date.now(),total:batch.ids.length,done:0,failed:0,kind:batch.kind});

@@ -1,4 +1,5 @@
-import type { Project } from '../domain/types';
+import type { Dialogue, Project } from '../domain/types';
+import { speakerName } from '../domain/types';
 import { assetText, fixedDescription, imagePrompt, videoPrompt } from './prompts';
 import { validateProject } from '../domain/validation';
 
@@ -29,10 +30,10 @@ export function buildSrt(project: Project): string {
 
 export function buildDocuments(project: Project): Record<string, string> {
   const header = `# ${project.name}\n\n来源：${sourceNames[project.source]}\n\n主题：${project.theme}\n\n风格：${project.style}\n\n镜头：${project.shots.length} / 总时长：${project.shots.reduce((sum, s) => sum + s.duration, 0)}秒\n`;
-  const speaker = (id: string) => project.assets.find(a => a.id === id)?.name || '未指定人物';
+  const speaker = (line: Dialogue) => speakerName(project, line) || '未指定人物';
   const issues = validateProject(project);
   return {
-    '剧本文档.md': header + project.shots.map(s => `\n## 第${s.number}镜 · ${s.duration}秒\n\n画面：${s.visual}\n\n开场：${s.start}\n\n动作：${s.action}\n\n终点：${s.end}\n\n运镜：${s.camera}\n\n台词：\n${s.dialogues.map(d => `- ${speaker(d.speakerId)}：${d.text}`).join('\n') || '无对白'}\n`).join(''),
+    '剧本文档.md': header + (project.screenplay?.trim() ? project.screenplay.trim() + '\n' : project.shots.map(s => `\n## 第${s.number}镜 · ${s.duration}秒\n\n画面：${s.visual}\n\n开场：${s.start}\n\n动作：${s.action}\n\n终点：${s.end}\n\n运镜：${s.camera}\n\n台词：\n${s.dialogues.map(d => `- ${speaker(d)}：${d.text}`).join('\n') || '无对白'}\n`).join('')),
     '资产设定.md': header + (project.assets.map(a => `\n## ${kindNames[a.kind]} · ${a.name}\n\n描述：${a.description}\n\n固定短语：${fixedDescription(a)}\n\n${a.kind === 'voice' ? `音色ID：${a.voiceId || '未选择'}；语速：${a.speed ?? 1}` : `图片：${a.imageId ? '已在本地素材库保存（本文档不含图片二进制）' : '未添加'}${a.voiceAssetId ? `；关联音色：${project.assets.find(v => v.id === a.voiceAssetId)?.name || '无效引用'}` : ''}`}\n`).join('') || '\n尚未创建资产。\n'),
     '分镜文档.md': header + `\n对应关系：${project.storyboardReady ? '已由用户确认' : '待确认'}\n` + project.shots.map(s => `\n## 第${s.number}镜 · ${s.duration}秒\n\n画面：${s.visual}\n\n开场：${s.start}\n\n动作：${s.action}\n\n终点：${s.end}\n\n运镜：${s.camera}\n\n${assetText(project, s)}\n\n实际图片附件顺序：\n${s.references.map((r, i) => `${i + 1}. ${project.assets.find(a => a.id === r.assetId)?.name || '未知资产'} · ${r.role}`).join('\n') || '未挂图'}\n\n音频：${audioNames[s.audioMode]}\n`).join(''),
     '生成提示词.md': header + '\n## 图片提示词\n' + project.assets.filter(a => a.kind !== 'voice').map(a => `\n### ${a.name}\n\n${imagePrompt(project, a)}\n`).join('') + '\n## 视频提示词\n' + project.shots.map(s => `\n### 第${s.number}镜\n\n${videoPrompt(project, s)}\n`).join(''),

@@ -1,16 +1,46 @@
 import { useSyncExternalStore } from 'react';
 import { savedStudioSchema } from './schema';
+import { migratePromptConfig } from '../lib/promptBlocks';
 import { defaultSettings, defaultStyle, uid, type StudioState, type Project, type Settings, type Provider, type ProviderStatus } from '../domain/types';
 
 const STORAGE_KEY = 'manju-studio-v1';
+
+/**
+ * 旧存档里剧本阶段自动建的占位人物：既没有描述也没有固定短语，或带着「，导入人物，外观待完善」的机器文案。
+ * 剧本步骤已经不建人物资产，这些占位在载入时清掉；台词保留说话人名字，等提取或手动创建后再关联。
+ */
+export function dropPlaceholderCharacters(project: Project): Project {
+  const placeholder = (asset: Project['assets'][number]) => {
+    if (asset.kind !== 'character') return false;
+    if (asset.imageId || asset.voiceAssetId) return false;
+    const text = `${asset.description} ${asset.lock}`.trim();
+    if (!text) return true;
+    return /，导入人物，外观待完善$/.test(asset.description.trim()) || /，导入人物，外观待完善$/.test(asset.lock.trim());
+  };
+  const removed = project.assets.filter(placeholder);
+  if (!removed.length) return project;
+  const ids = new Map(removed.map(asset => [asset.id, asset.name]));
+  return {
+    ...project,
+    assets: project.assets.filter(asset => !ids.has(asset.id)),
+    shots: project.shots.map(shot => ({
+      ...shot,
+      assetIds: shot.assetIds.filter(id => !ids.has(id)),
+      references: shot.references.filter(ref => !ids.has(ref.assetId)),
+      dialogues: shot.dialogues.map(line => ids.has(line.speakerId) ? { ...line, speakerId: '', speaker: line.speaker || ids.get(line.speakerId) || '' } : line),
+    })),
+  };
+}
+
 let state: StudioState = { version: 1, projects: [], activeId: null, settings: defaultSettings, keys: {}, providerStatus: {}, storageError: null };
 let readable = true;
 try {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (raw) {
     const data = savedStudioSchema.parse(JSON.parse(raw));
-    data.projects.forEach(p => p.shots.forEach(s => { if (s.task?.status === 'submitting') s.task = { ...s.task, status: 'unknown', error: '提交时页面已关闭，结果未知；请先检查模型平台，避免重复付费。' }; }));
-    state = { ...state, projects: data.projects, activeId: data.activeId, settings: { ...defaultSettings, ...data.settings, models: { ...defaultSettings.models, ...data.settings?.models } } };
+    data.projects.forEach(p => { p.promptConfig = migratePromptConfig(p.promptConfig); p.shots.forEach(s => { if (s.task?.status === 'submitting') s.task = { ...s.task, status: 'unknown', error: '提交时页面已关闭，结果未知；请先检查模型平台，避免重复付费。' }; }); });
+    const projects = data.projects.map(dropPlaceholderCharacters);
+    state = { ...state, projects, activeId: data.activeId, settings: { ...defaultSettings, ...data.settings, models: { ...defaultSettings.models, ...data.settings?.models } } };
   }
 } catch { readable = false; state.storageError = '本地作品数据无法读取，已停止覆盖保存。请先备份浏览器数据，不要清除缓存。'; }
 const listeners = new Set<() => void>();

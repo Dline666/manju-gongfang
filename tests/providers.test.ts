@@ -28,16 +28,48 @@ const assets = () => {
   };
 };
 const ASSET_KINDS = ["characters", "scenes", "props"] as const;
-const screenplay = () => ({
-  title: "测试剧本", logline: "少年在雨夜拾起断剑",
-  characters: [{ name: "沈砚", description: "灰白布衣" }],
-  scenes: [{ name: "山门", description: "青灰石阶" }],
-  props: [{ name: "断剑", description: "红绳剑柄" }],
-  beats: Array.from({ length: 10 }, (_, i) => ({
-    title: `节拍${i + 1}`, scene: "山门", characters: ["沈砚"], summary: "沈砚走上石阶",
-    dialogues: [{ speaker: "沈砚", text: "你好。" }], seconds: 9,
-  })),
-});
+/** 资产提取按品类分开：三个 action 各自一套 schema，只认本类清单与本类逐镜关联。 */
+const EXTRACT_ACTIONS = [
+  { action: "extract-characters", key: "characters" },
+  { action: "extract-scenes", key: "scenes" },
+  { action: "extract-props", key: "props" },
+] as const;
+/** 单品类提取的模型返回：只有本类清单与本类逐镜关联。 */
+const extractValue = (key: "characters" | "scenes" | "props") => {
+  const value = assets();
+  return { [key]: value[key], shots: value.shots.map((shot) => ({ number: shot.number, [key]: shot[key] })) };
+};
+const screenplayText = [
+  "# 第一部分｜核心前提",
+  "【核心前提】",
+  "少年在雨夜拾起断剑，却不知剑里封着自己的神格。",
+  "",
+  "# 第二部分｜场景因果节拍表",
+  "| 场次 | 场景目标 | 遭遇阻碍 | 升级行动 | 意外转折 | 不可逆新局面 |",
+  "|---|---|---|---|---|---|",
+  "| 1 | 拾剑 | 被拦 | 拔剑 | 剑回应 | 结仇 |",
+  "",
+  "# 第三部分｜世界观与人物关系确认",
+  "【世界边界】",
+  "- 时代：修仙。",
+  "",
+  "# 第四部分｜标准漫剧剧本",
+  "## 第一章  断剑归门",
+  "",
+  "### 场景1 外景 · 山门石阶 — 清晨",
+  "**剧情：**沈砚拾剑。",
+  "**人物：**沈砚",
+  "",
+  "【镜头：远景】",
+  "△ 沈砚蹲在石阶下，指尖抠开泥。（时长9s）",
+  "",
+  "【镜头：特写】",
+  "△ 断剑露出一截，剑身满是泥。（时长9s）",
+  "",
+  "【镜头：中景】",
+  "沈砚（低声）：“我回来了。”（时长9s）",
+].join("\n");
+const screenplay = () => ({ title: "测试剧本", logline: "少年在雨夜拾起断剑", screenplay: screenplayText });
 const director = () => ({ shots: Array.from({ length: 10 }, (_, i) => ({
   number: i + 1, shotSize: "中景", movement: i === 9 ? "拉" : "推", angle: "平视",
   start: "石阶前", action: "抬手", end: "站定",
@@ -160,10 +192,10 @@ test("BYOK validation, unknown parameters, provider/model mismatch never reach a
 
 test("Gemini uses Interactions REST, revision header, schema and final model_output only", async () => {
   const source = gemini();
-  const output = JSON.stringify(script());
+  const output = JSON.stringify(screenplay());
   source.steps[1].content = [{ type: "text", text: output.slice(0, 80) }, { type: "text", text: output.slice(80) }];
   const { handle, calls } = fixture([source]);
-  assert.deepEqual(await success(await handle(request("script", input("gemini", { prompt: "固定剧本模板" })))), script());
+  assert.deepEqual(await success(await handle(request("screenplay", input("gemini", { prompt: "固定剧本模板" })))), screenplay());
   assert.equal(calls.length, 1);
   const call = calls[0];
   assert.equal(call.url, "https://generativelanguage.googleapis.com/v1beta/interactions");
@@ -181,18 +213,18 @@ test("Gemini uses Interactions REST, revision header, schema and final model_out
 });
 test("Gemini rejects SDK-only output_text, partial interactions and thoughts-only results", async () => {
   for (const response of [
-    { status: "completed", output_text: JSON.stringify(script()) },
+    { status: "completed", output_text: JSON.stringify(screenplay()) },
     { ...gemini(), status: "requires_continuation" },
-    { status: "completed", steps: [{ type: "thought", content: [{ type: "text", text: JSON.stringify(script()) }] }] },
+    { status: "completed", steps: [{ type: "thought", content: [{ type: "text", text: JSON.stringify(screenplay()) }] }] },
   ]) {
     const { handle, calls } = fixture([response]);
-    await error(await handle(request("script", input("gemini", { prompt: "test" }))), "invalid_script", 502);
+    await error(await handle(request("screenplay", input("gemini", { prompt: "test" }))), "invalid_screenplay", 502);
     assert.equal(calls.length, 1);
   }
 });
 test("DeepSeek uses chat/completions json_object and a system instruction containing json", async () => {
-  const { handle, calls } = fixture([deepseek()]);
-  assert.deepEqual(await success(await handle(request("script", input("deepseek", { prompt: "固定剧本模板" })))), script());
+  const { handle, calls } = fixture([deepseek(screenplay())]);
+  assert.deepEqual(await success(await handle(request("screenplay", input("deepseek", { prompt: "固定剧本模板" })))), screenplay());
   const call = calls[0];
   assert.equal(call.url, "https://api.deepseek.com/chat/completions");
   assert.equal(call.body?.model, "deepseek-flash");
@@ -202,137 +234,136 @@ test("DeepSeek uses chat/completions json_object and a system instruction contai
   assert.deepEqual(messages[1], { role: "user", content: "固定剧本模板" });
   assert.equal(call.headers.get("authorization"), `Bearer ${KEY}`);
 });
-test("script validation rejects bad count, timing, fields, dialogue and optional character schema without retry", async () => {
-  const mutations: ((value: ReturnType<typeof script>) => unknown)[] = [
-    (value) => ({ ...value, shots: value.shots.slice(1) }),
-    (value) => { value.shots[0].duration = 8; return value; },
-    (value) => { value.shots[0].duration = 9.5; value.shots[1].duration = 8.5; return value; },
-    (value) => { value.shots[0].visual = ""; return value; },
-    (value) => ({ ...value, characters: [{ name: "x" }] }),
-    (value) => ({ ...value, shots: value.shots.map((s) => ({ ...s, start: 0 })) }),
-    (value) => ({ ...value, shots: value.shots.map((s) => ({ ...s, dialogues: [{ speaker: "x" }] })) }),
-    () => null,
+test("screenplay 只校验剧本正文：结构不符不再拒绝，也不重试", async () => {
+  const mutations: ((value: ReturnType<typeof screenplay>) => unknown)[] = [
+    (value) => ({ ...value, screenplay: "" }),
+    (value) => ({ ...value, screenplay: "x".repeat(60001) }),
+    (value) => ({ ...value, screenplay: 42 }),
+    (value) => null,
   ];
   for (const provider of ["gemini", "deepseek"]) for (const mutate of mutations) {
-    const value = mutate(script());
+    const value = mutate(screenplay());
     const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
-    await error(await handle(request("script", input(provider, { prompt: "test" }))), "invalid_script", 502);
+    await error(await handle(request("screenplay", input(provider, { prompt: "test" }))), "invalid_screenplay", 502);
     assert.equal(calls.length, 1);
   }
+  // 结构与旧模板不符的剧本现在照常通过：格式由用户自己的提示词决定。
+  const free = { title: "自由结构", screenplay: "第一场\n△ 他走了。" };
+  const { handle, calls } = fixture([deepseek(free)]);
+  assert.deepEqual(await success(await handle(request("screenplay", input("deepseek", { prompt: "test" })))), free);
+  assert.equal(calls.length, 1);
 });
-test("script rejects markdown, malformed JSON and truncated finish_reason", async () => {
-  for (const raw of ["", "{broken", "```json\n" + JSON.stringify(script()) + "\n```", KEY]) {
+test("screenplay rejects markdown, malformed JSON and truncated finish_reason", async () => {
+  for (const raw of ["", "{broken", "```json\n" + JSON.stringify(screenplay()) + "\n```", KEY]) {
     const { handle, calls } = fixture([{ choices: [{ finish_reason: "stop", message: { content: raw } }] }]);
-    await error(await handle(request("script", input("deepseek", { prompt: "test" }))), "invalid_script", 502);
+    await error(await handle(request("screenplay", input("deepseek", { prompt: "test" }))), "invalid_screenplay", 502);
     assert.equal(calls.length, 1);
   }
-  const { handle } = fixture([{ choices: [{ finish_reason: "length", message: { content: JSON.stringify(script()) } }] }]);
-  await error(await handle(request("script", input("deepseek", { prompt: "test" }))), "invalid_script", 502);
+  const { handle } = fixture([{ choices: [{ finish_reason: "length", message: { content: JSON.stringify(screenplay()) } }] }]);
+  await error(await handle(request("screenplay", input("deepseek", { prompt: "test" }))), "invalid_screenplay", 502);
 });
-test("valid script permits absent metadata and empty dialogues and strips unexpected upstream fields", async () => {
-  const value = { shots: script().shots.map(({ characters: _characters, scenes: _scenes, props: _props, ...s }) => ({ ...s, dialogues: [], internal: KEY })), extra: KEY };
+test("valid screenplay permits absent metadata and strips unexpected upstream fields", async () => {
+  const value = { title: "测试剧本", screenplay: screenplayText, extra: KEY };
   const { handle } = fixture([deepseek(value)]);
-  const result = await success(await handle(request("script", input("deepseek", { prompt: "test", model: "deepseek-custom" }))));
-  assert.deepEqual(result, { shots: value.shots.map(({ internal: _internal, ...s }) => s) });
+  const result = await success(await handle(request("screenplay", input("deepseek", { prompt: "test", model: "deepseek-custom" }))));
+  assert.deepEqual(result, { title: "测试剧本", screenplay: screenplayText });
 });
 
-test("script and extraction schemas require bounded category declarations and shot references", async () => {
-  for (const action of ["script", "extract-assets"]) for (const provider of ["gemini", "deepseek"]) {
-    const value = action === "script" ? script() : assets();
-    const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
-    assert.deepEqual(await success(await handle(request(action, input(provider, { prompt: "固定描述" })))), value);
-    const body = calls[0].body!;
-    const instruction = provider === "gemini" ? body.system_instruction as string : (body.messages as { content: string }[])[0].content;
-    const schema = JSON.parse(instruction.split(" Schema: ")[1]);
-    if (provider === "gemini") assert.deepEqual((body.response_format as { schema: unknown }).schema, schema);
-    for (const kind of ASSET_KINDS) {
-      assert.ok(schema.required.includes(kind));
-      assert.ok(schema.properties.shots.items.required.includes(kind));
-      const list = schema.properties[kind];
+test("screenplay and per-category extraction schemas are pure shapes without business rules", async () => {
+  for (const provider of ["gemini", "deepseek"]) {
+    {
+      const value = screenplay();
+      const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
+      assert.deepEqual(await success(await handle(request("screenplay", input(provider, { prompt: "固定描述" })))), value);
+      const body = calls[0].body!;
+      const instruction = provider === "gemini" ? body.system_instruction as string : (body.messages as { content: string }[])[0].content;
+      const schema = JSON.parse(instruction.split(" Schema: ")[1]);
+      if (provider === "gemini") assert.deepEqual((body.response_format as { schema: unknown }).schema, schema);
+      assert.deepEqual(Object.keys(schema.properties).sort(), ["logline", "screenplay", "title"]);
+      assert.deepEqual(schema.required, ["title", "screenplay"]);
+      // 后端只留机器契约：不含任何业务规则文案。
+      assert.match(instruction, /^Return only a json object matching the schema below\./);
+      assert.ok(!instruction.includes("【镜头"), "契约里不得残留剧本规则");
+      assert.ok(!instruction.includes("four parts"), "契约里不得残留结构要求");
+    }
+    for (const { action, key } of EXTRACT_ACTIONS) {
+      const value = extractValue(key);
+      const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
+      assert.deepEqual(await success(await handle(request(action, input(provider, { prompt: "固定描述" })))), value);
+      const body = calls[0].body!;
+      const instruction = provider === "gemini" ? body.system_instruction as string : (body.messages as { content: string }[])[0].content;
+      const schema = JSON.parse(instruction.split(" Schema: ")[1]);
+      if (provider === "gemini") assert.deepEqual((body.response_format as { schema: unknown }).schema, schema);
+      assert.deepEqual(Object.keys(schema.properties).sort(), [key, "shots"].sort(), "每个 action 的 schema 只含本类清单与 shots");
+      assert.deepEqual(schema.required, [key, "shots"]);
+      const list = schema.properties[key];
       assert.equal(list.type, "array"); assert.equal(list.maxItems, 30);
       assert.deepEqual(list.items.required, ["name", "description"]);
       assert.equal(list.items.properties.name.maxLength, 100);
       assert.equal(list.items.properties.description.maxLength, 4000);
-      const refs = schema.properties.shots.items.properties[kind];
+      assert.equal(schema.properties.shots.minItems, 1); assert.equal(schema.properties.shots.maxItems, 100);
+      assert.deepEqual(schema.properties.shots.items.required, ["number", key]);
+      assert.deepEqual(schema.properties.shots.items.properties.number, { type: "integer", minimum: 1, maximum: 100 });
+      const refs = schema.properties.shots.items.properties[key];
       assert.equal(refs.type, "array"); assert.equal(refs.maxItems, 30);
       assert.equal(refs.items.maxLength, 100); assert.equal(refs.uniqueItems, true);
-    }
-    assert.match(instruction, /EXACTLY/);
-    if (action === "extract-assets") {
-      assert.equal(schema.properties.shots.minItems, 1); assert.equal(schema.properties.shots.maxItems, 100);
-      assert.deepEqual(schema.properties.shots.items.properties.number, { type: "integer", minimum: 1, maximum: 100 });
-      assert.match(instruction, /Only extract visual assets/);
-      assert.match(instruction, /do not rewrite shots or dialogues/);
-      assert.match(instruction, /do not invent details/);
-      assert.match(instruction, /empty arrays when absent/);
+      // 提取口径由用户提示词决定：后端 instruction 不得再带任何业务规则。
+      assert.match(instruction, /^Return only a json object matching the schema below\./);
+      assert.ok(!instruction.includes("Extract ONLY"), "契约里不得残留提取口径");
+      assert.ok(!instruction.includes("do not rewrite shots or dialogues"), "契约里不得残留提取底线");
       assert.ok(!instruction.includes("Exactly 10 shots"));
     }
   }
 });
-test("script keeps independently missing metadata absent rather than inventing assets", async () => {
-  for (const kind of ASSET_KINDS) for (const provider of ["gemini", "deepseek"]) {
-    const value = { ...script(), [kind]: undefined, shots: script().shots.map((shot) => ({ ...shot, [kind]: undefined })) };
-    const { handle } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
-    const result = await success(await handle(request("script", input(provider, { prompt: "test" }))));
-    assert.deepEqual(result, JSON.parse(JSON.stringify(value)));
-    assert.ok(!Object.hasOwn(result, kind));
-    assert.ok(result.shots.every((shot: Record<string, unknown>) => !Object.hasOwn(shot, kind)));
-  }
-});
-test("script permits declared assets without shot lists and explicit empty lists without declarations", async () => {
-  const values = [
-    { ...script(), shots: script().shots.map(({ characters: _characters, scenes: _scenes, props: _props, ...shot }) => shot) },
-    { shots: script().shots.map((shot) => ({ ...shot, characters: [], scenes: [], props: [] })) },
-  ];
-  for (const value of values) {
-    const { handle } = fixture([deepseek(value)]);
-    assert.deepEqual(await success(await handle(request("script", input("deepseek", { prompt: "test" })))), value);
-  }
-});
-test("both actions reject malformed, duplicate, oversized and cross-category asset lists without retries", async () => {
-  for (const action of ["script", "extract-assets"]) for (const provider of ["gemini", "deepseek"]) for (const kind of ASSET_KINDS) {
-    const value = action === "script" ? script() : assets();
+test("per-category extraction rejects malformed, duplicate, oversized and undeclared references without retries", async () => {
+  for (const provider of ["gemini", "deepseek"]) for (const kind of ASSET_KINDS) {
+    const value = script();
     const declared = value[kind][0];
     const otherKind = kind === "characters" ? "scenes" : "characters";
-    const invalid: unknown[] = [
-      ...[null, {}, "asset", [null], ["asset"], [{ name: "x" }], [{ description: "x" }],
-        [{ name: "", description: "x" }], [{ name: " ", description: "x" }], [{ name: 1, description: "x" }],
-        [{ name: "x".repeat(101), description: "x" }], [{ name: "x", description: null }],
-        [{ name: "x", description: " " }], [{ name: "x", description: "x".repeat(4001) }],
-        [declared, { ...declared, description: "不同描述，同名" }],
-        Array.from({ length: 31 }, (_, i) => ({ name: String(i), description: "x" })),
-      ].map((list) => ({ ...value, [kind]: list })),
-      ...[null, {}, declared.name, [null], [1], [declared], [""], [" "], ["x".repeat(101)],
-        ["未声明"], [value[otherKind][0].name], [declared.name, declared.name], Array(31).fill(declared.name),
-      ].map((list) => ({ ...value, shots: value.shots.map((shot, i) => i === 0 ? { ...shot, [kind]: list } : shot) })),
-      { ...value, [kind]: undefined },
-      { ...value, [kind]: [] },
+    const malformedLists = [
+      null, {}, "asset", [null], ["asset"], [{ name: "x" }], [{ description: "x" }],
+      [{ name: "", description: "x" }], [{ name: " ", description: "x" }], [{ name: 1, description: "x" }],
+      [{ name: "x".repeat(101), description: "x" }], [{ name: "x", description: null }],
+      [{ name: "x", description: " " }], [{ name: "x", description: "x".repeat(4001) }],
+      [declared, { ...declared, description: "不同描述，同名" }],
+      Array.from({ length: 31 }, (_, i) => ({ name: String(i), description: "x" })),
     ];
-    for (const bad of invalid) {
+    const malformedRefs = [
+      null, {}, declared.name, [null], [1], [declared], [""], [" "], ["x".repeat(101)],
+      ["未声明"], [value[otherKind][0].name], [declared.name, declared.name], Array(31).fill(declared.name),
+    ];
+    const action = EXTRACT_ACTIONS.find(item => item.key === kind)!.action;
+    const single = extractValue(kind);
+    for (const bad of [
+      ...malformedLists.map((list) => ({ ...single, [kind]: list })),
+      ...malformedRefs.map((list) => ({ ...single, shots: single.shots.map((shot, i) => i === 0 ? { ...shot, [kind]: list } : shot) })),
+      { ...single, [kind]: undefined },
+      { ...single, [kind]: [] },
+    ]) {
       const { handle, calls } = fixture([provider === "gemini" ? gemini(bad) : deepseek(bad)]);
-      await error(await handle(request(action, input(provider, { prompt: "test" }))), action === "script" ? "invalid_script" : "invalid_assets", 502);
+      await error(await handle(request(action, input(provider, { prompt: "test" }))), "invalid_assets", 502);
       assert.equal(calls.length, 1);
     }
   }
 });
-test("both actions preserve fixed descriptions exactly and accept inclusive asset bounds and names shared across kinds", async () => {
-  for (const action of ["script", "extract-assets"]) for (const provider of ["gemini", "deepseek"]) {
-    const value = action === "script" ? script() : assets();
-    for (const kind of ASSET_KINDS) {
-      value[kind] = Array.from({ length: 30 }, (_, i) => ({ name: String(i).padEnd(100, "名"), description: "  固定描述\r\n「不改写」".padEnd(3998, "描") + "  " }));
-      for (const shot of value.shots) shot[kind] = value[kind].map((asset) => asset.name);
+test("per-category extraction preserves fixed descriptions exactly and accepts inclusive asset bounds", async () => {
+  for (const provider of ["gemini", "deepseek"]) {
+    for (const { action, key } of EXTRACT_ACTIONS) {
+      const value: Record<string, unknown> = { ...extractValue(key) };
+      value[key] = Array.from({ length: 30 }, (_, i) => ({ name: String(i).padEnd(100, "名"), description: "  固定描述\r\n「不改写」".padEnd(3998, "描") + "  " }));
+      for (const shot of value.shots as { [key: string]: string[] }[]) shot[key] = (value[key] as { name: string }[]).map(asset => asset.name);
+      const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
+      assert.deepEqual(await success(await handle(request(action, input(provider, { prompt: "test" })))), value);
+      assert.equal(calls.length, 1);
     }
-    const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
-    assert.deepEqual(await success(await handle(request(action, input(provider, { prompt: "test" })))), value);
-    assert.equal(calls.length, 1);
   }
 });
-test("extract-assets uses the same official paid providers, credentials and privacy settings", async () => {
-  for (const provider of ["gemini", "deepseek"]) {
-    const value = assets();
+test("per-category extraction uses the same official paid providers, credentials and privacy settings", async () => {
+  for (const provider of ["gemini", "deepseek"]) for (const { action, key } of EXTRACT_ACTIONS) {
+    const value = extractValue(key);
     const { handle, calls } = fixture([provider === "gemini" ? gemini(value) : deepseek(value)]);
     const prompt = "仅提取已有剧本资产，保留固定描述。";
-    assert.deepEqual(await success(await handle(request("extract-assets", input(provider, { prompt, model: `${provider}-custom` }), {
+    assert.deepEqual(await success(await handle(request(action, input(provider, { prompt, model: `${provider}-custom` }), {
       headers: { "Content-Type": "application/json", Cookie: "private=cookie", Authorization: "Bearer visitor" },
     }))), value);
     assert.equal(calls.length, 1);
@@ -357,12 +388,12 @@ test("extract-assets uses the same official paid providers, credentials and priv
     }
   }
 });
-test("extract-assets accepts 1–100 shots with empty arrays, preserves numbering/order and strips unrelated fields", async () => {
-  for (const provider of ["gemini", "deepseek"]) for (const count of [1, 100]) {
-    const value = { characters: [], scenes: [], props: [], shots: Array.from({ length: count }, (_, i) => ({ number: 100 - i, characters: [], scenes: [], props: [] })) };
-    const extra = { ...value, dialogues: KEY, shots: value.shots.map((shot) => ({ ...shot, visual: KEY, dialogues: KEY })) };
+test("per-category extraction accepts 1–100 shots with empty arrays, preserves numbering/order and strips unrelated fields", async () => {
+  for (const provider of ["gemini", "deepseek"]) for (const { action, key } of EXTRACT_ACTIONS) for (const count of [1, 100]) {
+    const value = { [key]: [], shots: Array.from({ length: count }, (_, i) => ({ number: 100 - i, [key]: [] })) };
+    const extra = { ...value, dialogues: KEY, characters: [], scenes: [], props: [], shots: value.shots.map((shot) => ({ ...shot, visual: KEY, dialogues: KEY })) };
     const { handle } = fixture([provider === "gemini" ? gemini(extra) : deepseek(extra)]);
-    assert.deepEqual(await success(await handle(request("extract-assets", input(provider, { prompt: "test" })))), value);
+    assert.deepEqual(await success(await handle(request(action, input(provider, { prompt: "test" })))), value);
   }
 });
 test("screenplay and director actions validate their own JSON contracts", async () => {
@@ -376,67 +407,93 @@ test("screenplay and director actions validate their own JSON contracts", async 
     }
   }
 });
+test("screenplay returns one complete markdown screenplay and never a separate shot list", async () => {
+  const base = screenplay();
+  for (const provider of ["gemini", "deepseek"] as const) {
+    const { handle } = fixture([provider === "gemini" ? gemini(base) : deepseek(base)]);
+    const data = await success(await handle(request("screenplay", input(provider, { prompt: "x" }))));
+    assert.deepEqual(data, base);
+    assert.ok(!("beats" in (data as Record<string, unknown>)), "剧本层不再产出节拍数组");
+    assert.ok(!("shots" in (data as Record<string, unknown>)), "镜头由剧本解析，不再由模型另报");
+  }
+});
+
 test("screenplay and director reject wrong structures with their own codes", async () => {
   const base = screenplay();
-  const noBeats = { ...base, beats: base.beats.slice(0, 9) };
-  const shortBeat = { ...base, beats: base.beats.map((beat, i) => i === 0 ? { ...beat, seconds: 3 } : beat) };
-  const first = fixture([gemini(noBeats)]);
+  const empty = { ...base, screenplay: "" };
+  const first = fixture([gemini(empty)]);
   await error(await first.handle(request("screenplay", input("gemini", { prompt: "x" }))), "invalid_screenplay", 502);
-  const second = fixture([gemini(shortBeat)]);
-  await error(await second.handle(request("screenplay", input("gemini", { prompt: "x" }))), "invalid_screenplay", 502);
+  // 结构不符旧模板的剧本现在照常通过：格式由用户自己的提示词决定。
+  const free = { ...base, screenplay: "第一场\n△ 他走了。" };
+  const second = fixture([gemini(free)]);
+  assert.deepEqual(await success(await second.handle(request("screenplay", input("gemini", { prompt: "x" })))), free);
   const badDirector = { shots: [{ ...director().shots[0], shotSize: "航拍" }] };
   const third = fixture([deepseek(badDirector)]);
   await error(await third.handle(request("director", input("deepseek", { prompt: "x" }))), "invalid_director", 502);
 });
-test("extract-assets requires all three lists and valid unique shot numbers", async () => {
-  const value = assets();
-  const invalid: unknown[] = [null, [], {}, script(),
-    ...[undefined, null, {}, [], Array.from({ length: 101 }, (_, i) => ({ ...value.shots[0], number: i + 1 })), [null], ["shot"]].map((shots) => ({ ...value, shots })),
-    ...[undefined, null, "1", 0, 101, 1.5].map((number) => ({ ...value, shots: [{ ...value.shots[0], number }] })),
-    { ...value, shots: [value.shots[0], value.shots[0]] },
-    ...ASSET_KINDS.flatMap((kind) => [
-      { ...value, [kind]: undefined, shots: [{ ...value.shots[0], [kind]: [] }] },
-      { ...value, shots: [{ ...value.shots[0], [kind]: undefined }] },
-    ]),
-  ];
-  for (const provider of ["gemini", "deepseek"]) for (const bad of invalid) {
-    const { handle, calls } = fixture([provider === "gemini" ? gemini(bad) : deepseek(bad)]);
-    await error(await handle(request("extract-assets", input(provider, { prompt: "test" }))), "invalid_assets", 502);
-    assert.equal(calls.length, 1);
+test("per-category extraction requires its own list and valid unique shot numbers", async () => {
+  for (const { action, key } of EXTRACT_ACTIONS) {
+    const value = extractValue(key);
+    const invalid: unknown[] = [null, [], {}, script(),
+      ...[null, {}, Array.from({ length: 101 }, (_, i) => ({ ...value.shots[0], number: i + 1 })), [null], ["shot"]].map((shots) => ({ ...value, shots })),
+      ...[null, "1", 0, 101, 1.5].map((number) => ({ ...value, shots: [{ ...value.shots[0], number }] })),
+      { ...value, shots: [value.shots[0], value.shots[0]] },
+      { ...value, [key]: undefined },
+      { ...value, shots: [{ ...value.shots[0], [key]: undefined }] },
+    ];
+    for (const provider of ["gemini", "deepseek"]) for (const bad of invalid) {
+      const { handle, calls } = fixture([provider === "gemini" ? gemini(bad) : deepseek(bad)]);
+      await error(await handle(request(action, input(provider, { prompt: "test" }))), "invalid_assets", 502);
+      assert.equal(calls.length, 1);
+    }
+    // 逐镜关联是可选的：模型没返回 shots 或返回空数组时不再报错，只返回空关联。
+    for (const withoutShots of [{ [key]: value[key] }, { [key]: value[key], shots: [] }]) {
+      const { handle, calls } = fixture([deepseek(withoutShots)]);
+      assert.deepEqual(await success(await handle(request(action, input("deepseek", { prompt: "test" })))), { [key]: value[key], shots: [] });
+      assert.equal(calls.length, 1);
+    }
   }
 });
-test("extract-assets rejects malformed JSON and incomplete provider outputs with invalid_assets", async () => {
-  for (const provider of ["gemini", "deepseek"]) {
+test("per-category extraction rejects malformed JSON and incomplete provider outputs with invalid_assets", async () => {
+  for (const { action, key } of EXTRACT_ACTIONS) for (const provider of ["gemini", "deepseek"]) {
+    const value = extractValue(key);
     const responses: unknown[] = provider === "gemini"
-      ? [{ status: "completed", output_text: JSON.stringify(assets()) }, { ...gemini(assets()), status: "requires_continuation" }, { status: "completed", steps: [] }]
-      : [{ choices: [] }, { choices: [{ finish_reason: "length", message: { content: JSON.stringify(assets()) } }] }];
-    for (const raw of ["", "{broken", "```json\n" + JSON.stringify(assets()) + "\n```", KEY]) {
+      ? [{ status: "completed", output_text: JSON.stringify(value) }, { ...gemini(value), status: "requires_continuation" }, { status: "completed", steps: [] }]
+      : [{ choices: [] }, { choices: [{ finish_reason: "length", message: { content: JSON.stringify(value) } }] }];
+    for (const raw of ["", "{broken", "```json\n" + JSON.stringify(value) + "\n```", KEY]) {
       responses.push(provider === "gemini"
         ? { status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: raw }] }] }
         : { choices: [{ finish_reason: "stop", message: { content: raw } }] });
     }
     for (const response of responses) {
       const { handle, calls } = fixture([response]);
-      await error(await handle(request("extract-assets", input(provider, { prompt: "test" }))), "invalid_assets", 502);
+      await error(await handle(request(action, input(provider, { prompt: "test" }))), "invalid_assets", 502);
       assert.equal(calls.length, 1);
     }
   }
 });
-test("extract-assets allows only provider/key/model/prompt and validates before submitting", async () => {
+test("per-category extraction allows only provider/key/model/prompt and validates before submitting", async () => {
   const { handle, calls } = fixture([]);
-  for (const provider of ["openai", "minimax", "seedance", undefined]) {
-    await error(await handle(request("extract-assets", { provider, key: KEY, prompt: "test" })), "invalid_provider", 400);
-  }
-  for (const provider of ["gemini", "deepseek"]) {
-    for (const extra of [{ shots: [] }, { characters: [] }, { url: "https://evil.example" }, { baseURL: "https://evil.example" }, { headers: {} }]) {
-      await error(await handle(request("extract-assets", input(provider, { prompt: "test", ...extra }))), "invalid_input", 400);
+  for (const { action } of EXTRACT_ACTIONS) {
+    for (const provider of ["openai", "minimax", "seedance", undefined]) {
+      await error(await handle(request(action, { provider, key: KEY, prompt: "test" })), "invalid_provider", 400);
     }
-    for (const prompt of [undefined, "", " ", "x".repeat(32001)]) {
-      await error(await handle(request("extract-assets", input(provider, { prompt }))), "invalid_prompt", 400);
+    for (const provider of ["gemini", "deepseek"]) {
+      for (const extra of [{ shots: [] }, { characters: [] }, { url: "https://evil.example" }, { baseURL: "https://evil.example" }, { headers: {} }]) {
+        await error(await handle(request(action, input(provider, { prompt: "test", ...extra }))), "invalid_input", 400);
+      }
+      for (const prompt of [undefined, "", " ", "x".repeat(32001)]) {
+        await error(await handle(request(action, input(provider, { prompt }))), "invalid_prompt", 400);
+      }
+      await error(await handle(request(action, input(provider, { prompt: "test", key: "bad\r\nkey" }))), "invalid_key", 400);
+      await error(await handle(request(action, input(provider, { prompt: "test", model: provider === "gemini" ? "deepseek-flash" : "gemini-4-hydrogen" }))), "invalid_model", 400);
     }
-    await error(await handle(request("extract-assets", input(provider, { prompt: "test", key: "bad\r\nkey" }))), "invalid_key", 400);
-    await error(await handle(request("extract-assets", input(provider, { prompt: "test", model: provider === "gemini" ? "deepseek-flash" : "gemini-4-hydrogen" }))), "invalid_model", 400);
   }
+  assert.equal(calls.length, 0);
+});
+test("the removed combined extract action is no longer routed", async () => {
+  const { handle, calls } = fixture([]);
+  await error(await handle(request("extract-assets", input("gemini", { prompt: "test" }))), "unknown_action", 404);
   assert.equal(calls.length, 0);
 });
 
@@ -524,9 +581,25 @@ test("image channels reject wrong providers/models and unsupported parameters be
       await error(await handle(request("image", input(provider, { prompt: "test", ...extra }))), "invalid_input", 400);
     }
   }
-  for (const action of ["script", "screenplay", "director", "extract-assets", "voices", "speech", "video-create", "video-status", "video-download"]) {
+  for (const action of ["screenplay", "director", "extract-characters", "extract-scenes", "extract-props", "voices", "speech", "video-create", "video-status", "video-download"]) {
     await error(await handle(request(action, input("seedream"))), "invalid_provider", 400);
   }
+  assert.equal(calls.length, 0);
+});
+test("the removed script action is no longer routed", async () => {
+  const { handle, calls } = fixture([]);
+  await error(await handle(request("script", input("gemini", { prompt: "test" }))), "unknown_action", 404);
+  assert.equal(calls.length, 0);
+});
+test("contracts returns the fixed machine contract without a key or upstream call", async () => {
+  const { handle, calls } = fixture([]);
+  for (const target of ["screenplay", "extract-characters", "extract-scenes", "extract-props", "director"]) {
+    const data = await success(await handle(request("contracts", { for: target }))) as { instruction: string; schema: unknown };
+    assert.match(data.instruction, /^Return only a json object matching the schema below\./);
+    assert.ok(data.schema, `${target} 必须返回 schema`);
+    assert.ok(!data.instruction.includes("【镜头"), `${target} 的契约不得含业务规则`);
+  }
+  await error(await handle(request("contracts", { for: "image" })), "invalid_action", 400);
   assert.equal(calls.length, 0);
 });
 test("voices lists only real upstream system IDs and names", async () => {
@@ -801,8 +874,9 @@ test("downstream cancellation aborts and cancels CDN body", async () => {
 
 test("paid network failures are submission_unknown, with one attempt and no raw exception/credential leakage", async () => {
   for (const [action, body] of [
-    ["script", input("gemini", { prompt: "test" })], ["script", input("deepseek", { prompt: "test" })],
-    ["extract-assets", input("gemini", { prompt: "test" })], ["extract-assets", input("deepseek", { prompt: "test" })],
+    ["screenplay", input("gemini", { prompt: "test" })], ["screenplay", input("deepseek", { prompt: "test" })],
+    ["extract-characters", input("gemini", { prompt: "test" })], ["extract-characters", input("deepseek", { prompt: "test" })],
+    ["extract-scenes", input("gemini", { prompt: "test" })], ["extract-props", input("deepseek", { prompt: "test" })],
     ["image", input("openai", { prompt: "test" })], ["image", input("seedream", { prompt: "test" })],
     ["speech", input("minimax", { text: "你好", voiceId: VOICE })],
     ["video-create", video("seedance")], ["video-create", video("minimax")],
@@ -814,7 +888,7 @@ test("paid network failures are submission_unknown, with one attempt and no raw 
   }
 });
 test("paid header and body timeouts are bounded, aborted and never retried", async () => {
-  for (const phase of ["headers", "body"]) for (const [action, provider] of [["image", "openai"], ["image", "seedream"], ["extract-assets", "gemini"], ["extract-assets", "deepseek"]]) {
+  for (const phase of ["headers", "body"]) for (const [action, provider] of [["image", "openai"], ["image", "seedream"], ["extract-characters", "gemini"], ["extract-scenes", "deepseek"]]) {
     let calls = 0;
     let signal: AbortSignal | null | undefined;
     const handle = createHandler({ timeouts: { generation: 5 }, fetch: async (_url, init) => {
@@ -909,4 +983,19 @@ test("upstream JSON is bounded and malformed bodies are safely rejected", async 
   await error(await oversize.handle(request("voices", input("minimax"))), "upstream_too_large", 502);
   const malformed = fixture([new Response(`not json ${KEY}`)]);
   await error(await malformed.handle(request("voices", input("minimax"))), "invalid_upstream_response", 502);
+});
+
+test("director accepts a beat that changes framing with → and snaps a near-miss size", async () => {
+  const base = director();
+  const sequence = { shots: base.shots.map((shot, i) => i === 0 ? { ...shot, shotSize: "远景→中景" } : shot) };
+  const { handle } = fixture([gemini(sequence)]);
+  const data = await success(await handle(request("director", input("gemini", { prompt: "x" }))));
+  assert.equal((data.shots as Record<string, unknown>[])[0].shotSize, "远景→中景");
+  const near = { shots: base.shots.map((shot, i) => i === 0 ? { ...shot, shotSize: "中近景" } : shot) };
+  const second = fixture([deepseek(near)]);
+  const snapped = await success(await second.handle(request("director", input("deepseek", { prompt: "x" }))));
+  assert.equal((snapped.shots as Record<string, unknown>[])[0].shotSize, "近景");
+  const broken = { shots: base.shots.map((shot, i) => i === 0 ? { ...shot, shotSize: "航拍" } : shot) };
+  const third = fixture([deepseek(broken)]);
+  await error(await third.handle(request("director", input("deepseek", { prompt: "x" }))), "invalid_director", 502);
 });

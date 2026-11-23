@@ -77,7 +77,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
   if (!project.shots.length) return <Empty title="还没有可导出的分镜" text="先完成十镜分镜，再到生成页导入或生成视频与配音。"><Button onClick={() => navigate('storyboard')}>前往分镜</Button></Empty>;
 
   return <div className="stack">
-    <header className="page-heading"><div><h1>预览与导出</h1><p className="muted">十镜同一时间轴 · 90 秒 · 720 × 1280 · 24 fps · H.264 / AAC</p></div><Button variant="outline" disabled={!!job} onClick={() => navigate('generation')}>返回生成 / 重新导入</Button></header>
+    <header className="page-heading"><div><h1>预览与导出</h1><p className="muted">全部分镜同一时间轴 · 720 × 1280 · 24 fps · H.264 / AAC</p></div><Button variant="outline" disabled={!!job} onClick={() => navigate('generation')}>返回生成 / 重新导入</Button></header>
     <section className="panel stack">
       <div className="section-title"><h2>当前媒体检查</h2><span className="tag">{readyCount} / {project.shots.length} 镜通过素材检查</span></div>
       <div className="row between wrap"><span className="small muted">视频仅在内存中保留，刷新后本地视频需重新导入。</span><HelpPopover title="素材检查说明">不会把视频写入 IndexedDB 或 localStorage；空文件、缺失配音、过期素材不能算就绪。</HelpPopover></div>

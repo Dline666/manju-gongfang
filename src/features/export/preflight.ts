@@ -10,11 +10,11 @@ const list = (numbers: number[]) => numbers.join('、');
 export function buildPreflight(project: Project, report?: MediaReport): PreflightResult {
   const red: string[] = [];
   const yellow: string[] = [];
-  if (project.shots.length !== 10) red.push(`需要完整的 10 镜分镜，当前 ${project.shots.length} 镜。`);
+  if (!project.shots.length) red.push(`需要完整的分镜，当前 ${project.shots.length} 镜。`);
   const total = project.shots.reduce((sum, shot) => sum + shot.duration, 0);
-  if (Math.abs(total - 90) > 0.001) red.push(`总时长需要 90 秒，当前 ${Number(total.toFixed(2))} 秒。`);
-  const invalidDuration = project.shots.filter(shot => !Number.isInteger(shot.duration) || shot.duration < 4 || shot.duration > 15).map(shot => shot.number);
-  if (invalidDuration.length) red.push(`时长不在 4–15 秒的整数范围：第 ${list(invalidDuration)} 镜。`);
+  if (!Number.isFinite(total) || total < 20 || total > 400) red.push(`总时长需要在 20–400 秒之间，当前 ${Number(total.toFixed(2))} 秒。`);
+  const invalidDuration = project.shots.filter(shot => !Number.isFinite(shot.duration) || shot.duration <= 0 || shot.duration > 30 || Math.abs(shot.duration * 2 - Math.round(shot.duration * 2)) > 1e-9).map(shot => shot.number);
+  if (invalidDuration.length) red.push(`时长必须是 0.5 秒的整数倍且不超过 30 秒：第 ${list(invalidDuration)} 镜。`);
   const missingVideo = project.shots.filter(shot => !shot.video).map(shot => shot.number);
   if (missingVideo.length) red.push(`缺少视频：第 ${list(missingVideo)} 镜。`);
   const missingAudio = project.shots.filter(shot => shot.audioMode === 'dubbing' && shot.dialogues.some(line => line.text.trim()) && !shot.audio).map(shot => shot.number);

@@ -65,7 +65,7 @@ export default function ProviderGroups({ state }: { state: StudioState }) {
   const renderPanels = (list: ProviderMeta[]) => <div className="provider-group-body">{list.map(meta => <ProviderPanel key={meta.id} meta={meta} state={state} visible={visible} onToggle={toggle} />)}</div>;
   const minimax = providerStatus(state, 'minimax');
   return <div className="provider-groups">
-    <GroupCard id="script" title="剧本" description="把一个想法写成可拍摄的 10 拍脚本。Gemini 首选，DeepSeek 备选。" badges={['paid']} ready={readyCount(state, scriptProviders)} total={scriptProviders.length}>
+    <GroupCard id="script" title="剧本" description="把一个想法写成可拍摄的完整漫剧剧本。Gemini 首选，DeepSeek 备选。" badges={['paid']} ready={readyCount(state, scriptProviders)} total={scriptProviders.length}>
       <div className="provider-group-select"><Field label="剧本默认模型平台"><select value={state.settings.scriptProvider} onChange={e => setSettings({ ...state.settings, scriptProvider: e.target.value as 'gemini' | 'deepseek' })}><option value="gemini">Gemini · 首选</option><option value="deepseek">DeepSeek · 备选</option></select></Field></div>
       {renderPanels(scriptProviders)}
     </GroupCard>

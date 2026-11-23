@@ -35,12 +35,16 @@ try {
       return output;
     } finally { ffmpeg.terminate(); }
   }, colors);
-  await page.getByLabel('一句话故事主题').fill('测试用：少年握紧断剑走向山门');
-  await page.getByRole('button', { name: '开始创作', exact: true }).click();
-  await page.getByRole('button', { name: '模板演练', exact: true }).click();
-  await page.getByRole('button', { name: '建立模板草稿（非AI）' }).click();
-  await page.getByRole('dialog').waitFor({ state: 'hidden' });
-  await page.goto('http://127.0.0.1:5173/#/generation');
+  // 媒体用例不依赖剧本模型：直接建 10 镜 × 9 秒的固定作品，保证时间轴与配音假设稳定。
+  await page.evaluate(async () => {
+    const store = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')) || '/src/store/studio.ts');
+    const { makeShot } = await import('/src/domain/types.ts');
+    const p = store.createProject('媒体测试', '测试用：少年握紧断剑走向山门');
+    const hero = { id: 'hero', kind: 'character', name: '主角', description: '测试人物', lock: '测试人物' };
+    store.updateProject(p.id, { source: 'template', storyboardReady: true, assets: [hero], shots: Array.from({ length: 10 }, (_, i) => ({ ...makeShot(i + 1), duration: 9, visual: `第${i + 1}镜画面`, camera: '中景·固定·平视', start: '开场', action: '动作', end: '终点', dialogues: [{ id: `d${i + 1}`, speakerId: 'hero', text: '我回来了。' }], assetIds: ['hero'] })) });
+    location.hash = '/generation';
+  });
+  await page.locator('.generation-card').nth(9).waitFor();
   const voice = await readFile('dev/test-voice.wav');
   await page.locator('.generation-card').nth(9).waitFor();
   for (let i = 0; i < 10; i++) {

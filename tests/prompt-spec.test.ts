@@ -1,11 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { assetText, assetPromptGroups, extractAssetsPrompt, fullAssetText, imagePrompt, scriptPrompt, videoPrompt } from '../src/lib/prompts';
-import { SCRIPT_OUTPUT_EXAMPLE, applyPromptOverrides, promptBlock, renderPrompt, validatePromptSpec } from '../src/lib/promptSpec';
+import { assetText, assetPromptGroups, extractCharactersPrompt, extractPropsPrompt, extractScenesPrompt, fullAssetText, imagePrompt, scriptPrompt, videoPrompt } from '../src/lib/prompts';
+import { promptBlock, renderPrompt, validatePromptSpec } from '../src/lib/promptSpec';
 import { makeShot, type Asset, type Project } from '../src/domain/types';
-
-const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 
 const hero: Asset = { id: 'hero', kind: 'character', name: '沈砚', description: '黑发少年，灰白布衣', lock: '十七岁少年，灰白旧布衣，腰束麻绳，背空剑鞘', imageId: 'image-hero', voiceAssetId: 'voice' };
 const scene: Asset = { id: 'scene', kind: 'scene', name: '山门', description: '石阶与薄雾', lock: '青灰石阶九十九级，两侧古松，晨雾低垂', imageId: 'image-scene' };
@@ -26,73 +23,106 @@ const project: Project = {
   ],
 };
 
-test('默认模板输出保持稳定（SHA-256 基线）', () => {
-  const cases: [string, string, string][] = [
-    ['scriptPrompt', scriptPrompt(project), '256ea5d3f4750e9fdf32aad4d7fdad0a945b6cceec3b16c7ff72c94c342d5be3'],
-    ['extractAssetsPrompt', extractAssetsPrompt(project), '6a7367e2b6721519ac4fd0f681b9610b774acdfbc28bc30ecfb88222a5494ee7'],
-    ['imageCharacter', imagePrompt(project, hero), 'e5ba05ce2485d0f143f7161a59b52f77a60efe87b1eb19810f963cefb49b7ced'],
-    ['imageScene', imagePrompt(project, scene), '1e1cfabfb08aa1bfadcd3fd0d0210a047eed8d741425dca245697eca668a5ee3'],
-    ['imageProp', imagePrompt(project, prop), '4971f1a561f89d73c42391b28c90b9099d8b0731d5318551fb81b61f575a3a85'],
-    ['videoNoRefs', videoPrompt(project, project.shots[1]), 'fdc29ea5d9cb6a52ca39d13fda948740693758632e3353f56923ddb70ba63581'],
-    ['videoRefs', videoPrompt(project, project.shots[0]), 'fcf0474761f7230dab05ee53cc3a6ffce5a3469a7868b40adab7bad955b02bfa'],
-    ['videoDubbing', videoPrompt(project, { ...project.shots[0], audioMode: 'dubbing' }), '9d56916c6233aaab933b476aabb62a3aa3c1659fcbe65d975b11b3c7265dd2f2'],
-    ['videoFrames', videoPrompt(project, project.shots[2]), '6be5f5817d4f60ae6d00c9cd5bf9c3d2f020b34256af18a2c3b557822e600380'],
-    ['assetText', assetText(project, project.shots[0]), '68324922a1abb53d628317aea76330b7edf00246447b2cc818dd8786f265bf20'],
-    ['fullAssetText', fullAssetText(project, project.shots[0]), '118f8795aa2cd0efeecce33eba32ca338bc771880d32ae8dc8dac1ec1f130d93'],
-  ];
-  for (const [name, text, expected] of cases) assert.equal(hash(text), expected, name);
+const withPlan = (kind: 'script' | 'video' | 'extract-characters', blocks: { id: string; title: string; text: string }[]): Project => ({
+  ...project,
+  promptConfig: { v: 2, templates: { [kind]: { blocks } } },
 });
 
-test('spec 可 JSON 往返，块 id 唯一且锁定标记符合契约', async () => {
-  const { scriptSpec, imageSpec, videoSpec, extractSpec } = await import('../src/lib/prompts');
-  const script = scriptSpec(project);
-  assert.deepEqual(JSON.parse(JSON.stringify(script)), script);
-  assert.equal(new Set(script.blocks.map(item => item.id)).size, script.blocks.length);
-  assert.equal(promptBlock(script, 'script.contract')?.locked, true);
-  assert.equal(promptBlock(script, 'script.spec')?.locked, true);
-  assert.equal(promptBlock(script, 'script.output-shape')?.locked, true);
-  assert.equal(promptBlock(script, 'script.theme')?.locked, false);
-  assert.equal(promptBlock(script, 'script.skills')?.locked, false);
+test('没有模板计划时只输出作品数据，没有任何默认提示词文案', async () => {
+  const script = scriptPrompt(project);
+  assert.ok(!script.includes('【剧本结构】'), '剧本提示词不得自带默认结构条款');
+  assert.ok(!script.includes('【忠实度】'), '不得自带默认忠实度条款');
+  assert.ok(!script.includes('【可拍摄性铁律】'), '不得自带默认可拍摄性条款');
+  assert.ok(!script.includes('输出契约'), '不得自带默认输出契约');
+  assert.ok(script.includes('主题：少年在雨夜拾起一把断剑'), '主题数据必须进入提示词');
+  assert.ok(script.includes('沈砚：十七岁少年'), '已有角色名必须进入提示词');
 
-  assert.equal(promptBlock(imageSpec(project, hero), 'image.subject')?.locked, true);
-  assert.equal(promptBlock(imageSpec(project, hero), 'image.three-view')?.locked, true);
-  assert.equal(promptBlock(imageSpec(project, scene), 'image.scene-composition')?.locked, false);
+  assert.ok(!imagePrompt(project, hero).includes('三视图'), '图片提示词不得自带三视图条款');
+  assert.ok(!videoPrompt(project, project.shots[0]).includes('【运动规范】'), '视频提示词不得自带默认运动规范');
+  assert.ok(!extractCharactersPrompt(project).includes('【固定短语要求】'), '提取提示词不得自带默认识别规则');
+  assert.ok(!extractScenesPrompt(project).includes('【收录判断】'));
+  assert.ok(!extractPropsPrompt(project).includes('【提取范围】'));
+});
 
-  const video = videoSpec(project, project.shots[0]);
-  for (const id of ['video.references', 'video.audio', 'video.fixed-assets']) assert.equal(promptBlock(video, id)?.locked, true, id);
-  assert.equal(promptBlock(extractSpec(project), 'extract.instruction')?.locked, true);
+test('用户模板按顺序渲染，变量替换生效', async () => {
+  const planned = withPlan('script', [
+    { id: 'rule-a', title: '规则A', text: '第一段：{{project.theme}}' },
+    { id: 'rule-b', title: '规则B', text: '第二段：{{style.medium}}' },
+  ]);
+  const script = scriptPrompt(planned);
+  assert.ok(script.startsWith('第一段：少年在雨夜拾起一把断剑'), '用户块在最前');
+  assert.ok(script.includes('第二段：'), '变量缺失时留空而不是报错');
+  assert.ok(script.indexOf('第一段') < script.indexOf('第二段'), '必须按用户排的顺序发送');
+});
+
+test('数据块与用户块拼接：用户补充在前，作品数据在后', async () => {
+  const planned = withPlan('extract-characters', [
+    { id: 'rule', title: '规则', text: '按我的口径识别。' },
+    { id: 'data.extract.characters.shots', title: '本类线索', text: '', source: 'extract.characters.shots' } as never,
+  ]);
+  const text = extractCharactersPrompt(planned);
+  assert.ok(text.includes('按我的口径识别。'));
+  assert.ok(text.includes('【说话人清单】'));
+  assert.ok(text.indexOf('按我的口径识别。') < text.indexOf('【说话人清单】'), '用户补充排在数据前面');
+});
+
+test('三类资产提示词各带本类专属线索，互不混入', async () => {
+  const { extractCharactersSpec, extractScenesSpec, extractPropsSpec } = await import('../src/lib/prompts');
+  const characters = extractCharactersSpec(project);
+  const scenes = extractScenesSpec(project);
+  const props = extractPropsSpec(project);
+  const characterText = characters.blocks.map(item => item.text).join('\n');
+  const sceneText = scenes.blocks.map(item => item.text).join('\n');
+  const propText = props.blocks.map(item => item.text).join('\n');
+  assert.ok(characterText.includes('【说话人清单】') && characterText.includes('沈砚'), '人物提示词给出说话人清单');
+  assert.ok(sceneText.includes('【场景清单】') && sceneText.includes('所属空间'), '场景提示词按空间归组');
+  assert.ok(propText.includes('【逐镜动作摘要】'), '道具提示词只看动作摘要');
+  assert.ok(!propText.includes('说话人清单') && !characterText.includes('场景清单'), '三类输入互不混入');
+  assert.equal(promptBlock(characters, 'data.extract.characters.existing')?.text.includes('沈砚音色'), false, '人物提示词不列其它品类资产');
+  assert.equal(promptBlock(scenes, 'data.extract.scenes.existing')?.text.includes('沈砚'), false, '场景提示词不列人物资产');
+});
+
+test('没有任何锁定块：spec 里的块全部可编辑', async () => {
+  const { scriptSpec, imageSpec, videoSpec, extractCharactersSpec, extractScenesSpec, extractPropsSpec, directorSpec } = await import('../src/lib/prompts');
+  const specs = [scriptSpec(project), directorSpec(project), imageSpec(project, hero), videoSpec(project, project.shots[0]), extractCharactersSpec(project), extractScenesSpec(project), extractPropsSpec(project)];
+  for (const spec of specs) {
+    assert.equal(new Set(spec.blocks.map(item => item.id)).size, spec.blocks.length, '块 id 必须唯一');
+    for (const block of spec.blocks) assert.notEqual(block.locked, true, `${spec.kind} / ${block.id} 不应是锁定块`);
+  }
   assert.equal(assetPromptGroups(project, project.shots[0]).length, 3);
 });
 
-test('覆盖只作用于可编辑块，未知 id 被忽略', async () => {
-  const { scriptSpec } = await import('../src/lib/prompts');
-  const spec = scriptSpec(project);
-  const lockedText = promptBlock(spec, 'script.contract')!.text;
-  const overridden = applyPromptOverrides(spec, { 'script.contract': '篡改契约', 'script.theme': '新的主题', 'unknown.id': '忽略' });
-  assert.equal(promptBlock(overridden, 'script.contract')!.text, lockedText);
-  assert.equal(promptBlock(overridden, 'script.theme')!.text, '新的主题');
-  assert.equal(promptBlock(overridden, 'unknown.id'), undefined);
-  assert.ok(renderPrompt(overridden).includes('新的主题'));
-});
-
-test('validatePromptSpec 报告重复 id、缺失必需块与超长', async () => {
+test('validatePromptSpec 报告重复 id、空提示词与超长', async () => {
   const { scriptSpec, videoSpec } = await import('../src/lib/prompts');
   assert.deepEqual(validatePromptSpec(scriptSpec(project)), []);
   assert.deepEqual(validatePromptSpec(videoSpec(project, project.shots[0])), []);
-  const duplicate = validatePromptSpec({ kind: 'assets', blocks: [{ id: 'asset.character', label: 'A', text: 'x' }, { id: 'asset.character', label: 'B', text: 'y' }] });
+  const duplicate = validatePromptSpec({ kind: 'extract-characters', blocks: [{ id: 'a', label: 'A', text: 'x' }, { id: 'a', label: 'B', text: 'y' }] });
   assert.ok(duplicate.some(issue => issue.includes('重复')));
-  const missing = validatePromptSpec({ kind: 'video', blocks: [] });
-  assert.ok(missing.some(issue => issue.includes('video.shot-heading')));
-  const oversized = validatePromptSpec({ kind: 'video', blocks: [{ id: 'video.shot-heading', label: '标题', text: 'x'.repeat(7001) }] });
+  const empty = validatePromptSpec({ kind: 'video', blocks: [] });
+  assert.ok(empty.some(issue => issue.includes('提示词为空')));
+  const oversized = validatePromptSpec({ kind: 'video', blocks: [{ id: 'v', label: '标题', text: 'x'.repeat(7001) }] });
   assert.ok(oversized.some(issue => issue.includes('超过上限')));
 });
 
-test('剧本输出契约是合法 JSON，镜头字段与后端一致', async () => {
-  const { scriptSpec } = await import('../src/lib/prompts');
-  const block = promptBlock(scriptSpec(project), 'script.output-shape')!;
-  const contract = JSON.parse(block.text.replace(/^输出结构：/, '')) as typeof SCRIPT_OUTPUT_EXAMPLE;
-  assert.deepEqual(Object.keys(contract), ['title', 'logline', 'characters', 'scenes', 'props', 'beats']);
-  assert.deepEqual(Object.keys(contract.beats[0]), ['title', 'scene', 'characters', 'summary', 'dialogues', 'seconds']);
-  assert.equal(contract.beats[0].seconds, 9);
-  assert.deepEqual(Object.keys(contract.beats[0].dialogues[0]), ['speaker', 'text']);
+test('原文模式把原文注入剧本提示词，主题模式不注入', async () => {
+  const plain = scriptPrompt(project);
+  assert.ok(!plain.includes('赵珂冷笑一声'), '主题模式不应注入原文内容');
+  const withSource = scriptPrompt({ ...project, scriptMode: 'source', sourceText: '赵珂冷笑一声，说：“废物。”' });
+  assert.ok(withSource.includes('赵珂冷笑一声，说：“废物。”'));
+  assert.ok(withSource.includes('<原文>'), '原文数据要有明确边界');
+  assert.ok(!withSource.includes('绝对忠于原文'), '忠实度条款由用户自己写，系统不预置');
+});
+
+test('固定短语在图片、视频与资产文本里逐字复用', async () => {
+  assert.ok(assetText(project, project.shots[0]).includes(hero.lock));
+  assert.ok(imagePrompt(project, hero).includes(hero.lock));
+  assert.ok(videoPrompt(project, project.shots[0]).includes(hero.lock));
+  assert.ok(fullAssetText(project, project.shots[0]).includes(hero.lock));
+});
+
+test('剧本与导演提示词都在长度预算内', async () => {
+  const { scriptSpec, directorSpec } = await import('../src/lib/prompts');
+  assert.deepEqual(validatePromptSpec(scriptSpec(project)), []);
+  assert.deepEqual(validatePromptSpec(directorSpec(project)), []);
+  assert.ok(renderPrompt(scriptSpec(project)).length > 0);
 });

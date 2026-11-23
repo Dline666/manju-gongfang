@@ -51,14 +51,16 @@ test('缺视频、缺配音、配音超时、stale 都会阻止导出', () => {
   assert.equal(result.canExport, false);
 });
 
-test('镜数或总时长不符、时长越界会阻止导出', () => {
-  const nine = makeProject();
-  nine.shots = nine.shots.slice(0, 9);
-  assert.ok(buildPreflight(nine, makeReport(nine)).red.some(item => item.message.includes('10 镜')));
+test('镜头缺失、总时长越界与时长越界会阻止导出', () => {
+  const empty = makeProject();
+  empty.shots = [];
+  assert.ok(buildPreflight(empty, makeReport(empty)).red.some(item => item.message.includes('需要完整的分镜')));
   const short = makeProject();
-  short.shots[0].duration = 3;
-  assert.ok(buildPreflight(short, makeReport(short)).red.some(item => item.message.includes('4–15')));
-  assert.ok(buildPreflight(short, makeReport(short)).red.some(item => item.message.includes('总时长')));
+  short.shots[0].duration = 3.2;
+  assert.ok(buildPreflight(short, makeReport(short)).red.some(item => item.message.includes('0.5 秒的整数倍')));
+  const long = makeProject();
+  long.shots = long.shots.map(shot => ({ ...shot, duration: 45 }));
+  assert.ok(buildPreflight(long, makeReport(long)).red.some(item => item.message.includes('总时长')));
 });
 
 test('补帧、截取与原声模式是需要勾选确认的黄色项', () => {

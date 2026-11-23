@@ -18,9 +18,12 @@ try {
       if (action === 'image') {
         const base64 = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 300; c.height = 100; const x = c.getContext('2d'); x.fillStyle = '#cccccc'; x.fillRect(0, 0, 300, 100); return c.toDataURL('image/png').split(',')[1]; });
         await route.fulfill({ json: { ok: true, data: { base64, mime: 'image/png' } } });
-      } else if (action === 'extract-assets') {
+      } else if (action === 'extract-characters' || action === 'extract-scenes' || action === 'extract-props') {
         if (staleExtraction) await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); const p = s.getStudio().projects[0]; s.updateProject(p.id, { theme: '并发编辑保留' }, true); });
-        await route.fulfill({ json: { ok: true, data: { characters: [{ name: '阿青', description: '不覆盖既有外观' }], scenes: [{ name: '山门', description: '不覆盖既有场景' }], props: [{ name: '灯笼', description: '竹骨黄纸' }], shots: Array.from({ length: 10 }, (_, i) => ({ number: i + 1, characters: ['阿青'], scenes: ['山门'], props: i === 0 ? ['灯笼'] : [] })) } } });
+        const key = action === 'extract-characters' ? 'characters' : action === 'extract-scenes' ? 'scenes' : 'props';
+        const list = key === 'characters' ? [{ name: '阿青', description: '不覆盖既有外观' }] : key === 'scenes' ? [{ name: '山门', description: '不覆盖既有场景' }] : [{ name: '灯笼', description: '竹骨黄纸' }];
+        const names = key === 'characters' ? ['阿青'] : key === 'scenes' ? ['山门'] : ['灯笼'];
+        await route.fulfill({ json: { ok: true, data: { [key]: list, shots: Array.from({ length: 10 }, (_, i) => ({ number: i + 1, [key]: i === 0 ? names : [] })) } } });
       } else throw new Error(`Unexpected network action: ${action}`);
     });
     const overflow = async () => assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2), `overflow at ${width}`);
@@ -37,7 +40,10 @@ try {
     assert.equal((await saved()).assets.length, 3);
     await page.goto('http://127.0.0.1:5173/#/assets');
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
-    assert.ok((await page.getByLabel('完整图片提示词').inputValue()).includes('正面、侧面、背面'));
+    const fullImagePrompt = await page.getByLabel('完整图片提示词').inputValue();
+    assert.ok(fullImagePrompt.includes('主体：阿青'), '图片提示词应包含数据块给出的主体');
+    assert.ok(fullImagePrompt.includes('黑短发，青色布衣'), '图片提示词应包含固定短语');
+    assert.ok(!fullImagePrompt.includes('正面、侧面、背面'), '系统不再自带三视图默认文案');
     await page.getByRole('button', { name: '复制固定短语', exact: true }).click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '黑短发，青色布衣');
     await overflow(); await close();
@@ -62,7 +68,8 @@ try {
     await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(calls[0].body.prompt, editedPrompt);
-    assert.ok(confirmed.includes('统一纯色'));
+    assert.ok(confirmed.includes('主体：阿青'), '实际发送的图片提示词应带数据块内容');
+    assert.ok(!confirmed.includes('统一纯色'), '系统不再自带设图默认文案');
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
     await page.getByRole('dialog').locator('img').waitFor(); await overflow(); await close();
     await page.getByRole('tab', { name: /场景/ }).click();
@@ -86,21 +93,33 @@ try {
       assert.ok(copied.includes(`${label}提示词`));
       assert.equal((copied.match(/提示词/g) || []).length, 1);
     }
-    await page.getByRole('button', { name: 'AI 提取三类资产（先确认）', exact: true }).click();
+    await page.goto('http://127.0.0.1:5173/#/assets');
+    await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
     assert.equal(calls.length, 1);
-    await page.getByRole('button', { name: '确认发送并提取资产', exact: true }).click();
-    await page.getByRole('heading', { name: '待保存资产清单', exact: true }).waitFor();
+    await page.getByRole('button', { name: '确认发送并提取人物资产', exact: true }).click();
+    await page.getByRole('heading', { name: '提取结果预览 · 人物', exact: true }).waitFor();
     assert.equal((await saved()).assets.length, 3, 'preview must not save');
     await overflow();
-    await page.getByRole('button', { name: '确认对应并保存补全', exact: true }).click();
+    await page.getByRole('button', { name: '确认写入资产库', exact: true }).click();
+    const afterCharacters = await saved();
+    assert.equal(afterCharacters.assets.length, 3, '人物提取只写人物，已有固定短语沿用');
+    assert.equal(afterCharacters.assets.find(a => a.kind === 'character').lock, '黑短发，青色布衣');
+    await page.getByRole('button', { name: 'AI 提取场景（先确认）', exact: true }).click();
+    await page.getByRole('button', { name: '确认发送并提取场景资产', exact: true }).click();
+    await page.getByRole('heading', { name: '提取结果预览 · 场景', exact: true }).waitFor();
+    await page.getByRole('button', { name: '确认写入资产库', exact: true }).click();
+    await page.getByRole('button', { name: 'AI 提取道具（先确认）', exact: true }).click();
+    await page.getByRole('button', { name: '确认发送并提取道具资产', exact: true }).click();
+    await page.getByRole('heading', { name: '提取结果预览 · 道具', exact: true }).waitFor();
+    await page.getByRole('button', { name: '确认写入资产库', exact: true }).click();
     const p = await saved(); assert.equal(p.assets.length, 4);
     assert.equal(p.assets.find(a => a.kind === 'scene').lock, '黑石阶，薄雾');
     assert.equal(p.shots[0].assetIds.length, 4);
     assert.equal(p.shots[1].assetIds.length, 3);
     const originalShots = p.shots.map(s => ({ id: s.id, visual: s.visual, duration: s.duration, dialogues: s.dialogues }));
     staleExtraction = true;
-    await page.getByRole('button', { name: 'AI 提取三类资产（先确认）', exact: true }).click();
-    await page.getByRole('button', { name: '确认发送并提取资产', exact: true }).click();
+    await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
+    await page.getByRole('button', { name: '确认发送并提取人物资产', exact: true }).click();
     await page.getByText('项目已修改或删除，提取结果未覆盖现有内容。', { exact: true }).waitFor();
     await close();
     assert.deepEqual((await saved()).shots.map(s => ({ id: s.id, visual: s.visual, duration: s.duration, dialogues: s.dialogues })), originalShots);
@@ -116,7 +135,7 @@ try {
     await expect(handoff.getByRole('button', { name: '复制灯笼图片', exact: true })).toBeDisabled();
     const beforeHandoff = await saved();
     await handoff.getByRole('button', { name: '复制视频提示词', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('本镜已挂载3张图片');
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('图1：参考图 · 阿青');
     const manualPrompt = await page.evaluate(() => navigator.clipboard.readText());
     for (const phrase of ['图1：参考图 · 阿青', '图2：参考图 · 山门', '图3：参考图 · 断剑', '黑短发，青色布衣', '黑石阶，薄雾', '红绳剑柄，斜断口', '阿青在山门举起断剑', '开场：石阶前']) assert.ok(manualPrompt.includes(phrase));
     for (const [name, extension] of [['阿青', 'png'], ['山门', 'jpg'], ['断剑', 'webp']]) {
@@ -201,12 +220,12 @@ try {
     await page.getByText('本镜尚未关联人物、场景或道具图片，请先到资产页添加图片，再到分镜关联。', { exact: true }).waitFor();
     assert.equal(await handoff.getByRole('article').count(), 0);
     await handoff.getByRole('button', { name: '复制视频提示词', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('本镜没有挂载参考图');
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('本镜没有挂载附件。');
     await close();
     await page.reload();
     await page.getByText('本地视频未加载，请重新选择文件', { exact: true }).waitFor();
-    assert.equal(calls.length, 3); assert.deepEqual(errors, []);
-    results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['three-view prompt exact request', 'compact details and copy', 'asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
+    assert.equal(calls.length, 5); assert.deepEqual(errors, []);
+    results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['data-block prompt exact request', 'compact details and copy', 'per-category asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
     await context.close();
   }
   console.log(JSON.stringify(results, null, 2));

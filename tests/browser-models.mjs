@@ -45,7 +45,8 @@ try {
       const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
       const { templateScript } = await import('/src/features/script/creation.ts');
       const p = s.createProject('隔离模型测试', '山门断剑'); const draft = templateScript(p.theme);
-      draft.assets[0].name = '模型测试人物';
+      // 剧本步骤不再预置人物资产，这里手动建一个用于生图测试。
+      draft.assets = [{ id: 'model-hero', kind: 'character', name: '模型测试人物', description: '十七岁少年，灰白旧布衣', lock: '十七岁少年，灰白旧布衣' }];
       s.updateProject(p.id, { ...draft, source: 'template', storyboardReady: true });
       location.hash = '/assets';
     });
@@ -75,7 +76,8 @@ try {
       await expect(page.getByRole('dialog')).toHaveCount(0);
       const call = calls.filter(c => c.action === 'image').at(-1);
       assert.equal(call.body.provider, provider); assert.equal(call.body.model, model);
-      assert.ok(call.body.prompt.includes('正面、侧面、背面'));
+      assert.ok(call.body.prompt.includes('主体：模型测试人物'), '图片提示词应来自数据块');
+      assert.ok(!call.body.prompt.includes('正面、侧面、背面'), '系统不再自带三视图默认文案');
       assert.ok((await saved()).projects[0].assets[0].imageId);
     }
     await overflow();
@@ -133,7 +135,8 @@ try {
       await expect(videoSelect).toBeEnabled();
       const call = calls.filter(c => c.action === 'video-create').at(-1);
       assert.equal(call.body.provider, provider); assert.equal(call.body.model, model);
-      assert.equal(call.body.duration, 9);
+      const shotDurations = (await saved()).projects[0].shots.map(shot => shot.duration);
+      assert.equal(call.body.duration, shotDurations[index]);
       if (index === 0) assert.ok(call.body.prompt.includes('补充运镜：缓慢推进'));
       assert.equal((await saved()).projects[0].shots[index].task.model, model);
     }
