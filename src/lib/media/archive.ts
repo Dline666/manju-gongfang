@@ -1,5 +1,5 @@
 import { AsyncZipDeflate, Zip, ZipPassThrough } from 'fflate';
-import type { Project } from '../../domain/types';
+import type { Project, PromptTemplateSet } from '../../domain/types';
 import { getMedia } from '../../store/media';
 import { buildDocuments, buildSrt } from '../documents';
 import { abortIfNeeded, assertReady, inspectMedia, inspectProject, requireBlob } from './inputs';
@@ -86,7 +86,7 @@ export async function zipFiles(files: ArchiveFile[], onProgress: (progress: Arch
   return result;
 }
 
-export async function buildMaterialZip(project: Project, onProgress: (progress: ArchiveProgress) => void = () => {}, signal?: AbortSignal): Promise<Blob> {
+export async function buildMaterialZip(project: Project, onProgress: (progress: ArchiveProgress) => void = () => {}, signal?: AbortSignal, global?: PromptTemplateSet): Promise<Blob> {
   const snapshot = structuredClone(project);
   onProgress({ stage: 'preflight', message: '检查全部逐镜视频、配音与参考图；不完整时不会生成完整素材包。' });
   const report = await inspectProject(snapshot, shot => onProgress({ stage: 'preflight', message: `检查第 ${shot} 镜…` }), signal);
@@ -125,7 +125,7 @@ export async function buildMaterialZip(project: Project, onProgress: (progress: 
     files.push({ path, blob: image });
     images.push({ assetId: asset.id, name: asset.name, path });
   }
-  const documents = buildDocuments(snapshot);
+  const documents = buildDocuments(snapshot, global);
   if (Object.keys(documents).length !== 5) throw new Error('文档生成器未提供完整的五份文档。');
   for (const [name, text] of Object.entries(documents)) files.push({ path: `documents/${safeFilename(name)}`, blob: new Blob([text], { type: 'text/plain;charset=utf-8' }), text: true });
   files.push({ path: 'subtitles.srt', blob: new Blob([buildSrt(snapshot)], { type: 'application/x-subrip;charset=utf-8' }), text: true });

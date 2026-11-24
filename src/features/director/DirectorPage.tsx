@@ -36,7 +36,7 @@ export default function DirectorPage({ project, navigate }: PageProps) {
   const prepare = () => {
     try {
       const auth = credentials(settings.scriptProvider, 'script');
-      const prompt = directorPrompt(project);
+      const prompt = directorPrompt(project, settings.promptTemplates);
       setFailure(undefined);
       setConfirmation({ prompt, defaultPrompt: prompt, provider: settings.scriptProvider, model: auth.model, project: structuredClone(project) });
     } catch (error) { toast.error(errorMessage(error)); }

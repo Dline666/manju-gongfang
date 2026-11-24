@@ -4,7 +4,7 @@ import { Check, Copy, ArrowUp, ArrowDown, Link2, ChevronRight, ChevronDown } fro
 import { Button, Empty, Field, Fold, HelpPopover, IssueList, Modal, copyText } from '../../components/Ui';
 import type { Asset, PageProps, Reference, Shot } from '../../domain/types';
 import { speakerName } from '../../domain/types';
-import { getStudio, updateProject } from '../../store/studio';
+import { getStudio, updateProject, useStudio } from '../../store/studio';
 import { useMediaUrl } from '../../store/media';
 import { assetPromptGroups, assetText, fixedDescription, fullAssetText, videoPrompt } from '../../lib/prompts';
 import { errorMessage } from '../../lib/api';
@@ -12,7 +12,6 @@ import { extractLocalAssets } from '../script/creation';
 import { validateProject } from '../../domain/validation';
 import { fillStoryboard, updateReference } from './helpers';
 import ShotTimeline, { timelineState } from './ShotTimeline';
-import TemplateEditor from '../prompts/TemplateEditor';
 import { PageHeader } from '../../components/PageHeader';
 import DurationStrip from '../script/DurationStrip';
 
@@ -37,7 +36,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
   const [confirmation, setConfirmation] = useState<{ shots: Shot[]; assets: Asset[]; revision: number }>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [attachPreview, setAttachPreview] = useState<{ shotId: string; assetIds: string[] }[]>();
-  const [templateOpen, setTemplateOpen] = useState(false);
+  const { settings } = useStudio();
   const previewMapping = () => {
     const draft = extractLocalAssets(project.shots, project.assets);
     setConfirmation({ ...draft, shots: fillStoryboard(draft.shots), revision: project.revision });
@@ -82,7 +81,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
     requestAnimationFrame(() => document.getElementById(`shot-${shot.number}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
   };
   const copyAllVideoPrompts = () => {
-    const text = project.shots.map(shot => `====第${shot.number}镜====\n${videoPrompt(project, shot)}`).join('\n\n');
+    const text = project.shots.map(shot => `====第${shot.number}镜====\n${videoPrompt(project, shot, settings.promptTemplates)}`).join('\n\n');
     void copyText(text);
   };
   const prepareAutoAttach = () => {
@@ -147,8 +146,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
     <Modal open={!!confirmation} onClose={() => setConfirmation(undefined)} title="确认剧本与分镜对应关系" description="先审核三类资产和逐镜关联，保存到资产库并补空白开场、动作与终点；保留镜头ID、时长、台词、原固定短语和素材关联。">
       {confirmation && <div className="stack"><p>剧本 {confirmation.shots.length} 镜 → 分镜 {confirmation.shots.length} 镜，一一对应。请逐项审核下面的实际保存内容。</p><div className="panel"><h3>待保存资产清单</h3>{confirmation.assets.filter(a => a.kind !== 'voice').map(a => <p key={a.id}>{a.kind === 'character' ? '人物' : a.kind === 'scene' ? '场景' : '道具'}「{a.name}」：{a.lock || a.description}{project.assets.some(old => old.id === a.id) ? '（沿用）' : '（新增）'}</p>)}</div>{confirmation.shots.map(s => <details className="panel" key={s.id}><summary>剧本第{s.number}镜 → 分镜第{s.number}镜 · {s.duration}秒</summary><p>画面：{s.visual}</p><p>开场：{s.start}</p><p>动作：{s.action}</p><p>终点：{s.end}</p><p>运镜：{s.camera}</p><pre>{assetText({ ...project, assets: confirmation.assets }, s)}</pre></details>)}<div className="toolbar"><Button onClick={confirmMapping}>确认对应并保存补全</Button><Button variant="ghost" onClick={() => setConfirmation(undefined)}>取消</Button></div></div>}
     </Modal>
-    <Modal open={!!promptShot} onClose={() => setPromptShotId(undefined)} title={`第${promptShot?.number || ''}镜 · 完整视频提示词`} description="有图时侧重动作、对白和运镜；无图时明确开场。文字复制不会自动上传图片，实际附件在生成页提交。">{promptShot && <div className="stack"><textarea rows={16} readOnly aria-label="视频提示词全文" value={videoPrompt(project, promptShot)} /><div className="toolbar"><Button onClick={() => void copyText(videoPrompt(project, promptShot))}>复制提示词</Button><Button variant="ghost" onClick={() => setPromptShotId(undefined)}>关闭</Button></div></div>}</Modal>
+    <Modal open={!!promptShot} onClose={() => setPromptShotId(undefined)} title={`第${promptShot?.number || ''}镜 · 完整视频提示词`} description="有图时侧重动作、对白和运镜；无图时明确开场。文字复制不会自动上传图片，实际附件在生成页提交。">{promptShot && <div className="stack"><textarea rows={16} readOnly aria-label="视频提示词全文" value={videoPrompt(project, promptShot, settings.promptTemplates)} /><div className="toolbar"><Button onClick={() => void copyText(videoPrompt(project, promptShot, settings.promptTemplates))}>复制提示词</Button><Button variant="ghost" onClick={() => setPromptShotId(undefined)}>关闭</Button></div></div>}</Modal>
     <Modal open={!!peek} onClose={() => setPeek(undefined)} title={peek ? `${peek.name} · 角色设定` : '角色设定'} description="只核对固定短语与三视图；要修改请回资产页。">{peek && <div className="stack"><CharacterPeek asset={peek} /><div className="toolbar"><Button variant="ghost" onClick={() => setPeek(undefined)}>关闭</Button><Button variant="outline" onClick={() => { setPeek(undefined); navigate('assets'); }}>去资产页编辑</Button></div></div>}</Modal>
-    <TemplateEditor project={project} open={templateOpen} onClose={() => setTemplateOpen(false)} initialKind="assets" />
   </div>;
 }

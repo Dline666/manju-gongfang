@@ -64,14 +64,27 @@ export type PromptDataSource =
 export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string }
 /** 一个 kind 的完整块计划，顺序即发送顺序。 */
 export interface PromptTemplatePlan { blocks: PromptBlockPlan[] }
-export interface PromptConfig {
-  v: 1 | 2;
+/** 一套提示词模板：风格 + 每个 kind 一份块计划。全局默认与作品覆盖层都用这个形状。 */
+export interface PromptTemplateSet {
   style?: StyleSpec;
-  /** v1 旧结构：块 id → 覆盖文本。载入时迁移成 v2 的 templates。 */
-  blocks?: Record<string, string>;
-  /** v2：每个 kind 一份块计划。 */
   templates?: Partial<Record<PromptKindId, PromptTemplatePlan>>;
 }
+/** v1 旧结构：块 id → 覆盖文本。载入时迁移成 v2 的 templates。 */
+export interface PromptConfigV1 { v: 1; style?: StyleSpec; blocks?: Record<string, string> }
+/** v2：每个 kind 一份块计划。 */
+export interface PromptConfigV2 { v: 2; style?: StyleSpec; templates?: Partial<Record<PromptKindId, PromptTemplatePlan>> }
+/**
+ * v3：本作品的覆盖层。
+ * `overrides` 里键存在 = 这一步归本作品管（块可以为空，表示「这一步我不写任何块」）；
+ * 没有的键跟随全局模板。作品只存覆盖层，不复制全局全文。
+ */
+export interface PromptConfigV3 {
+  v: 3;
+  style?: StyleSpec;
+  templates?: Partial<Record<PromptKindId, PromptTemplatePlan>>;
+  overrides?: PromptTemplateSet;
+}
+export type PromptConfig = PromptConfigV1 | PromptConfigV2 | PromptConfigV3;
 export interface Project {
   id: string; name: string; theme: string; style: string; createdAt: string; updatedAt: string;
   revision: number; skills: SkillId[]; shots: Shot[]; assets: Asset[]; source: 'empty' | 'template' | 'import' | 'ai';
@@ -97,6 +110,8 @@ export interface Settings {
   customJsonMode?: boolean;
   /** 用户自定义的视觉风格名称，存本机，所有作品都能选用。 */
   styles?: string[];
+  /** 全局默认提示词模板：所有作品跟随，被作品覆盖的那一步除外。 */
+  promptTemplates?: PromptTemplateSet;
 }
 export interface ProviderStatus { status: 'available' | 'failed'; action: string; model?: string; error?: string; hint?: string }
 export interface StudioState {

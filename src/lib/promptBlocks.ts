@@ -3,11 +3,12 @@
 // 作品数据不属于模板块，渲染时由系统固定附带。
 // 模型的固定契约由后端持有，编辑器通过 contracts 接口原样展示。
 import type {
-  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplatePlan, Shot, SkillId,
+  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, StyleSpec,
 } from '../domain/types';
 import { speakerName } from '../domain/types';
 import { skills } from './skills';
-import { styleBlockText, styleSpecFor } from './promptTemplates';
+import { styleBlockText } from './promptTemplates';
+import { effectiveStyle, visibleBlocks } from './promptScope';
 
 export const PROMPT_KINDS: readonly PromptKindId[] = ['script', 'extract-characters', 'extract-scenes', 'extract-props', 'director', 'image', 'video'];
 
@@ -128,16 +129,10 @@ export function dataSourcesFor(kind: PromptKindId): DataBlockDef[] {
  * 旧存档里保存过的数据块会被剔除（数据改由系统固定注入），
  * 但用户当年写在数据块里的补充说明保留成普通块，一个字都不丢。
  */
-export function planFor(project: Project, kind: PromptKindId): PromptBlockPlan[] {
-  const plan = project.promptConfig?.templates?.[kind];
+export function legacyPlanFor(config: Project['promptConfig'], kind: PromptKindId): PromptBlockPlan[] {
+  const plan = config?.v === 2 ? config.templates?.[kind] : undefined;
   if (!plan) return [];
-  return plan.blocks.flatMap(block => {
-    if (!block.source) return [block];
-    const text = (block.text || '').trim();
-    if (!text) return [];
-    const { source, ...rest } = block;
-    return [{ ...rest, id: `legacy.${source}` }];
-  });
+  return visibleBlocks(plan.blocks ?? []);
 }
 
 // ── 作品数据渲染 ──────────────────────────────────────────────
@@ -229,7 +224,7 @@ function extractPropsInput(project: Project): string {
 
 const selectedSkills = (project: Project, ids: SkillId[]) => skills.filter(s => project.skills.includes(s.id) && ids.includes(s.id)).map(s => `【${s.name}】${s.template}`).join('\n');
 
-export interface RenderContext { project: Project; asset?: Asset; shot?: Shot }
+export interface RenderContext { project: Project; asset?: Asset; shot?: Shot; global?: PromptTemplateSet }
 
 const AUDIO_MODES = { original: '原声', dubbing: '后期配音', silent: '静音' } as const;
 
@@ -279,7 +274,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
       return lines.filter(Boolean).join('\n');
     }
     case 'image.subject': return asset ? `主体：${asset.name}\n${fixedDescription(asset)}` : '';
-    case 'image.style': return styleBlockText(styleSpecFor(project));
+    case 'image.style': return styleBlockText(effectiveStyle(project, ctx.global));
     case 'image.skills': return selectedSkills(project, ['image']);
     case 'video.heading': return shot ? `第${shot.number}镜，${shot.duration}秒。\n风格：${project.style}` : '';
     case 'video.continuity': {
@@ -304,7 +299,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     }
     case 'video.audio': return shot ? `音频模式：${AUDIO_MODES[shot.audioMode] ?? shot.audioMode}` : '';
     case 'video.assets': return shot ? shotAssetText(project, shot) : '';
-    case 'video.style': return styleBlockText(styleSpecFor(project), 'concise');
+    case 'video.style': return styleBlockText(effectiveStyle(project, ctx.global), 'concise');
     case 'video.skills': return selectedSkills(project, ['video']);
     default: return '';
   }
@@ -333,13 +328,22 @@ function shotAssetText(project: Project, shot: Shot): string {
 // ── 存档迁移 ──────────────────────────────────────────────────
 
 /**
- * v1（块 id → 覆盖文本）迁移成 v2（每个 kind 一份块计划）。
- * 旧值只可能是用户自己改过的内容，迁移不会带回任何默认文案；
- * 认不出的旧键（如早期合并版的 extract.instruction）直接丢弃。
+ * 模板存档的迁移：v1（块 id → 覆盖文本）→ v2（每个 kind 一份块计划）→ v3（作品覆盖层）。
+ *
+ * v3 之后模板分两层：全局模板是默认，作品只存「覆盖层」。
+ * 旧作品里写过的步骤变成它自己的覆盖（内容一个字不丢），
+ * 没写过的步骤不进覆盖层，跟着全局走。
+ * 迁移不会带回任何默认文案——旧值只可能是用户自己改过的内容。
  */
 export function migratePromptConfig(config: Project['promptConfig']): Project['promptConfig'] {
   if (!config) return undefined;
-  if (config.v === 2) return config;
+  if (config.v === 3) return config;
+  const v2 = config.v === 1 ? migrateV1ToV2(config) : config;
+  return migrateV2ToV3(v2);
+}
+
+/** v1（块 id → 覆盖文本）迁移成 v2（每个 kind 一份块计划）。 */
+function migrateV1ToV2(config: Extract<NonNullable<Project['promptConfig']>, { v: 1 }>): Extract<NonNullable<Project['promptConfig']>, { v: 2 }> {
   const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = {};
   for (const [id, text] of Object.entries(config.blocks ?? {})) {
     const builtin = builtinById(id);
@@ -356,4 +360,30 @@ export function migratePromptConfig(config: Project['promptConfig']): Project['p
     plan.blocks.sort((a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999));
   }
   return { v: 2, style: config.style, templates };
+}
+
+/**
+ * v2 → v3：把作品自己的模板搬进覆盖层。
+ * 块为空的步骤不进覆盖层——它本来就没有内容，让它跟随全局；
+ * 块非空的步骤进覆盖层，从此这一步归这部作品管。
+ */
+function migrateV2ToV3(config: Extract<NonNullable<Project['promptConfig']>, { v: 2 }>): Project['promptConfig'] {
+  const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = {};
+  for (const kind of PROMPT_KINDS) {
+    const plan = config.templates?.[kind];
+    if (!plan) continue;
+    const blocks = visibleBlocks(plan.blocks ?? []);
+    if (blocks.length) templates[kind] = { blocks };
+  }
+  const overrides: PromptTemplateSet = { templates };
+  if (hasStyleContent(config.style)) overrides.style = config.style;
+  return { v: 3, overrides };
+}
+
+/** 风格里有没有真东西（空对象不算「这部作品自己管风格」）。 */
+function hasStyleContent(style: StyleSpec | undefined): boolean {
+  if (!style) return false;
+  if (style.forbidden?.length) return true;
+  const fields: (keyof StyleSpec)[] = ['medium', 'line', 'palette', 'face', 'light'];
+  return fields.some(key => !!(style[key] as string | undefined)?.trim());
 }

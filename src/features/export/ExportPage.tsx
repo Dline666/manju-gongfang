@@ -8,6 +8,7 @@ import PreflightDialog from './PreflightDialog';
 import { errorMessage } from '../../lib/api';
 import { inspectProject, type MediaReport } from '../../lib/media/inputs';
 import { buildMaterialZip } from '../../lib/media/archive';
+import { useStudio } from '../../store/studio';
 import { formatTime, safeFilename } from '../../lib/media/timeline';
 import type { RenderProgress } from '../../lib/media/encoder';
 import TimelinePreview from './TimelinePreview';
@@ -16,6 +17,7 @@ const audioNames = { original: '保留视频原声', dubbing: '配音完全替�
 type Job = 'mp4' | 'zip';
 
 export default function ExportPage({ project, navigate }: PageProps) {
+  const { settings } = useStudio();
   const [report, setReport] = useState<MediaReport>();
   const [checking, setChecking] = useState(false);
   const [checkMessage, setCheckMessage] = useState('');
@@ -61,7 +63,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
         const blob = await renderProject(project, value => { if (!control.signal.aborted) setProgress(value); }, control.signal);
         if (!control.signal.aborted && alive.current) { setMp4(blob); toast.success('真实 MP4 已生成，请预览后下载。'); }
       } else {
-        const blob = await buildMaterialZip(project, value => { if (!control.signal.aborted) setProgress(value); }, control.signal);
+        const blob = await buildMaterialZip(project, value => { if (!control.signal.aborted) setProgress(value); }, control.signal, settings.promptTemplates);
         if (!control.signal.aborted && alive.current) { setZip(blob); toast.success('完整素材 ZIP 已生成。'); }
       }
     } catch (caught) {

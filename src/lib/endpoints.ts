@@ -2,7 +2,7 @@
 // 这个模块负责端点目录的查询、增删与旧存档迁移。
 import {
   builtinEndpoints, defaultModels, defaultSettings, uid,
-  type Capability, type Endpoint, type ProviderProtocol, type Settings,
+  type Capability, type Endpoint, type PromptTemplateSet, type ProviderProtocol, type Settings,
 } from '../domain/types';
 
 /** 每个内置端点默认承担的环节；决定旧存档的扁平 models 怎么映射到能力上。 */
@@ -92,6 +92,7 @@ export function migrateSettings(saved: {
   endpoints?: Endpoint[]; models?: Record<string, unknown>;
   speechModel?: string; imageConcurrency?: number; customJsonMode?: boolean;
   styles?: string[];
+  promptTemplates?: PromptTemplateSet;
 } | undefined): Settings {
   const base = defaultSettings;
   if (!saved) return base;

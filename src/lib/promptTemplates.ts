@@ -35,10 +35,6 @@ export function defaultStyleSpec(_style: string): StyleSpec {
   return {};
 }
 
-export function styleSpecFor(project: Project): StyleSpec {
-  return project.promptConfig?.style ?? defaultStyleSpec(project.style);
-}
-
 export function styleBlockText(style: StyleSpec, mode: 'full' | 'concise' = 'full'): string {
   const fields = ([['介质', style.medium], ['线条', style.line], ['配色', style.palette], ['面部', style.face], ['光线', style.light]] as const).filter(([, value]) => value?.trim());
   if (!fields.length) return '';
