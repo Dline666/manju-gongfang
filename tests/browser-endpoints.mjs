@@ -3,6 +3,7 @@
 // 删掉内置平台 → 它从下拉消失 → 恢复 → 回来，而且它改过的模型 ID 还在。
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
+import { pickSearchOption, searchSelectOptions } from './select-helpers.mjs';
 
 const BASE = 'https://api.example.com/v1';
 const source = '人物：阿青：黑短发，青色布衣\n场景：山门：黑石阶，薄雾\n道具：断剑：红绳剑柄，斜断口\n'
@@ -52,15 +53,15 @@ try {
 
     // 它出现在剧本与生图的端点下拉里，但不该出现在视频下拉里（各环节下拉在不同页签）
     await openTab('剧本');
-    const scriptSelect = page.getByLabel('剧本默认模型平台');
-    assert.ok((await scriptSelect.locator('option').allTextContents()).some(text => text.includes('我的中转站')), '自定义端点应出现在剧本下拉');
+    const scriptOptions = await searchSelectOptions(page, '剧本默认模型平台');
+    assert.ok(scriptOptions.some(text => text.includes('我的中转站')), '自定义端点应出现在剧本下拉');
     await openTab('生图');
-    const imageSelect = page.getByLabel('生图默认模型平台');
-    assert.ok((await imageSelect.locator('option').allTextContents()).some(text => text.includes('我的中转站')), '自定义端点应出现在生图下拉');
-    await imageSelect.selectOption({ label: '我的中转站 · flux-1' });
+    const imageOptions = await searchSelectOptions(page, '生图默认模型平台');
+    assert.ok(imageOptions.some(text => text.includes('我的中转站')), '自定义端点应出现在生图下拉');
+    await pickSearchOption(page, '生图默认模型平台', '我的中转站');
     await openTab('视频');
-    const videoSelect = page.getByLabel('视频默认模型平台');
-    assert.ok(!(await videoSelect.locator('option').allTextContents()).some(text => text.includes('我的中转站')), '自定义端点只覆盖剧本与生图，不该出现在视频下拉');
+    const videoOptions = await searchSelectOptions(page, '视频默认模型平台');
+    assert.ok(!videoOptions.some(text => text.includes('我的中转站')), '自定义端点只覆盖剧本与生图，不该出现在视频下拉');
 
     // Key 不落盘，Base URL 属于作品配置、留在本机
     const stored = await page.evaluate(() => localStorage.getItem('manju-studio-v1') || '');
@@ -87,13 +88,13 @@ try {
     await openTab('生图');
     const openai = page.locator('.provider-panel').filter({ has: page.getByRole('heading', { name: 'OpenAI', exact: true }) });
     await openai.getByRole('button', { name: '删除', exact: true }).click();
-    const afterDelete = await page.getByLabel('生图默认模型平台').locator('option').allTextContents();
+    const afterDelete = await searchSelectOptions(page, '生图默认模型平台');
     assert.ok(!afterDelete.some(text => text.includes('OpenAI')), '删掉的平台不该留在下拉里');
     assert.ok(afterDelete.some(text => text.includes('我的中转站')), '删一个平台不该影响其它端点');
     await page.getByRole('heading', { name: '已删除的内置平台' }).waitFor();
     const removed = page.locator('.provider-group').filter({ has: page.getByRole('heading', { name: '已删除的内置平台', exact: true }) });
     await removed.getByRole('button', { name: '恢复', exact: true }).click();
-    const afterRestore = await page.getByLabel('生图默认模型平台').locator('option').allTextContents();
+    const afterRestore = await searchSelectOptions(page, '生图默认模型平台');
     assert.ok(afterRestore.some(text => text.includes('OpenAI')), '恢复后它回到下拉里');
     assert.ok(afterRestore.some(text => text.includes('gpt-image-2.6-sunburst')), '恢复后它改过的模型 ID 也该回来');
 

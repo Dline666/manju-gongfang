@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Sparkles, Download, FileText } from 'lucide-react';
-import { Button, Empty, ErrorNote, Field, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
+import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
 import TemplateEditor from '../prompts/TemplateEditor';
+import { PageHeader } from '../../components/PageHeader';
 import { MAX_SOURCE_CHARS, defaultStyle, type PageProps, type Project } from '../../domain/types';
 import { scriptWarnings, validateScriptStage, withConfirmation } from '../../domain/flow';
 import { getStudio, updateProject, useStudio } from '../../store/studio';
@@ -147,7 +148,7 @@ function ScriptEditor({ project, navigate }: PageProps) {
     } catch (error) { toast.error(errorMessage(error)); }
   };
   return <div className="stack">
-    <header className="page-heading"><div><span className="tag">01 / 故事创作</span><h1>让一个念头，成为好故事</h1><p className="muted">从主题或小说原文出发，写出一份完整的漫剧剧本。</p></div><Button variant="outline" onClick={() => setDocumentsOpen(true)}><Download size={16} />导出文档</Button></header>
+    <PageHeader title="让一个念头，成为好故事" help={<HelpPopover label="故事创作说明" title="故事创作"><p>从主题或小说原文出发，写出一份完整的漫剧剧本。</p><p className="mt-2">剧本按四部分结构生成，每个动作块与对白块都标【镜头：类型】和时长，保存时会自动拆成镜头。原文模式下对白逐字保留，不增删改写。</p></HelpPopover>} actions={<Button variant="outline" onClick={() => setDocumentsOpen(true)}><Download size={16} />导出文档</Button>} />
     <div className="workbench"><div className="workbench-main stack">
     <section className="panel stack">
       <div className="section-title"><h2>故事种子</h2><span className="tag">完整剧本 · 逐镜拆解</span></div>
@@ -174,7 +175,7 @@ function ScriptEditor({ project, navigate }: PageProps) {
       </>}
     </section>
     </div><aside className="workbench-aside" aria-label="剧本状态">
-      <section className="panel stack"><div className="section-title"><h3>当前状态</h3><span className="tag">{sourceTag}</span></div><p className="small muted">{sceneCount} 场 · {project.shots.length} 镜 · {Number(total.toFixed(1))} 秒</p><p className="small muted">{characters.length} 位人物 · {project.assets.length} 项资产 · 编辑自动保存</p></section>
+      <Fold title="当前状态" meta={sourceTag}><p className="small muted">{sceneCount} 场 · {project.shots.length} 镜 · {Number(total.toFixed(1))} 秒</p><p className="small muted">{characters.length} 位人物 · {project.assets.length} 项资产 · 编辑自动保存</p></Fold>
       {project.shots.length > 0 && issues.length > 0 && <section className="panel stack"><div className="section-title"><h3>需要完善</h3><span className="tag">{issues.length} 项</span></div><IssueList issues={issues} /></section>}
       {warnings.length > 0 && <section className="panel stack"><div className="section-title"><h3>建议</h3><span className="tag subtle">{warnings.length} 项</span></div><ul className="issue-list">{warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></section>}
       <section className="panel stack"><Button variant="secondary" disabled={!project.shots.length} onClick={confirmScript}>确认并进入下一步</Button><p className="small muted">镜头由剧本拆出，时长取 0.5 秒整数倍。确认后进入资产步骤，资产补全在下一步完成。</p></section>

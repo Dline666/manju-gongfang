@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react';
 import { Pause, Play, SkipBack } from 'lucide-react';
-import { Button } from '../../components/Ui';
+import { Button, HelpPopover } from '../../components/Ui';
 import type { MediaReport } from '../../lib/media/inputs';
 import { buildTimeline, formatTime, locateTime } from '../../lib/media/timeline';
 
@@ -147,7 +147,7 @@ export default function TimelinePreview({ report }: { report: MediaReport }) {
   }
 
   return <section className="panel stack" aria-label="连续时间轴预览">
-    <div className="section-title"><h2>连续时间轴预览</h2><span className="tag">{formatTime(time)} / {formatTime(total)}</span></div>
+    <div className="section-title"><div className="row"><h2>连续时间轴预览</h2><HelpPopover label="连续预览说明"><p>点击开始后按镜头时长连续播放；短视频停留最后一帧，短配音结束后静音。切镜、拖动和暂停会同步独立配音。此预览不烧录字幕，以最终 MP4 预览为准。</p></HelpPopover></div><span className="tag">{formatTime(time)} / {formatTime(total)}</span></div>
     <video ref={video} playsInline preload="auto" onWaiting={bufferPause} onError={bufferPause} aria-label="镜头画面" style={{ display: 'block', width: '100%', maxHeight: 480, aspectRatio: '9 / 16', objectFit: 'contain', background: '#000' }} />
     <audio ref={audio} preload="auto" onWaiting={bufferPause} onError={bufferPause} />
     <label className="field"><span>总时间轴 · 当前第 {location?.shot.number ?? '—'} 镜</span><input aria-label="预览时间" type="range" min={0} max={total || 1} step={1 / 24} value={time} disabled={!canPreview || !urls.length} onChange={event => { void synchronize(Number(event.target.value), intent.current); }} /></label>
@@ -159,6 +159,5 @@ export default function TimelinePreview({ report }: { report: MediaReport }) {
     <div className="row wrap">{timeline.map(item => <Button size="sm" variant={location?.index === item.index ? 'default' : 'outline'} key={item.shot.id} disabled={!canPreview || !urls.length} onClick={() => { void synchronize(item.start, intent.current); }}>第 {item.shot.number} 镜</Button>)}</div>
     {!canPreview && <p className="alert">补齐当前会话的视频及所选配音后，才能连续预览。</p>}
     {error && <p className="alert" role="alert">{error}</p>}
-    <p className="muted">点击开始后按镜头时长连续播放；短视频停留最后一帧，短配音结束后静音。切镜、拖动和暂停会同步独立配音。此预览不烧录字幕，以最终 MP4 预览为准。</p>
   </section>;
 }

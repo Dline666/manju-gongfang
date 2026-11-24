@@ -48,10 +48,11 @@ try {
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '黑短发，青色布衣');
     await overflow(); await close();
     assert.equal(await page.locator('main input[type=file]').count(), 0);
-    assert.ok((await page.locator('.compact-media-thumbnail').first().boundingBox()).height <= 150);
+    assert.deepEqual(await page.locator('.asset-table thead th').allTextContents(), ['形态', '角色 / 形态', '形态描述', '音色', '参考图', '图片', '操作']);
+    assert.equal(await page.locator('.asset-table tbody tr').count(), 1, '资产表默认只显示基础形态');
     await page.screenshot({ path: `dev/asset-cards-${width}.png` });
     await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); s.setKey('openai', 'fixture-not-transmitted'); s.setKey('gemini', 'fixture-not-transmitted'); });
-    await page.getByRole('button', { name: /生成缺图/ }).click();
+    await page.getByRole('button', { name: /批量生成角色图片/ }).click();
     const batchBox = page.getByLabel('「阿青」· 即将发送的图片提示词');
     const batchDefault = await batchBox.inputValue();
     await batchBox.fill(`${batchDefault}\n批量补充：只影响本次`);
@@ -94,6 +95,7 @@ try {
       assert.equal((copied.match(/提示词/g) || []).length, 1);
     }
     await page.goto('http://127.0.0.1:5173/#/assets');
+    await page.locator('details.fold').filter({ hasText: '从剧本提取资产' }).locator('summary').click();
     await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
     assert.equal(calls.length, 1);
     await page.getByRole('button', { name: '确认发送并提取人物资产', exact: true }).click();

@@ -1,5 +1,6 @@
 import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
+import { pickSearchOption } from './select-helpers.mjs';
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 const imageModels = [
@@ -54,9 +55,14 @@ try {
       location.hash = '/assets';
     });
     const imageSelect = page.getByRole('combobox', { name: /^生图模型/ });
-    await expect(imageSelect).toHaveValue('openai:gpt-image-2.6-sunburst');
-    assert.deepEqual(await imageSelect.locator('optgroup').evaluateAll(groups => groups.map(g => g.label)), ['OpenAI', '火山引擎 / 即梦 · Seedream', '硅基流动 SiliconFlow（免费）']);
-    await imageSelect.selectOption('seedream:doubao-seedream-5-5-261028');
+    await expect(imageSelect).toContainText('GPT Image 2.6 Sunburst');
+    await imageSelect.click();
+    await page.locator('.search-select-popover').waitFor();
+    await page.locator('.search-select-more').click();
+    assert.deepEqual(await page.locator('.search-select-popover .search-select-group').allTextContents(), ['OpenAI', '火山引擎 / 即梦 · Seedream', '硅基流动 SiliconFlow（免费）']);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    await pickSearchOption(page, /^生图模型/, 'doubao-seedream-5-5-261028');
     await createImage();
     await page.getByRole('heading', { name: '连接你的创作能力' }).waitFor();
     assert.equal(calls.length, 0);
@@ -72,8 +78,10 @@ try {
     await overflow();
     await go('assets');
     for (const [provider, model] of imageModels) {
-      await imageSelect.selectOption(`${provider}:${model}`);
+      await pickSearchOption(page, /^生图模型/, model);
+      await page.getByRole('button', { name: '生图模型说明' }).click();
       await expect(page.getByText(/当前生图渠道/)).toContainText(model);
+      await page.keyboard.press('Escape');
       const before = calls.filter(c => c.action === 'image').length;
       await createImage();
       await expect(page.getByRole('dialog')).toContainText(model);
@@ -96,13 +104,13 @@ try {
     await expand('火山引擎 / 即梦 · Seedream');
     await panel('火山引擎 / 即梦 · Seedream').getByRole('textbox', { name: /^模型 ID/ }).fill('ep-custom-seedream');
     await go('assets');
-    await imageSelect.selectOption('seedream:ep-custom-seedream');
-    await expect(imageSelect).toHaveValue('seedream:ep-custom-seedream');
+    await pickSearchOption(page, /^生图模型/, 'ep-custom-seedream');
+    await expect(imageSelect).toContainText('ep-custom-seedream');
     await createImage(); await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     assert.equal(calls.filter(c => c.action === 'image').at(-1).body.model, 'ep-custom-seedream');
     failImage = true;
-    await imageSelect.selectOption('openai:gpt-image-2.6-sunburst');
+    await pickSearchOption(page, /^生图模型/, 'gpt-image-2.6-sunburst');
     await createImage(); const beforeFailure = calls.filter(c => c.action === 'image').length;
     const beforeImage = (await saved()).projects[0].assets[0].imageId;
     await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
@@ -111,7 +119,9 @@ try {
     await close();
     assert.equal(calls.filter(c => c.action === 'image').length, beforeFailure + 1, 'no automatic fallback or retry');
     assert.equal((await saved()).projects[0].assets[0].imageId, beforeImage);
+    await page.getByRole('button', { name: '生图模型说明' }).click();
     await expect(page.getByText(/当前生图渠道/)).toContainText('免费兜底暂未配置');
+    await page.keyboard.press('Escape');
     await go('settings');
     await openTab('生图');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('调用失败');
@@ -124,11 +134,15 @@ try {
     await page.screenshot({ path: `dev/channel-status-${width}.png` });
     await go('generation');
     const videoSelect = page.getByRole('combobox', { name: /^视频模型/ });
-    await expect(videoSelect).toHaveValue('seedance:doubao-seedance-2-0-fast-260128');
-    assert.deepEqual(await videoSelect.locator('optgroup').evaluateAll(groups => groups.map(g => g.label)), ['火山引擎 Seedance', 'MiniMax 国内版']);
-    assert.equal(await videoSelect.locator('option').count(), 5);
+    await expect(videoSelect).toContainText('Doubao-Seedance-2.0-fast');
+    await videoSelect.click();
+    await page.locator('.search-select-popover').waitFor();
+    assert.deepEqual(await page.locator('.search-select-popover .search-select-group').allTextContents(), ['火山引擎 Seedance', 'MiniMax 国内版']);
+    assert.equal(await page.locator('.search-select-popover .search-select-option').count(), 5);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
     for (const [index, [provider, model]] of videoModels.entries()) {
-      await videoSelect.selectOption(`${provider}:${model}`);
+      await pickSearchOption(page, /^视频模型/, model);
       await page.getByRole('button', { name: `查看第${index + 1}镜视频详情`, exact: true }).click();
       await page.getByRole('button', { name: 'API 生成', exact: true }).click();
       await expect(page.getByRole('dialog')).toContainText(model);
@@ -166,7 +180,7 @@ try {
     assert.equal(persisted.keys, undefined); assert.equal(persisted.providerStatus, undefined);
     assert.ok(!JSON.stringify(persisted).includes('fixture-key-not-transmitted'));
     await page.reload();
-    await expect(videoSelect).toHaveValue('seedance:doubao-seedance-2-0-mini-260615');
+    await expect(videoSelect).toContainText('Doubao-Seedance-2.0-mini');
     await go('settings');
     await expect(page.locator('.provider-panel .tag')).toHaveText(Array(2).fill('Key 缺失'));
     await page.evaluate(() => {
@@ -181,7 +195,7 @@ try {
     await openTab('生图'); await expand('火山引擎 / 即梦 · Seedream');
     await expect(panel('火山引擎 / 即梦 · Seedream').getByRole('textbox', { name: /^模型 ID/ })).toHaveValue('doubao-seedream-5-5-261028');
     await expect(page.getByText(/已停止覆盖保存/)).toHaveCount(0);
-    await go('assets'); await expect(imageSelect).toHaveValue('openai:gpt-image-2.6-sunburst');
+    await go('assets'); await expect(imageSelect).toContainText('GPT Image 2.6 Sunburst');
     assert.equal((await saved()).projects[0].name, '隔离模型测试');
     assert.deepEqual(errors, []);
     results.push({ width, images: calls.filter(c => c.action === 'image').length, videos: calls.filter(c => c.action === 'video-create').length, errors });

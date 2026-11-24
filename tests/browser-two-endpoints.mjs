@@ -2,6 +2,7 @@
 // 断言：两个端点各自的 Base URL / Key / 模型 ID 不会串，生图请求走图像端点。
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
+import { pickSearchOption, searchSelectOptions } from './select-helpers.mjs';
 
 const IMG_BASE = 'https://img.example.com/v1';
 const TXT_BASE = 'https://txt.example.com/v1';
@@ -57,15 +58,15 @@ try {
 
     // 两个下拉各只看到自己的那个端点
     await openTab('剧本');
-    const scriptOptions = await page.getByLabel('剧本默认模型平台').locator('option').allTextContents();
+    const scriptOptions = await searchSelectOptions(page, '剧本默认模型平台');
     assert.ok(scriptOptions.some(text => text.includes('文本端点')), '剧本下拉应包含文本端点');
     assert.ok(!scriptOptions.some(text => text.includes('图像端点')), '图像端点不负责剧本，不该出现在剧本下拉');
-    await page.getByLabel('剧本默认模型平台').selectOption({ label: '文本端点 · gemini-4-argon' });
+    await pickSearchOption(page, '剧本默认模型平台', '文本端点');
     await openTab('生图');
-    const imageOptions = await page.getByLabel('生图默认模型平台').locator('option').allTextContents();
+    const imageOptions = await searchSelectOptions(page, '生图默认模型平台');
     assert.ok(imageOptions.some(text => text.includes('图像端点')), '生图下拉应包含图像端点');
     assert.ok(!imageOptions.some(text => text.includes('文本端点')), '文本端点不负责生图，不该出现在生图下拉');
-    await page.getByLabel('生图默认模型平台').selectOption({ label: '图像端点 · gpt-image-2' });
+    await pickSearchOption(page, '生图默认模型平台', '图像端点');
 
     // 剧本步骤显示的是文本端点
     await page.goto('http://127.0.0.1:5173/#/script');

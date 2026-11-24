@@ -1,6 +1,7 @@
 // 端点超时的界面文案回归：拦网络造一个 504，验证用户看到的是「端点超时」而不是含糊话。
 // 不真的等 120 秒上游超时，也不产生任何付费请求。
 import { chromium } from '@playwright/test';
+import { pickSearchOption } from './select-helpers.mjs';
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 const errors = [];
@@ -26,9 +27,7 @@ try {
   await panel.getByLabel('Base URL').fill('https://direct-api.cangyuansuanli.cn/v1');
   await panel.getByLabel('API Key').fill('sk-regression-fake-key');
   await page.getByRole('tab', { name: /^剧本/ }).click();
-  const select = page.getByLabel('剧本默认模型平台');
-  const label = await select.locator('option').evaluateAll(options => options.map(o => o.textContent).find(t => t && t.includes('超时回归端点')) || '');
-  await select.selectOption({ label });
+  await pickSearchOption(page, '剧本默认模型平台', '超时回归端点');
 
   await page.route('**/functions/v1/app**', route => {
     const url = route.request().url();
