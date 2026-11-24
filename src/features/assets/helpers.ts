@@ -1,6 +1,25 @@
 import type { Asset, Project } from '../../domain/types';
 
 /**
+ * 多形态沿用现有资产数据：名字写成「角色 · 形态」即归到同一角色下，基础形态就是角色名本身。
+ * 点、间隔号、斜杠都接受，便于从旧清单里粘贴进来的名字直接归组。
+ */
+export function splitFormName(name: string) {
+  const match = name.match(/^(.*?)\s*[·・/]\s*(.+)$/);
+  return match ? { base: match[1].trim(), form: match[2].trim() } : { base: name.trim(), form: '' };
+}
+
+/**
+ * 非基础形态对应的基础形态资产；基础形态本身、名字解析不出基础形态时返回 undefined。
+ * 只认同类别、名字完全等于基础名的资产，避免「阿青 · 战损」被同名场景误认。
+ */
+export function formBaseAsset(asset: Asset, assets: Asset[]): Asset | undefined {
+  const { base, form } = splitFormName(asset.name);
+  if (!form) return undefined;
+  return assets.find(item => item.id !== asset.id && item.kind === asset.kind && splitFormName(item.name).form === '' && item.name.trim() === base);
+}
+
+/**
  * 人物资产与剧本说话人按名字对齐：新建或改名人物后，台词自动挂到这个人身上。
  * 剧本阶段不建人物，所以这一步是「资产真正产生」的时刻。
  */

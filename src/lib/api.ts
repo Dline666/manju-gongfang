@@ -10,6 +10,8 @@ const messages: Record<string, string> = {
   endpoint_model_unavailable: '该端点下没有这个模型或渠道：请检查模型 ID，以及中转站的分组/渠道是否覆盖它。',
   endpoint_timeout: '端点在两分钟内没有返回：模型可能正在排队，或这条线路暂时不通。这次请求可能已经送达，请先到平台确认是否计费，再决定要不要重试。',
   provider_rejected: '模型平台拒绝了请求，请检查内容、模型权限及参考图。', invalid_images: '参考图格式或组合无效，首尾帧不能与参考图模式混用。',
+  invalid_reference_image: '参考图数据无效：只支持 5MB 以内的 PNG / JPEG / WebP 本地图片。',
+  reference_not_supported: '当前生图渠道不支持参考图，本次请求没有提交：请换用支持图生图的模型或端点（OpenAI / Seedream / 自定义端点，或 SiliconFlow 的 Edit 模型）。',
   request_too_large: '请求太大，请压缩参考图或减少图片数量。', upstream_timeout: '查询超时，已有任务不会重发，请稍后查询。',
   upstream_unavailable: '模型查询暂不可用，请稍后再试。', media_not_ready: '视频尚未完成，请等待任务结束。',
   rate_limited: '服务商请求过于频繁，请稍后查询或重试。', insufficient_balance: '服务商额度不足，请检查账户余额。',
@@ -73,6 +75,18 @@ export function credentials(endpointId: string, capability: Capability) {
     model: modelFor(state.settings, endpointId, capability),
     ...(endpoint.baseUrl ? { baseUrl: endpoint.baseUrl } : {}),
   };
+}
+/** 生图请求：reference 是本地读取的 data URL，只在本次请求里出现，不进入项目存档。 */
+export type ImageRequest = ReturnType<typeof credentials> & { prompt: string; reference?: string };
+export type ImageResult = { base64: string; mime: string };
+/**
+ * 哪些生图渠道能在本次请求里接收参考图（与后端实现一致）。
+ * SiliconFlow 只有 Edit/Kontext 系列模型支持 image 字段，Kolors 会被后端明确拒绝。
+ * UI 用它提前说明「这次会被拒绝」，后端仍然做最终判定。
+ */
+export function supportsImageReference(provider: string, model = ''): boolean {
+  if (provider === 'siliconflow') return /(?:edit|kontext)/i.test(model.slice(model.indexOf('/') + 1));
+  return provider === 'openai' || provider === 'seedream' || provider === 'openai-compatible';
 }
 async function request(action: string, payload: object, signal?: AbortSignal) {
   const body: Record<string, unknown> = { ...payload };

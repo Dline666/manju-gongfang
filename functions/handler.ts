@@ -21,6 +21,7 @@ const ENDPOINTS = {
   gemini: "https://generativelanguage.googleapis.com/v1beta/interactions",
   deepseek: "https://api.deepseek.com/chat/completions",
   openai: "https://api.openai.com/v1/images/generations",
+  openaiEdits: "https://api.openai.com/v1/images/edits",
   seedream: "https://ark.cn-beijing.volces.com/api/v3/images/generations",
   siliconflow: "https://api.siliconflow.cn/v1/images/generations",
   voices: "https://api.minimax.cn/v1/get_voice",
@@ -43,7 +44,7 @@ const ACTION_FIELDS: Record<string, readonly string[]> = {
   "extract-characters": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
   "extract-scenes": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
   "extract-props": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
-  image: ["provider", "key", "model", "prompt", "baseUrl"],
+  image: ["provider", "key", "model", "prompt", "baseUrl", "reference"],
   voices: ["provider", "key"],
   speech: ["provider", "key", "model", "text", "voiceId", "speed"],
   "video-create": ["provider", "key", "model", "prompt", "duration", "images"],
@@ -94,6 +95,17 @@ function model(value: unknown, fallback: string, pattern: RegExp): string {
 function customModel(value: unknown): string {
   const result = text(value, 128, "invalid_model");
   requireValue(/^[A-Za-z0-9._:\/-]{1,128}$/.test(result), "invalid_model");
+  return result;
+}
+/**
+ * SiliconFlow 生图模型：无参考图时维持只开放 Kolors（现有文本路径不变）；
+ * 有参考图时只接受 Edit/Kontext 系列——官方 image 字段仅对这些模型生效。
+ * 其它模型明确报 reference_not_supported，而不是把参考图静默丢掉。
+ */
+function siliconflowModel(value: unknown, withReference: boolean): string {
+  if (!withReference) return model(value, "Kwai-Kolors/Kolors", /^Kwai-Kolors\/Kolors$/);
+  const result = model(value, "Kwai-Kolors/Kolors", /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/);
+  requireValue(/(?:edit|kontext)/i.test(result.slice(result.indexOf("/") + 1)), "reference_not_supported", 422);
   return result;
 }
 function json(data: unknown): Response {
@@ -420,6 +432,39 @@ function images(value: unknown): { url: string; role: string }[] {
   requireValue(first <= 1 && last <= 1 && (!last || first === 1) && !(refs && (first || last)), "invalid_images");
   return result;
 }
+/**
+ * 新形态的参考图：只接受前端从 IndexedDB 读出来的本地 data URL（最多 1 张、解码后 ≤5MB）。
+ * 不接收远程 URL——后端不需要为图生图再放开一条下载通道，SSRF 面保持现状。
+ * 格式必须与文件头一致，避免把改了扩展名的文件转给付费接口。
+ */
+const REFERENCE_BYTES = 5 * MiB;
+const REFERENCE_CHARS = Math.ceil(REFERENCE_BYTES * 4 / 3) + 128;
+type ReferenceImage = { url: string; base64: string; mime: string; extension: string };
+function referenceImage(value: unknown): ReferenceImage | undefined {
+  if (value === undefined) return undefined;
+  const url = text(value, REFERENCE_CHARS, "invalid_reference_image");
+  const match = /^data:image\/(png|jpeg|webp);base64,/.exec(url);
+  requireValue(match, "invalid_reference_image");
+  const encoded = base64(url.slice(match[0].length), REFERENCE_CHARS, "invalid_reference_image", 400);
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  const size = encoded.length / 4 * 3 - padding;
+  requireValue(size > 0 && size <= REFERENCE_BYTES, "invalid_reference_image");
+  // 只解码够判断文件头的长度：data URL 最长可达 7MB，整体解码没有意义。
+  const signature = atob(encoded.slice(0, 24));
+  const png = signature.startsWith("\x89PNG\r\n\x1a\n");
+  const jpeg = signature.charCodeAt(0) === 0xff && signature.charCodeAt(1) === 0xd8 && signature.charCodeAt(2) === 0xff;
+  const webp = signature.startsWith("RIFF") && signature.slice(8, 12) === "WEBP";
+  const type = match[1];
+  requireValue(type === "png" ? png : type === "jpeg" ? jpeg : webp, "invalid_reference_image");
+  return { url, base64: encoded, mime: `image/${type}`, extension: type === "jpeg" ? "jpg" : type };
+}
+/** OpenAI Images Edits 要的是文件而不是 data URL；只按校验过的 base64 组装 Blob。 */
+function referenceBlob(reference: ReferenceImage): Blob {
+  const binary = atob(reference.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: reference.mime });
+}
 
 // Conservative public-address check; unknown/reserved forms fail closed.
 function publicIp(ip: string): boolean {
@@ -481,7 +526,7 @@ export function createHandler(dependencies: Dependencies = {}) {
   }
 
   async function upstream(request: Request, url: string, key: string, options: {
-    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number; headers?: Record<string, string>; surfaceErrors?: boolean;
+    body?: ObjectValue; form?: FormData; paid?: boolean; gemini?: boolean; max?: number; headers?: Record<string, string>; surfaceErrors?: boolean;
   } = {}): Promise<ObjectValue> {
     const paid = options.paid === true;
     const scope = deadline(paid ? timeouts.generation : timeouts.query, request.signal,
@@ -490,10 +535,11 @@ export function createHandler(dependencies: Dependencies = {}) {
     try {
       requireValue(!request.signal.aborted, "request_aborted", 408);
       response = await scope.run(fetcher(url, {
-        method: options.body ? "POST" : "GET", redirect: "manual", credentials: "omit", cache: "no-store", signal: scope.signal,
-        headers: { "Content-Type": "application/json", Accept: "application/json",
+        method: options.body || options.form ? "POST" : "GET", redirect: "manual", credentials: "omit", cache: "no-store", signal: scope.signal,
+        // multipart 的 boundary 必须由运行时生成；手动写 Content-Type 会毁掉整个请求。
+        headers: { ...(options.form ? {} : { "Content-Type": "application/json" }), Accept: "application/json",
           ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }), ...(options.headers ?? {}) },
-        ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+        ...(options.form ? { body: options.form } : options.body ? { body: JSON.stringify(options.body) } : {}),
       }));
       if (!response.ok) {
         if (!options.surfaceErrors) throw upstreamHttp(response.status, paid, response.headers.get("retry-after") ?? undefined);
@@ -717,11 +763,16 @@ export function createHandler(dependencies: Dependencies = {}) {
       }
       if (action === "image") {
         if (provider === "siliconflow") {
+          // SiliconFlow 的 image 字段只对 Edit/Kontext 系列模型生效；Kolors 是纯文生图。
+          // 参考图存在时不静默丢掉：要么明确要求换模型，要么按官方字段发出去。
+          const reference = referenceImage(input.reference);
+          const selectedModel = siliconflowModel(input.model, reference !== undefined);
           const data = await upstream(request, ENDPOINTS.siliconflow, key, { paid: true, headers: { "X-Enable-Watermark": "0" }, body: {
-            model: model(input.model, "Kwai-Kolors/Kolors", /^Kwai-Kolors\/Kolors$/),
+            model: selectedModel,
             prompt: text(input.prompt, 32_000, "invalid_prompt"),
             negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊",
             image_size: "1024x1024", batch_size: 1, output_format: "png",
+            ...(reference ? { image: reference.url } : {}),
           }});
           requireValue(Array.isArray(data.images) && data.images.length === 1, "invalid_upstream_response", 502);
           const image = object(data.images[0], "invalid_upstream_response", 502);
@@ -730,9 +781,25 @@ export function createHandler(dependencies: Dependencies = {}) {
         if (provider === "openai-compatible") {
           // 自定义端点生图：只接受 base64，不代理任意图片 URL，避免把 SSRF 面扩大到 CDN 白名单之外。
           const base = await safeBaseUrl(input.baseUrl);
+          const reference = referenceImage(input.reference);
+          const prompt = text(input.prompt, 32_000, "invalid_prompt");
+          if (reference) {
+            // OpenAI 兼容的图生图走 Images Edits 的 multipart 契约；没有这个接口的中转站
+            // 会由 surfaceErrors 把上游原文带回来，而不是假装成功。
+            const form = new FormData();
+            form.append("model", customModel(input.model));
+            form.append("prompt", prompt);
+            form.append("n", "1");
+            form.append("image", referenceBlob(reference), `reference.${reference.extension}`);
+            const edited = await upstream(request, `${base}/images/edits`, key, { paid: true, surfaceErrors: true, max: LIMITS.image, form });
+            requireValue(Array.isArray(edited.data) && edited.data.length === 1, "invalid_upstream_response", 502);
+            const encoded = base64(object(edited.data[0], "invalid_upstream_response", 502).b64_json, LIMITS.image, "invalid_upstream_response", 502);
+            requireValue(atob(encoded.slice(0, 12)).startsWith("\x89PNG\r\n\x1a\n"), "invalid_upstream_response", 502);
+            return json({ base64: encoded, mime: "image/png" });
+          }
           const data = await upstream(request, `${base}/images/generations`, key, { paid: true, surfaceErrors: true, max: LIMITS.image, body: {
             model: customModel(input.model),
-            prompt: text(input.prompt, 32_000, "invalid_prompt"), n: 1, response_format: "b64_json",
+            prompt, n: 1, response_format: "b64_json",
           } });
           requireValue(Array.isArray(data.data) && data.data.length === 1, "invalid_upstream_response", 502);
           const encoded = base64(object(data.data[0], "invalid_upstream_response", 502).b64_json, LIMITS.image, "invalid_upstream_response", 502);
@@ -740,13 +807,33 @@ export function createHandler(dependencies: Dependencies = {}) {
           return json({ base64: encoded, mime: "image/png" });
         }
         requireValue(provider === "openai" || provider === "seedream", "invalid_provider");
-        const data = await upstream(request, ENDPOINTS[provider], key, { paid: true, max: LIMITS.image, body: provider === "seedream" ? {
-          model: model(input.model, "doubao-seedream-5-5-261028", /^(?:doubao-seedream-|ep-)[A-Za-z0-9._-]+$/),
-          prompt: text(input.prompt, 32_000, "invalid_prompt"), size: "2K", response_format: "b64_json", output_format: "png",
-        } : {
-          model: model(input.model, "gpt-image-2.6-sunburst", /^(?:gpt-image-[A-Za-z0-9._-]+|chatgpt-image-latest)$/),
-          prompt: text(input.prompt, 32_000, "invalid_prompt"), n: 1, output_format: "png",
-        } });
+        const reference = referenceImage(input.reference);
+        const prompt = text(input.prompt, 32_000, "invalid_prompt");
+        let data: ObjectValue;
+        if (provider === "openai") {
+          const selectedModel = model(input.model, "gpt-image-2.6-sunburst", /^(?:gpt-image-[A-Za-z0-9._-]+|chatgpt-image-latest)$/);
+          if (reference) {
+            // https://platform.openai.com/docs/api-reference/images/createEdit — multipart，图片作为文件字段。
+            const form = new FormData();
+            form.append("model", selectedModel);
+            form.append("prompt", prompt);
+            form.append("n", "1");
+            form.append("output_format", "png");
+            form.append("image", referenceBlob(reference), `reference.${reference.extension}`);
+            data = await upstream(request, ENDPOINTS.openaiEdits, key, { paid: true, max: LIMITS.image, form });
+          } else {
+            data = await upstream(request, ENDPOINTS.openai, key, { paid: true, max: LIMITS.image, body: {
+              model: selectedModel, prompt, n: 1, output_format: "png",
+            } });
+          }
+        } else {
+          // 火山方舟 Seedream 的 image 字段接受 base64 data URL（单图可传字符串），传了就按图生图处理。
+          data = await upstream(request, ENDPOINTS.seedream, key, { paid: true, max: LIMITS.image, body: {
+            model: model(input.model, "doubao-seedream-5-5-261028", /^(?:doubao-seedream-|ep-)[A-Za-z0-9._-]+$/),
+            prompt, size: "2K", response_format: "b64_json", output_format: "png",
+            ...(reference ? { image: reference.url } : {}),
+          } });
+        }
         requireValue(Array.isArray(data.data) && data.data.length === 1, "invalid_upstream_response", 502);
         const encoded = base64(object(data.data[0], "invalid_upstream_response", 502).b64_json, LIMITS.image, "invalid_upstream_response", 502);
         requireValue(atob(encoded.slice(0, 12)).startsWith("\x89PNG\r\n\x1a\n"), "invalid_upstream_response", 502);
