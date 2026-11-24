@@ -1,5 +1,4 @@
 import type { Project } from './types';
-import { speakerName } from './types';
 
 export function validateProject(project: Project): string[] {
   const errors: string[] = [];
@@ -17,8 +16,6 @@ export function validateProject(project: Project): string[] {
     if (shot.number !== index + 1) errors.push(prefix + '镜号需要按顺序排列。');
     if (!Number.isFinite(shot.duration) || shot.duration <= 0 || shot.duration > 30) errors.push(prefix + '时长必须大于0且不超过30秒。');
     if (shot.assetIds.some(id => !assets.has(id))) errors.push(prefix + '存在已删除或未知的资产ID。');
-    if (shot.dialogues.some(d => !speakerName(project, d).trim())) errors.push(prefix + '台词缺少说话人。');
-    if (shot.dialogues.some(d => d.speakerId && assets.get(d.speakerId)?.kind !== 'character')) errors.push(prefix + '台词关联的人物资产无效。');
     if (shot.references.some(r => !assets.has(r.assetId) || !assets.get(r.assetId)?.imageId || assets.get(r.assetId)?.kind === 'voice')) errors.push(prefix + '参考图必须关联真实图片资产。');
     if (new Set(shot.references.map(r => r.assetId)).size !== shot.references.length) errors.push(prefix + '同一图片资产不能重复挂载。');
     if (shot.references.some(r => !['reference_image', 'first_frame', 'last_frame'].includes(r.role))) errors.push(prefix + '参考图角色无效。');

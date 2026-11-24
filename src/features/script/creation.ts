@@ -170,8 +170,8 @@ export function applyCategoryExtraction(project: Project, input: unknown, catego
       : shot.dialogues;
     return { ...shot, assetIds: [...new Set([...shot.assetIds, ...ids])], dialogues };
   });
-  const unlinked = [...new Set(shots.flatMap(s => s.dialogues).filter(d => !d.speakerId && (d.speaker || '').trim()).map(d => (d.speaker || '').trim()))];
-  if (unlinked.length) warnings.push(`以下说话人还没有对应的人物资产：${unlinked.join('、')}。请在资产页手动新建，或检查剧本里的人物名是否一致。`);
+  // 说明：不再提示「以下说话人还没有对应的人物资产」——剧本里的说话人是按冒号切出来的，
+  // 常常不是人物名，这种清单既吵又给不出可靠的下一步。没挂上的台词保持原样，用户可以在资产页自行处理。
   return { assets, shots, ...(warnings.length ? { warnings } : {}) };
 }
 

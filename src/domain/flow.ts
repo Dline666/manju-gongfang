@@ -1,5 +1,4 @@
 import type { Project } from './types';
-import { speakerName } from './types';
 
 export type FlowStage = 'script' | 'assets' | 'director' | 'storyboard' | 'video';
 export const flowStages: FlowStage[] = ['script', 'assets', 'director', 'storyboard', 'video'];
@@ -85,8 +84,6 @@ export function validateScriptStage(project: Project): string[] {
     if (shot.number !== index + 1) issues.push(prefix + '镜号需要按顺序排列。');
     if (!Number.isFinite(shot.duration) || shot.duration <= 0 || shot.duration > 30) issues.push(prefix + '时长必须大于 0 且不超过 30 秒。');
     if (!shot.visual.trim()) issues.push(prefix + '缺少画面内容。');
-    if (shot.dialogues.some(line => !speakerName(project, line).trim())) issues.push(prefix + '台词缺少说话人。');
-    if (shot.dialogues.some(line => line.speakerId && assets.get(line.speakerId)?.kind !== 'character')) issues.push(prefix + '台词关联的人物资产无效。');
     if (shot.assetIds.some(id => !assets.has(id))) issues.push(prefix + '存在已删除或未知的资产ID。');
   });
   return issues;
@@ -115,34 +112,16 @@ export function assetWarnings(project: Project): string[] {
     const phrase = (asset.lock || asset.description).trim();
     if (phrase && !/[男女]/.test(phrase) && !/少年|少女/.test(phrase)) warnings.push(`人物「${asset.name}」的固定短语没有写明性别（男／女），多次出图时外观容易漂移。`);
   }
-  // 剧本里的说话人还没认领到人物资产时提醒一次：资产是提取或手动创建出来的，剧本本身不再自动建人。
-  const linked = new Set<string>();
-  const pending = new Set<string>();
-  for (const line of project.shots.flatMap(shot => shot.dialogues)) {
-    const asset = line.speakerId ? project.assets.find(item => item.id === line.speakerId && item.kind === 'character') : undefined;
-    if (asset) linked.add(asset.name);
-    else if ((line.speaker || '').trim()) pending.add((line.speaker || '').trim());
-  }
-  for (const name of pending) if (!linked.has(name)) warnings.push(`说话人「${name}」还没有关联人物资产，设定图与配音会漏掉这个角色。`);
+  // 说明：不再提醒「说话人还没关联人物资产」——剧本里的说话人是按冒号切出来的，
+  // 大多不是可靠的人物名，这种提醒噪音大、又给不出可执行的下一步。
   return warnings;
 }
-
-/** 原文比对时忽略空白与标点，只看字词顺序是否与原文一致。 */
-const normalizeFidelity = (value: string) => value.replace(/[\s\u3000，。！？；：、"'"“”‘’（）()《》〈〉—…·\-]/g, '');
-const supplementMark = /[*＊]\s*(基于原文背景合理补充|补充)\s*[*＊]/;
 
 export function scriptWarnings(project: Project): string[] {
   const warnings: string[] = [];
   const shotTerms = /推|拉|摇|移|特写|远景|全景|近景|中景|俯拍|仰拍|跟拍|切镜/;
-  const source = project.scriptMode === 'source' ? normalizeFidelity(project.sourceText || '') : '';
   project.shots.forEach((shot, index) => {
     if (shotTerms.test(shot.visual)) warnings.push(`第${index + 1}镜：画面描述提到了镜头术语，建议改写成可见事件。`);
-    shot.dialogues.forEach(line => {
-      if (line.text.length > 24) warnings.push(`第${index + 1}镜：台词「${line.text.slice(0, 12)}…」超过 24 字，建议精简。`);
-      if (!source || supplementMark.test(line.text)) return;
-      const spoken = normalizeFidelity(line.text);
-      if (spoken && !source.includes(spoken)) warnings.push(`第${index + 1}镜：台词「${line.text.slice(0, 12)}${line.text.length > 12 ? '…' : ''}」未在原文中找到，请核对是否改写了原文。`);
-    });
   });
   return warnings;
 }

@@ -5,6 +5,7 @@ import {
   validateDirectorStage, validateScriptStage, withConfirmation,
 } from '../src/domain/flow';
 import { defaultStyle, makeShot, type Asset, type Project } from '../src/domain/types';
+import { validateProject } from '../src/domain/validation';
 import { savedStudioSchema } from '../src/store/schema';
 import { defaultSettings } from '../src/domain/types';
 
@@ -111,10 +112,9 @@ test('人物固定短语建议写明性别，只提示不阻断', () => {
 });
 
 test('剧本警告只提示不阻断', () => {
-  const warned = project({ shots: shots(false).map((shot, index) => index === 0 ? { ...shot, visual: '特写：主角抬手', dialogues: [{ id: 'd', speakerId: 'hero', text: '这是一句超过二十四个字的台词，需要精简一下才装得进镜头里。' }], assetIds: ['hero'] } : shot) });
+  const warned = project({ shots: shots(false).map((shot, index) => index === 0 ? { ...shot, visual: '特写：主角抬手', dialogues: [{ id: 'd', speakerId: 'hero', text: '这是一句台词。' }], assetIds: ['hero'] } : shot) });
   const warnings = scriptWarnings(warned);
   assert.ok(warnings.some(item => item.includes('镜头术语')));
-  assert.ok(warnings.some(item => item.includes('超过 24 字')));
   assert.deepEqual(validateScriptStage(warned).filter(issue => issue.includes('台词') || issue.includes('镜头')), []);
 });
 
@@ -128,13 +128,30 @@ test('confirmed / locked / staleReason 可选字段通过存档 schema', () => {
   assert.equal(saved.projects[0].shots[0].staleReason, '资产「沈砚」已修改');
 });
 
-test('原文模式下台词没有逐字出现在原文里时只提示不阻断', () => {
+test('对白按冒号切分，不再做原文比对与字数校验', () => {
   const base = project({ scriptMode: 'source', sourceText: '赵珂冷笑一声，说：“废物。”' });
   const withLine = (text: string) => ({ ...base, shots: base.shots.map((shot, index) => index === 0 ? { ...shot, dialogues: [{ id: 'd', speakerId: 'hero', text }] } : shot) });
-  assert.ok(!scriptWarnings(withLine('废物。')).some(item => item.includes('未在原文中找到')), '逐字台词不应被误报');
-  assert.ok(scriptWarnings(withLine('你算什么东西。')).some(item => item.includes('未在原文中找到')), '改写过的台词必须被提示');
-  assert.deepEqual(validateScriptStage(withLine('你算什么东西。')).filter(issue => issue.includes('台词')), [], '忠实度提示不得阻断剧本确认');
-  assert.ok(!scriptWarnings(withLine('听说他是无命人。*基于原文背景合理补充*')).some(item => item.includes('未在原文中找到')), '标注过的合理补充不应被误报');
+  const long = '大佬，要不……先嗦碗面？这句话其实很长很长很长很长很长很长。';
+  for (const text of ['废物。', '你算什么东西。', long]) {
+    assert.deepEqual(scriptWarnings(withLine(text)), [], '对白不再产生任何建议');
+  }
+  assert.deepEqual(validateScriptStage(withLine(long)).filter(issue => issue.includes('台词')), [], '也不得阻断剧本确认');
+});
+
+test('冒号切出来的对白不再被当成阻断项', () => {
+  const base = project();
+  const broken = { ...base, shots: base.shots.map((shot, index) => index === 0 ? { ...shot, dialogues: [
+    { id: 'd1', speakerId: '', speaker: '', text: '……' },
+    { id: 'd2', speakerId: 'scene', text: '……' },
+  ] } : shot) };
+  assert.ok(!validateScriptStage(broken).some(issue => issue.includes('台词')), '剧本步不再报台词问题');
+  assert.ok(!validateProject(broken).some(error => error.includes('台词')), '整体校验也不再报台词问题');
+});
+
+test('资产步不再提醒「说话人还没关联人物资产」', () => {
+  const base = project();
+  const withSpeaker = { ...base, shots: base.shots.map((shot, index) => index === 0 ? { ...shot, dialogues: [{ id: 'd', speakerId: '', speaker: '冒号切出来的半句话', text: '……' }] } : shot) };
+  assert.ok(!assetWarnings(withSpeaker).some(tip => tip.includes('说话人')), '说话人来自冒号切分，提醒没有参考价值');
 });
 
 test('原文模式字段可选项通过存档 schema，旧作品不受影响', () => {

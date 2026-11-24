@@ -283,14 +283,15 @@ test('资产提取分品类：新建人物资产、台词按名字挂上、未�
   assert.ok(loose.warnings?.some(note => note.includes('未声明人物')), loose.warnings?.join('；'));
 });
 
-test('提取到的人物与剧本说话人对不上时给出提示，不静默丢台词', () => {
+test('提取到的人物与剧本说话人对不上时不乱挂、不丢台词，也不再列说话人清单', () => {
   const draft = normalizeScreenplay(generatedScreenplay());
   const p = { ...project(), assets: draft.assets, shots: draft.shots };
   const extracted = applyCategoryExtraction(p, { characters: [{ name: '沈砚', description: '灰白旧布衣' }], shots: [] }, 'character');
   assert.ok(extracted.shots[2].dialogues[0].speakerId, '同名说话人照样挂上');
   const renamed = applyCategoryExtraction(p, { characters: [{ name: '沈砚之', description: '灰白旧布衣' }], shots: [] }, 'character');
   assert.equal(renamed.shots[2].dialogues[0].speakerId, '', '名字对不上时不乱挂');
-  assert.ok(renamed.warnings?.some(note => note.includes('沈砚') && note.includes('人物资产')), renamed.warnings?.join('；'));
+  assert.ok(renamed.shots[2].dialogues[0].text, '台词不能被静默丢掉');
+  assert.ok(!renamed.warnings?.some(note => note.includes('说话人')), '说话人是按冒号切出来的，不再列清单');
 });
 
 test('资产提取分品类：三类互不影响，各自只写自己的清单与逐镜关联', () => {
@@ -365,7 +366,8 @@ test('校验镜数、时长、失效人物、参考图和音频模式，但不�
   p.shots[0].references = [{ assetId: 'missing', role: 'reference_image' }];
   p.shots[0].audioMode = 'original+dubbing' as typeof p.shots[0]['audioMode'];
   const errors = validateProject(p).join('\n');
-  for (const keyword of ['20–400秒', '不超过30秒', '人物', '资产ID', '真实图片', '音频模式']) assert.ok(errors.includes(keyword), keyword);
+  for (const keyword of ['20–400秒', '不超过30秒', '资产ID', '真实图片', '音频模式']) assert.ok(errors.includes(keyword), keyword);
+  assert.ok(!errors.includes('人物'), '说话人是按冒号切出来的，失效的人物引用不再阻断');
   assert.ok(!errors.includes('视频'));
 });
 
