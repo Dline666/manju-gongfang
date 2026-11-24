@@ -18,13 +18,15 @@ export interface PromptSpec {
   separator?: string;
 }
 
-/** 与后端 handler 的 prompt 字段上限保持一致。 */
+/** 与后端 handler 的 prompt 字段上限保持一致。设定图三类共用生图 action 的上限。 */
 export const PROMPT_LIMITS: Record<PromptKind, number> = {
   script: 32000,
   'extract-characters': 32000,
   'extract-scenes': 32000,
   'extract-props': 32000,
-  image: 32000,
+  'image-character': 32000,
+  'image-scene': 32000,
+  'image-prop': 32000,
   video: 7000,
   director: 32000,
 };

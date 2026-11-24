@@ -4,6 +4,7 @@ import {
   builtinEndpoints, defaultModels, defaultSettings, uid,
   type Capability, type Endpoint, type PromptTemplateSet, type ProviderProtocol, type Settings,
 } from '../domain/types';
+import { migrateTemplateSet } from './promptBlocks';
 
 /** 每个内置端点默认承担的环节；决定旧存档的扁平 models 怎么映射到能力上。 */
 const BUILTIN_CAPABILITY: Record<string, Capability> = {
@@ -103,6 +104,8 @@ export function migrateSettings(saved: {
     ...saved,
     endpoints,
     models,
+    // 全局模板里可能还留着旧的共用设定图模板，一并按人物/场景/道具拆开。
+    promptTemplates: migrateTemplateSet(saved.promptTemplates),
     scriptProvider: pickEndpoint(endpoints, saved.scriptProvider, 'script') ?? base.scriptProvider,
     imageProvider: pickEndpoint(endpoints, saved.imageProvider, 'image') ?? base.imageProvider,
     videoProvider: pickEndpoint(endpoints, saved.videoProvider, 'video') ?? base.videoProvider,

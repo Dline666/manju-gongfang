@@ -48,8 +48,8 @@ export interface StyleSpec {
   medium?: string; line?: string; palette?: string; face?: string; light?: string;
   forbidden?: string[];
 }
-/** 提示词模板对应的生成步骤。资产提取按品类分三个 kind，各自独立。 */
-export type PromptKindId = 'script' | 'extract-characters' | 'extract-scenes' | 'extract-props' | 'director' | 'image' | 'video';
+/** 提示词模板对应的生成步骤。资产提取按品类分三个 kind，设定图也按人物/场景/道具分三个 kind，各自独立。 */
+export type PromptKindId = 'script' | 'extract-characters' | 'extract-scenes' | 'extract-props' | 'director' | 'image-character' | 'image-scene' | 'image-prop' | 'video';
 /** 数据块的数据来源：这些是作品数据，不是系统文案。 */
 export type PromptDataSource =
   | 'script.theme' | 'script.source' | 'script.characters' | 'script.skills'
@@ -64,15 +64,20 @@ export type PromptDataSource =
 export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string }
 /** 一个 kind 的完整块计划，顺序即发送顺序。 */
 export interface PromptTemplatePlan { blocks: PromptBlockPlan[] }
+/**
+ * 模板按 kind 存一份。
+ * `image` 是旧结构：人物 / 场景 / 道具共用一份设定图模板，载入时拆成 image-character / image-scene / image-prop 三份。
+ */
+export type PromptTemplateMap = Partial<Record<PromptKindId, PromptTemplatePlan>> & { image?: PromptTemplatePlan };
 /** 一套提示词模板：风格 + 每个 kind 一份块计划。全局默认与作品覆盖层都用这个形状。 */
 export interface PromptTemplateSet {
   style?: StyleSpec;
-  templates?: Partial<Record<PromptKindId, PromptTemplatePlan>>;
+  templates?: PromptTemplateMap;
 }
 /** v1 旧结构：块 id → 覆盖文本。载入时迁移成 v2 的 templates。 */
 export interface PromptConfigV1 { v: 1; style?: StyleSpec; blocks?: Record<string, string> }
 /** v2：每个 kind 一份块计划。 */
-export interface PromptConfigV2 { v: 2; style?: StyleSpec; templates?: Partial<Record<PromptKindId, PromptTemplatePlan>> }
+export interface PromptConfigV2 { v: 2; style?: StyleSpec; templates?: PromptTemplateMap }
 /**
  * v3：本作品的覆盖层。
  * `overrides` 里键存在 = 这一步归本作品管（块可以为空，表示「这一步我不写任何块」）；
@@ -81,7 +86,7 @@ export interface PromptConfigV2 { v: 2; style?: StyleSpec; templates?: Partial<R
 export interface PromptConfigV3 {
   v: 3;
   style?: StyleSpec;
-  templates?: Partial<Record<PromptKindId, PromptTemplatePlan>>;
+  templates?: PromptTemplateMap;
   overrides?: PromptTemplateSet;
 }
 export type PromptConfig = PromptConfigV1 | PromptConfigV2 | PromptConfigV3;

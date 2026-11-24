@@ -18,17 +18,25 @@ const TEMPLATE_TABS = [
   { id: 'script', title: '剧本', description: '把主题或原文写成一份完整的漫剧剧本。' },
   { id: 'assets', title: '资产', description: '人物、场景、道具分三类识别，各用各的提示词。' },
   { id: 'director', title: '导演', description: '把剧本拆成逐镜分镜脚本，不改剧情与时长。' },
-  { id: 'image', title: '图片', description: '人物三视图与场景、道具设定图。' },
+  { id: 'image', title: '图片', description: '人物、场景、道具的设定图各用各的提示词。' },
   { id: 'video', title: '视频', description: '按分镜生成镜头视频，固定外观与附件顺序。' },
 ] as const;
 export type TemplateTab = typeof TEMPLATE_TABS[number]['id'];
 export type TemplateScope = 'global' | 'project';
 
-const ASSET_KINDS: { id: ExtractCategory; label: string; kind: PromptKindId }[] = [
-  { id: 'character', label: '人物', kind: 'extract-characters' },
-  { id: 'scene', label: '场景', kind: 'extract-scenes' },
-  { id: 'prop', label: '道具', kind: 'extract-props' },
-];
+/** 栏内再分三类的：资产提取与设定图，人物/场景/道具各自独立。 */
+const SUB_TABS: Partial<Record<TemplateTab, { id: string; label: string; kind: PromptKindId }[]>> = {
+  assets: [
+    { id: 'character', label: '人物', kind: 'extract-characters' },
+    { id: 'scene', label: '场景', kind: 'extract-scenes' },
+    { id: 'prop', label: '道具', kind: 'extract-props' },
+  ],
+  image: [
+    { id: 'character', label: '人物', kind: 'image-character' },
+    { id: 'scene', label: '场景', kind: 'image-scene' },
+    { id: 'prop', label: '道具', kind: 'image-prop' },
+  ],
+};
 
 /** 只有文本类 action 有后端固定契约；图片与视频不发送 system_instruction。 */
 const CONTRACT_TARGETS: Partial<Record<PromptKindId, string>> = {
@@ -37,6 +45,13 @@ const CONTRACT_TARGETS: Partial<Record<PromptKindId, string>> = {
   'extract-scenes': 'extract-scenes',
   'extract-props': 'extract-props',
   director: 'director',
+};
+
+/** 设定图预览用的示例资产：没有真实资产时按品类各给一个。 */
+const IMAGE_SAMPLES: Record<'character' | 'scene' | 'prop', Asset> = {
+  character: { id: 'preview-character', kind: 'character', name: '示例人物', description: '示例描述', lock: '示例固定短语：灰白旧衣，背空剑鞘', imageId: 'preview-image' },
+  scene: { id: 'preview-scene', kind: 'scene', name: '示例场景', description: '示例描述', lock: '示例固定短语：青灰石阶九十九级，晨雾低垂', imageId: 'preview-image' },
+  prop: { id: 'preview-prop', kind: 'prop', name: '示例道具', description: '示例描述', lock: '示例固定短语：红绳缠绕的剑柄，断口有微弱金色灵光', imageId: 'preview-image' },
 };
 
 function cleanStyle(style: StyleSpec | undefined): StyleSpec {
@@ -66,15 +81,15 @@ const cloneTemplates = (templates: PromptTemplateSet['templates']): PromptTempla
  * 作品覆盖层里「键存在」就归作品管（块可以为空），没有的键跟随全局。
  * 模板里只有用户写的块，作品数据由系统在渲染时固定附带，不在这里编辑。
  */
-export default function TemplateEditorPage({ project, initialScope = 'global', initialKind = 'script' }: {
-  project?: Project; initialScope?: TemplateScope; initialKind?: TemplateTab;
+export default function TemplateEditorPage({ project, initialScope = 'global', initialKind = 'script', initialSub }: {
+  project?: Project; initialScope?: TemplateScope; initialKind?: TemplateTab; initialSub?: string;
 }) {
   const state = useStudio();
   const settings = state.settings;
   const savedGlobal = settings.promptTemplates;
   const [scope, setScope] = useState<TemplateScope>(project ? initialScope : 'global');
   const [tab, setTab] = useState<TemplateTab>(initialKind);
-  const [assetKind, setAssetKind] = useState<ExtractCategory>('character');
+  const [sub, setSub] = useState<Record<string, string>>({ assets: initialSub ?? 'character', image: initialSub ?? 'character' });
   const [mode, setMode] = useState<'blocks' | 'style'>('blocks');
   const [builtinChoice, setBuiltinChoice] = useState('');
   const [contract, setContract] = useState<{ instruction: string; schema: unknown } | undefined>();
@@ -97,7 +112,9 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     });
   }, [project?.id, project?.revision]);
 
-  const kind: PromptKindId = tab === 'assets' ? ASSET_KINDS.find(item => item.id === assetKind)!.kind : tab;
+  const subs = SUB_TABS[tab];
+  const subId = subs ? (subs.some(item => item.id === sub[tab]) ? sub[tab] : subs[0].id) : '';
+  const kind: PromptKindId = subs ? subs.find(item => item.id === subId)!.kind : (tab as PromptKindId);
   const globalBlocks = savedGlobal?.templates?.[kind]?.blocks ?? [];
   // 草稿就是这一层的真相：覆盖层里有这一步 = 归本作品管。
   const kindIsOwned = scope === 'global' || draft.templates?.[kind] !== undefined;
@@ -119,23 +136,22 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     return { ...sampleProject, promptConfig: { v: 3, overrides } };
   }, [scope, sampleProject, projectDraft]);
   const previewGlobal = scope === 'global' ? globalDraft : savedGlobal;
-  const previewAsset = useMemo<Asset>(() => project?.assets.find(asset => asset.kind !== 'voice') ?? {
-    id: 'preview-asset', kind: 'character', name: '示例人物', description: '示例描述', lock: '示例固定短语：灰白旧衣，背空剑鞘', imageId: 'preview-image',
-  }, [project?.assets]);
+  const imageCategory = (tab === 'image' ? subId : 'character') as 'character' | 'scene' | 'prop';
+  const imageAsset = useMemo<Asset>(() => project?.assets.find(asset => asset.kind === imageCategory) ?? IMAGE_SAMPLES[imageCategory], [project?.assets, imageCategory]);
   const previewShot = useMemo(() => project?.shots[0] ?? { ...makeShot(1), visual: '示例画面：人物走上石阶', start: '示例开场', action: '示例动作', end: '示例终点' }, [project?.shots]);
 
   const previewSpecs = useMemo(() => {
-    // 资产三类各看各的：当前在看哪个板块，就只预览那一个
+    // 资产三类与设定图三类各看各的：当前在看哪个板块，就只预览那一个
     if (tab === 'assets') {
-      const item = ASSET_KINDS.find(entry => entry.id === assetKind) ?? ASSET_KINDS[0];
-      const spec = item.id === 'character' ? extractCharactersSpec(previewProject, previewGlobal) : item.id === 'scene' ? extractScenesSpec(previewProject, previewGlobal) : extractPropsSpec(previewProject, previewGlobal);
+      const item = subs!.find(entry => entry.id === subId)!;
+      const spec = item.kind === 'extract-characters' ? extractCharactersSpec(previewProject, previewGlobal) : item.kind === 'extract-scenes' ? extractScenesSpec(previewProject, previewGlobal) : extractPropsSpec(previewProject, previewGlobal);
       return [{ label: item.label, spec }];
     }
     if (tab === 'script') return [{ label: '', spec: scriptSpec(previewProject, previewGlobal) }];
     if (tab === 'director') return [{ label: '', spec: directorSpec(previewProject, previewGlobal) }];
-    if (tab === 'image') return [{ label: '', spec: imageSpec(previewProject, previewAsset, previewGlobal) }];
+    if (tab === 'image') return [{ label: subs!.find(entry => entry.id === subId)!.label, spec: imageSpec(previewProject, imageAsset, previewGlobal) }];
     return [{ label: '', spec: videoSpec(previewProject, previewShot, previewGlobal) }];
-  }, [tab, assetKind, previewProject, previewGlobal, previewAsset, previewShot]);
+  }, [tab, subId, subs, previewProject, previewGlobal, imageAsset, previewShot]);
 
   const previews = previewSpecs.map(item => {
     const text = renderPrompt(item.spec);
@@ -258,7 +274,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
         </section>}
         {mode === 'blocks' && <section className="stack">
           <div className="section-title"><h3>{TEMPLATE_TABS.find(item => item.id === tab)?.title}模板</h3><span className="small muted">{TEMPLATE_TABS.find(item => item.id === tab)?.description}</span></div>
-          {tab === 'assets' && <div className="tabs-row">{ASSET_KINDS.map(item => <button key={item.id} className={assetKind === item.id ? 'active' : ''} onClick={() => setAssetKind(item.id)}>{item.label}</button>)}</div>}
+          {subs && <div className="tabs-row" role="tablist" aria-label="品类">{subs.map(item => <button key={item.id} role="tab" aria-selected={subId === item.id} className={subId === item.id ? 'active' : ''} onClick={() => setSub(previous => ({ ...previous, [tab]: item.id }))}>{item.label}</button>)}</div>}
           {scope === 'project' && (kindIsOwned
             ? <div className="toolbar"><span className="tag">本作品独立</span><Button variant="ghost" size="sm" onClick={followGlobal}>恢复跟随全局</Button></div>
             : <div className="alert" role="alert">这一步正在跟随全局模板，下面显示的是全局的内容。<Button variant="secondary" size="sm" onClick={makeIndependent}>改为独立编辑</Button></div>)}

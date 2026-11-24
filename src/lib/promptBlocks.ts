@@ -10,7 +10,7 @@ import { skills } from './skills';
 import { styleBlockText } from './promptTemplates';
 import { effectiveStyle, visibleBlocks } from './promptScope';
 
-export const PROMPT_KINDS: readonly PromptKindId[] = ['script', 'extract-characters', 'extract-scenes', 'extract-props', 'director', 'image', 'video'];
+export const PROMPT_KINDS: readonly PromptKindId[] = ['script', 'extract-characters', 'extract-scenes', 'extract-props', 'director', 'image-character', 'image-scene', 'image-prop', 'video'];
 
 /** 资产提取的品类：人物 / 场景 / 道具，各自独立识别、各用各的提示词。 */
 export type ExtractCategory = 'character' | 'scene' | 'prop';
@@ -53,12 +53,16 @@ export const builtinBlocks: BuiltinBlock[] = [
   { id: 'director.transition', title: '衔接与转场', kinds: ['director'] },
   { id: 'director.forbidden', title: '禁写清单', kinds: ['director'] },
   { id: 'director.priority', title: '优先级', kinds: ['director'] },
-  // 图片
-  { id: 'image.three-view', title: '人物三视图条款', kinds: ['image'] },
-  { id: 'image.scene-composition', title: '场景构图说明', kinds: ['image'] },
-  { id: 'image.prop-composition', title: '道具构图说明', kinds: ['image'] },
-  { id: 'image.forbidden', title: '禁写清单', kinds: ['image'] },
-  { id: 'image.priority', title: '优先级', kinds: ['image'] },
+  // 图片：人物 / 场景 / 道具各一份，互不混用
+  { id: 'image.character.three-view', title: '人物三视图条款', kinds: ['image-character'] },
+  { id: 'image.character.forbidden', title: '人物禁写清单', kinds: ['image-character'] },
+  { id: 'image.character.priority', title: '人物优先级', kinds: ['image-character'] },
+  { id: 'image.scene.composition', title: '场景构图说明', kinds: ['image-scene'] },
+  { id: 'image.scene.forbidden', title: '场景禁写清单', kinds: ['image-scene'] },
+  { id: 'image.scene.priority', title: '场景优先级', kinds: ['image-scene'] },
+  { id: 'image.prop.composition', title: '道具构图说明', kinds: ['image-prop'] },
+  { id: 'image.prop.forbidden', title: '道具禁写清单', kinds: ['image-prop'] },
+  { id: 'image.prop.priority', title: '道具优先级', kinds: ['image-prop'] },
   // 视频
   { id: 'video.motion', title: '运动规范', kinds: ['video'] },
   { id: 'video.forbidden', title: '禁写清单', kinds: ['video'] },
@@ -101,7 +105,20 @@ const DATA_SOURCES: Record<PromptKindId, DataBlockDef[]> = {
     { source: 'director.shots', title: '逐镜剧本' },
     { source: 'director.skills', title: '附加 Skill' },
   ],
-  image: [
+  // 设定图三类共用同一份作品数据，但各自的模板互不混用。
+  'image-character': [
+    { source: 'image.task', title: '任务与风格' },
+    { source: 'image.subject', title: '固定短语' },
+    { source: 'image.style', title: '风格块' },
+    { source: 'image.skills', title: '附加 Skill' },
+  ],
+  'image-scene': [
+    { source: 'image.task', title: '任务与风格' },
+    { source: 'image.subject', title: '固定短语' },
+    { source: 'image.style', title: '风格块' },
+    { source: 'image.skills', title: '附加 Skill' },
+  ],
+  'image-prop': [
     { source: 'image.task', title: '任务与风格' },
     { source: 'image.subject', title: '固定短语' },
     { source: 'image.style', title: '风格块' },
@@ -328,6 +345,53 @@ function shotAssetText(project: Project, shot: Shot): string {
 // ── 存档迁移 ──────────────────────────────────────────────────
 
 /**
+ * 旧结构里人物 / 场景 / 道具共用一份设定图模板，拆成三份时的归类规则。
+ * 带内置 id 的块按它的品类走（人物三视图条款 → 人物，场景构图 → 场景，道具构图 → 道具）；
+ * 原来三类通用的禁写清单与优先级拆成三份；用户自己新建的块过去对三类都生效，复制到三份，
+ * 行为一字不变——之后要各写各的，就到对应那一份里改。
+ */
+const IMAGE_BLOCK_ROUTES: Record<string, { kind: PromptKindId; id: string; title: string }[]> = {
+  'image.three-view': [{ kind: 'image-character', id: 'image.character.three-view', title: '人物三视图条款' }],
+  'image.scene-composition': [{ kind: 'image-scene', id: 'image.scene.composition', title: '场景构图说明' }],
+  'image.prop-composition': [{ kind: 'image-prop', id: 'image.prop.composition', title: '道具构图说明' }],
+  'image.forbidden': [
+    { kind: 'image-character', id: 'image.character.forbidden', title: '人物禁写清单' },
+    { kind: 'image-scene', id: 'image.scene.forbidden', title: '场景禁写清单' },
+    { kind: 'image-prop', id: 'image.prop.forbidden', title: '道具禁写清单' },
+  ],
+  'image.priority': [
+    { kind: 'image-character', id: 'image.character.priority', title: '人物优先级' },
+    { kind: 'image-scene', id: 'image.scene.priority', title: '场景优先级' },
+    { kind: 'image-prop', id: 'image.prop.priority', title: '道具优先级' },
+  ],
+};
+
+const IMAGE_KINDS: PromptKindId[] = ['image-character', 'image-scene', 'image-prop'];
+
+/** 把一份模板集合里的旧设定图模板拆成三份；没有旧的就原样返回。 */
+export function migrateTemplateSet(set: PromptTemplateSet | undefined): PromptTemplateSet | undefined {
+  if (!set) return set;
+  const legacy = set.templates?.image;
+  if (!legacy) return set;
+  const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = { ...set.templates };
+  delete (templates as Partial<Record<'image', PromptTemplatePlan>>).image;
+  const append = (kind: PromptKindId, block: PromptBlockPlan) => {
+    const plan = templates[kind] ?? { blocks: [] };
+    templates[kind] = { blocks: [...plan.blocks, block] };
+  };
+  for (const block of legacy.blocks ?? []) {
+    const routes = IMAGE_BLOCK_ROUTES[block.builtin ?? block.id];
+    if (routes) {
+      for (const route of routes) append(route.kind, { ...block, id: route.id, title: route.title, builtin: route.id });
+      continue;
+    }
+    // 用户自己写的块：过去三类共用，复制到三份。
+    for (const kind of IMAGE_KINDS) append(kind, { ...block });
+  }
+  return { ...set, templates };
+}
+
+/**
  * 模板存档的迁移：v1（块 id → 覆盖文本）→ v2（每个 kind 一份块计划）→ v3（作品覆盖层）。
  *
  * v3 之后模板分两层：全局模板是默认，作品只存「覆盖层」。
@@ -337,7 +401,11 @@ function shotAssetText(project: Project, shot: Shot): string {
  */
 export function migratePromptConfig(config: Project['promptConfig']): Project['promptConfig'] {
   if (!config) return undefined;
-  if (config.v === 3) return config;
+  if (config.v === 3) {
+    // v3 的覆盖层里可能还留着旧的共用设定图模板，一并拆开。
+    if (!config.overrides?.templates?.image) return config;
+    return { ...config, overrides: migrateTemplateSet(config.overrides) };
+  }
   const v2 = config.v === 1 ? migrateV1ToV2(config) : config;
   return migrateV2ToV3(v2);
 }
@@ -346,6 +414,16 @@ export function migratePromptConfig(config: Project['promptConfig']): Project['p
 function migrateV1ToV2(config: Extract<NonNullable<Project['promptConfig']>, { v: 1 }>): Extract<NonNullable<Project['promptConfig']>, { v: 2 }> {
   const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = {};
   for (const [id, text] of Object.entries(config.blocks ?? {})) {
+    // 旧的设定图内置块 id 已改名，按归类规则落到三个品类里。
+    const routes = IMAGE_BLOCK_ROUTES[id];
+    if (routes) {
+      for (const route of routes) {
+        const plan = templates[route.kind] ?? { blocks: [] };
+        plan.blocks.push({ id: route.id, title: route.title, text, builtin: route.id });
+        templates[route.kind] = plan;
+      }
+      continue;
+    }
     const builtin = builtinById(id);
     if (!builtin) continue;
     const kind = builtin.kinds[0];
@@ -375,9 +453,12 @@ function migrateV2ToV3(config: Extract<NonNullable<Project['promptConfig']>, { v
     const blocks = visibleBlocks(plan.blocks ?? []);
     if (blocks.length) templates[kind] = { blocks };
   }
+  // 旧结构里设定图是一份（'image'），要按人物/场景/道具拆开。
+  const legacyImage = config.templates?.image;
+  if (legacyImage) (templates as Partial<Record<'image', PromptTemplatePlan>>).image = { blocks: visibleBlocks(legacyImage.blocks ?? []) };
   const overrides: PromptTemplateSet = { templates };
   if (hasStyleContent(config.style)) overrides.style = config.style;
-  return { v: 3, overrides };
+  return { v: 3, overrides: migrateTemplateSet(overrides) };
 }
 
 /** 风格里有没有真东西（空对象不算「这部作品自己管风格」）。 */

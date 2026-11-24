@@ -10,16 +10,18 @@ const TEMPLATE_TAB_IDS: TemplateTab[] = ['script', 'assets', 'director', 'image'
 /**
  * 设置页的路由是 hash 制的：
  * `#/settings` 是连接模型，`#/settings/templates` 是提示词模板；
- * 模板页还能带 `?kind=script&scope=project`，供流程页直接跳到对应步骤。
+ * 模板页还能带 `?kind=image&sub=scene&scope=project`，供流程页直接跳到对应品类。
  */
-function readRoute(): { tab: 'connections' | 'templates'; kind: TemplateTab; scope: TemplateScope } {
+function readRoute(): { tab: 'connections' | 'templates'; kind: TemplateTab; sub?: string; scope: TemplateScope } {
   const raw = location.hash.replace('#/', '');
   const [path, query] = raw.split('?');
   const params = new URLSearchParams(query ?? '');
   const kind = params.get('kind');
+  const sub = params.get('sub');
   return {
     tab: path.startsWith('settings/templates') ? 'templates' : 'connections',
     kind: TEMPLATE_TAB_IDS.includes(kind as TemplateTab) ? (kind as TemplateTab) : 'script',
+    sub: sub ?? undefined,
     scope: params.get('scope') === 'project' ? 'project' : 'global',
   };
 }
@@ -37,7 +39,7 @@ export default function SettingsPage() {
       <button type="button" role="tab" aria-selected={route.tab === 'templates'} className={route.tab === 'templates' ? 'active' : ''} onClick={() => { location.hash = '/settings/templates'; }}>提示词模板</button>
     </div>
     {route.tab === 'templates'
-      ? <TemplateEditorPage key={location.hash} project={project} initialScope={scope} initialKind={route.kind} />
+      ? <TemplateEditorPage key={location.hash} project={project} initialScope={scope} initialKind={route.kind} initialSub={route.sub} />
       : <>
         <div className="notice"><ShieldCheck size={22}/><div><strong>密钥不写进作品，也不保存到磁盘</strong><p>Key 只留在当前页面内存，刷新后需要重新填写；Base URL、端点名称与模型 ID 属于作品配置，只保存在本机浏览器。</p></div></div>
         <ProviderGroups state={state} />

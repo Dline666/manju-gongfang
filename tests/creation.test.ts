@@ -203,7 +203,7 @@ test('图片提示词不含默认规则；用户插入内置块后按用户内�
   assert.ok(!bare.includes('三视图'), '系统不再预置三视图条款');
   assert.ok(bare.includes(asset.lock), '固定短语必须逐字出现');
   assert.ok(bare.includes('资产：hero'));
-  const planned = { ...p, promptConfig: { v: 3 as const, overrides: { templates: { image: { blocks: [{ id: 'image.three-view', title: '人物三视图条款', text: '只输出一张角色三视图设定卡。', builtin: 'image.three-view' }] } } } } };
+  const planned = { ...p, promptConfig: { v: 3 as const, overrides: { templates: { 'image-character': { blocks: [{ id: 'image.character.three-view', title: '人物三视图条款', text: '只输出一张角色三视图设定卡。', builtin: 'image.character.three-view' }] } } } } };
   const withRule = imagePrompt(planned, asset);
   assert.ok(withRule.includes('只输出一张角色三视图设定卡。'));
   assert.ok(!withRule.includes('正面、侧面、背面'), '只发用户写的内容');

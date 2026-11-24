@@ -1,7 +1,7 @@
 // 各生成步骤的提示词：用户排好的块在前，作品数据由系统固定附带在后。
 // 系统不插入任何规则文案——规则由用户在模板编辑器里自己写。
 // 模板分两层：全局模板是默认，作品可以覆盖其中某一步；global 就是那份全局模板。
-import type { Asset, Project, PromptTemplateSet, Shot } from '../domain/types';
+import type { Asset, Project, PromptKindId, PromptTemplateSet, Shot } from '../domain/types';
 import { renderPrompt, type PromptBlock, type PromptKind, type PromptSpec } from './promptSpec';
 import { applyVariables, promptVariables } from './promptTemplates';
 import { dataSourcesFor, renderData, type RenderContext } from './promptBlocks';
@@ -61,8 +61,18 @@ export function directorPrompt(project: Project, global?: PromptTemplateSet): st
   return renderPrompt(directorSpec(project, global));
 }
 
+/**
+ * 设定图按品类选模板：人物 / 场景 / 道具各用各的提示词，互不混用。
+ * 音色不出图，落到人物那一档。
+ */
+export function imageKindFor(asset: Asset): PromptKindId {
+  if (asset.kind === 'scene') return 'image-scene';
+  if (asset.kind === 'prop') return 'image-prop';
+  return 'image-character';
+}
+
 export function imageSpec(project: Project, asset: Asset, global?: PromptTemplateSet): PromptSpec {
-  return buildSpec(project, 'image', { asset }, global);
+  return buildSpec(project, imageKindFor(asset), { asset }, global);
 }
 export function imagePrompt(project: Project, asset: Asset, global?: PromptTemplateSet): string {
   return renderPrompt(imageSpec(project, asset, global));

@@ -23,8 +23,8 @@ function makeProject(promptConfig?: Project['promptConfig']): Project {
 
 const blocks = (...texts: string[]) => texts.map((text, index) => ({ id: `b${index}`, title: `块${index}`, text }));
 
-test('内置块目录齐全：39 条，只有标题没有默认文案', () => {
-  assert.equal(builtinBlocks.length, 39);
+test('内置块目录齐全：43 条，只有标题没有默认文案', () => {
+  assert.equal(builtinBlocks.length, 43);
   for (const block of builtinBlocks) {
     assert.equal(typeof block.id, 'string');
     assert.ok(block.title.length > 0, `${block.id} 必须有标题`);
@@ -35,6 +35,16 @@ test('内置块目录齐全：39 条，只有标题没有默认文案', () => {
   assert.deepEqual(builtinBlocksFor('extract-characters').map(block => block.id), ['extract.characters.instruction', 'extract.characters.phrase-style', 'extract.characters.forbidden']);
   assert.deepEqual(builtinBlocksFor('extract-scenes').map(block => block.group), ['场景', '场景', '场景']);
   assert.deepEqual(builtinBlocksFor('extract-props').map(block => block.group), ['道具', '道具', '道具']);
+});
+
+test('设定图分人物 / 场景 / 道具三份，互不混用', () => {
+  assert.deepEqual(builtinBlocksFor('image-character').map(block => block.id), ['image.character.three-view', 'image.character.forbidden', 'image.character.priority']);
+  assert.deepEqual(builtinBlocksFor('image-scene').map(block => block.id), ['image.scene.composition', 'image.scene.forbidden', 'image.scene.priority']);
+  assert.deepEqual(builtinBlocksFor('image-prop').map(block => block.id), ['image.prop.composition', 'image.prop.forbidden', 'image.prop.priority']);
+  for (const kind of ['image-character', 'image-scene', 'image-prop'] as const) {
+    assert.equal(builtinBlocksFor(kind).length, 3, `${kind} 有三块`);
+    assert.ok(!builtinBlocksFor(kind).some(block => block.id.includes('character') && kind !== 'image-character'), `${kind} 不该混进别的人物块`);
+  }
 });
 
 test('没有默认提示词：渲染只包含作品数据', () => {
@@ -59,9 +69,11 @@ test('数据源清单按 kind 覆盖三类提取与四个步骤，且不属于�
   assert.deepEqual(dataSourcesFor('extract-scenes').map(item => item.source), ['extract.scenes.shots', 'extract.scenes.existing']);
   assert.deepEqual(dataSourcesFor('extract-props').map(item => item.source), ['extract.props.shots', 'extract.props.existing']);
   assert.ok(dataSourcesFor('director').some(item => item.source === 'director.shots'));
-  assert.ok(dataSourcesFor('image').some(item => item.source === 'image.subject'));
+  for (const kind of ['image-character', 'image-scene', 'image-prop'] as const) {
+    assert.deepEqual(dataSourcesFor(kind).map(item => item.source), ['image.task', 'image.subject', 'image.style', 'image.skills'], `${kind} 的数据源`);
+  }
   assert.ok(dataSourcesFor('video').some(item => item.source === 'video.assets'));
-  for (const kind of ['script', 'director', 'image', 'video'] as const) {
+  for (const kind of ['script', 'director', 'image-character', 'image-scene', 'image-prop', 'video'] as const) {
     assert.ok(dataSourcesFor(kind).some(item => item.source.endsWith('skills')), `${kind} 必须有 Skill 数据源`);
   }
 });
@@ -228,6 +240,36 @@ test('全局提示词模板能通过存档 schema', () => {
   const settings = { ...defaultSettings, promptTemplates: { style: { medium: '宣纸' }, templates: { script: { blocks: [{ id: 'a', title: '甲', text: '只写雨夜' }] } } } };
   const saved = savedStudioSchema.parse({ version: 1, projects: [], activeId: null, settings });
   assert.deepEqual(saved.settings.promptTemplates, settings.promptTemplates);
+});
+
+test('设定图按品类各用各的模板，互不串', () => {
+  const project = makeProject({ v: 3, overrides: { templates: {
+    'image-character': { blocks: [{ id: 'c', title: '人物', text: '人物设定图：正面、侧面、背面三视图。' }] },
+    'image-scene': { blocks: [{ id: 's', title: '场景', text: '场景设定图：全景空镜，无人物。' }] },
+    'image-prop': { blocks: [{ id: 'p', title: '道具', text: '道具设定图：单独陈列，纯色背景。' }] },
+  } } });
+  const characterPrompt = imagePrompt(project, hero);
+  const scenePrompt = imagePrompt(project, scene);
+  assert.ok(characterPrompt.includes('人物设定图'), '人物用人物模板');
+  assert.ok(!characterPrompt.includes('场景设定图'), '人物提示词里不该有场景模板');
+  assert.ok(scenePrompt.includes('场景设定图'), '场景用场景模板');
+  assert.ok(!scenePrompt.includes('人物设定图'), '场景提示词里不该有人物模板');
+  assert.ok(!scenePrompt.includes('道具设定图'), '场景提示词里不该有道具模板');
+});
+
+test('旧的共用设定图模板按品类拆开：内置块归类，用户块复制三份', () => {
+  const legacy = makeProject({ v: 3, overrides: { templates: { image: { blocks: [
+    { id: 'image.three-view', title: '人物三视图条款', text: '只输出一张三视图。', builtin: 'image.three-view' },
+    { id: 'image.scene-composition', title: '场景构图说明', text: '空镜全景。', builtin: 'image.scene-composition' },
+    { id: 'mine', title: '我的规则', text: '统一打光。' },
+  ] } } } });
+  const migrated = migratePromptConfig(legacy.promptConfig)!;
+  const templates = migrated.overrides!.templates!;
+  assert.equal((templates as Record<string, unknown>).image, undefined, '旧的那份不再保留');
+  assert.deepEqual(templates['image-character']!.blocks.map(block => block.text), ['只输出一张三视图。', '统一打光。']);
+  assert.deepEqual(templates['image-scene']!.blocks.map(block => block.text), ['空镜全景。', '统一打光。']);
+  assert.deepEqual(templates['image-prop']!.blocks.map(block => block.text), ['统一打光。']);
+  assert.equal(templates['image-character']!.blocks[0].id, 'image.character.three-view', '块 id 跟着新目录改名');
 });
 
 test('剧本层与导演层互不串块', () => {
