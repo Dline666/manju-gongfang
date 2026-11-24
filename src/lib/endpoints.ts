@@ -91,6 +91,7 @@ export function migrateSettings(saved: {
   scriptProvider?: string; imageProvider?: string; videoProvider?: string;
   endpoints?: Endpoint[]; models?: Record<string, unknown>;
   speechModel?: string; imageConcurrency?: number; customJsonMode?: boolean;
+  styles?: string[];
 } | undefined): Settings {
   const base = defaultSettings;
   if (!saved) return base;

@@ -1,12 +1,12 @@
 import { useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Sparkles, Download, FileText } from 'lucide-react';
+import { Sparkles, Download, FileText, Trash2 } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
 import TemplateEditor from '../prompts/TemplateEditor';
 import { PageHeader } from '../../components/PageHeader';
-import { MAX_SOURCE_CHARS, defaultStyle, type PageProps, type Project } from '../../domain/types';
+import { MAX_SOURCE_CHARS, builtinStyles, defaultStyle, type PageProps, type Project } from '../../domain/types';
 import { scriptWarnings, validateScriptStage, withConfirmation } from '../../domain/flow';
-import { getStudio, updateProject, useStudio } from '../../store/studio';
+import { getStudio, setSettings, updateProject, useStudio } from '../../store/studio';
 import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
 import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
 import { skills } from '../../lib/skills';
@@ -16,7 +16,7 @@ import { buildDocuments } from '../../lib/documents';
 import { mergeDraftAssets, normalizeScreenplay, parseScriptText, templateScript, type GeneratedScreenplay, type ScriptDraft } from './creation';
 import DurationStrip from './DurationStrip';
 
-const styles = [defaultStyle, '清新日系动画，柔和色彩与自然光', '电影写实风，克制配色与戏剧光影'];
+const ADD_STYLE = '__add_style__';
 type Confirmation = { kind: 'ai' | 'template'; project: Project; prompt: string; defaultPrompt: string; provider: string; model: string };
 const draftUpdate = (p: Project, draft: ScriptDraft, source: Project['source']): Project => ({ ...p, ...mergeDraftAssets(p.assets, draft), name: draft.title || p.name, logline: draft.logline || p.logline, screenplay: draft.screenplay ?? p.screenplay, source, storyboardReady: false });
 
@@ -34,6 +34,8 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [documentName, setDocumentName] = useState('剧本文档.md');
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [styleOpen, setStyleOpen] = useState(false);
+  const [styleDraft, setStyleDraft] = useState('');
   const [screenplayDraft, setScreenplayDraft] = useState(project.screenplay || '');
   const [screenplaySaved, setScreenplaySaved] = useState(project.screenplay || '');
   const issues = validateScriptStage(project);
@@ -54,6 +56,24 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const scriptAverage = averageDuration('script');
   const documents = buildDocuments(project);
   const change = (patch: Partial<Project>) => updateProject(project.id, { ...patch, storyboardReady: false }, true);
+  // 自定义视觉风格存在本机设置里，所有作品都能选。
+  const customStyles = settings.styles ?? [];
+  const styles = [...builtinStyles, ...customStyles];
+  const saveCustomStyle = () => {
+    const name = styleDraft.trim();
+    if (!name) { toast.error('请先写下风格名称。'); return; }
+    if (styles.includes(name)) { toast.error('「' + name + '」已经在列表里了。'); return; }
+    setSettings({ ...settings, styles: [...customStyles, name] });
+    change({ style: name });
+    setStyleOpen(false);
+    setStyleDraft('');
+    toast.success('已新增视觉风格「' + name + '」，所有作品都能选用。');
+  };
+  const removeCustomStyle = (name: string) => {
+    setSettings({ ...settings, styles: customStyles.filter(style => style !== name) });
+    if (project.style === name) change({ style: defaultStyle });
+    toast.success('已删除视觉风格「' + name + '」。');
+  };
   const current = (revision: number) => {
     const p = getStudio().projects.find(p => p.id === project.id);
     if (!p || p.revision !== revision) throw new Error('项目已被修改或删除，本次结果不会覆盖新内容。请重新预览或确认。');
@@ -159,7 +179,10 @@ function ScriptEditor({ project, navigate }: PageProps) {
         <p className="small muted">已输入 {sourceLength} 字（上限 {MAX_SOURCE_CHARS} 字）。原文只作为本次剧本生成的唯一事实来源发送，不会进入其他步骤。</p>
       </div> : <Field label="故事主题" hint="写下主角、目标与冲突，也可以只从一个灵感开始。"><textarea rows={3} placeholder="例如：一个失去灵力的少年，发现山门石阶每晚都会多出一级……" value={project.theme} onChange={e => change({ theme: e.target.value })} /></Field>}
       <Field label="一句话主线" hint="整部剧本都要服务这一句。AI 生成剧本时会一并给出，也可以自己写；修改主线不会让已有镜头失效。"><textarea rows={2} placeholder="例如：少年拾起断剑，却不知剑里封着自己被削去的神格。" value={project.logline || ''} onChange={e => updateProject(project.id, { logline: e.target.value }, false)} /></Field>
-      <div className="grid-2"><Field label="视觉风格"><select value={project.style || defaultStyle} onChange={e => change({ style: e.target.value })}>{!styles.includes(project.style) && project.style && <option>{project.style}</option>}{styles.map(style => <option key={style}>{style}</option>)}</select></Field><div className="field"><span>剧本服务</span><div className="row"><span className="tag">{settings.endpoints.find(endpoint => endpoint.id === settings.scriptProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.scriptProvider, 'script')}</span><Button variant="ghost" onClick={() => navigate('settings')}>更改设置</Button></div></div></div>
+      <div className="grid-2"><Field label="视觉风格" hint="自定义风格保存在本机，所有作品都能选用。"><div className="row"><select value={project.style || defaultStyle} onChange={e => {
+        if (e.target.value === ADD_STYLE) { setStyleDraft(''); setStyleOpen(true); return; }
+        change({ style: e.target.value });
+      }}>{!styles.includes(project.style) && project.style && <option>{project.style}</option>}{styles.map(style => <option key={style}>{style}</option>)}<option value={ADD_STYLE}>+ 新增自定义风格…</option></select>{customStyles.includes(project.style) && <Button variant="ghost" aria-label="删除当前自定义风格" onClick={() => removeCustomStyle(project.style)}><Trash2 size={15} /></Button>}</div></Field><div className="field"><span>剧本服务</span><div className="row"><span className="tag">{settings.endpoints.find(endpoint => endpoint.id === settings.scriptProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.scriptProvider, 'script')}</span><Button variant="ghost" onClick={() => navigate('settings')}>更改设置</Button></div></div></div>
       <details className="panel"><summary><strong>高级：提示词与规则</strong><span className="small muted"> · 所选 Skill 会写入对应生成任务的完整提示词</span></summary><div className="grid-2" style={{ marginTop: 12 }}>{skills.map(skill => <label className="panel row skill-option" key={skill.id}><input type="checkbox" checked={project.skills.includes(skill.id)} onChange={e => change({ skills: e.target.checked ? [...project.skills, skill.id] : project.skills.filter(id => id !== skill.id) })} /><span><strong>{skill.name}</strong><small className="muted">{skill.description}</small></span></label>)}</div><div className="toolbar" style={{ marginTop: 12 }}><Button variant="outline" onClick={() => setTemplateOpen(true)}>编辑提示词模板</Button></div></details>
       {!keys[settings.scriptProvider] && <div className="alert">{settings.scriptProvider ? '尚未配置剧本 API Key。' : '还没有可用的剧本端点，请到设置页添加或恢复一个。'}可以前往设置，或主动使用不联网的「模板演练」。模板不是 AI 生成。<Button variant="ghost" onClick={() => navigate('settings')}>前往设置</Button></div>}
       <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={busy || sourceMode} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
@@ -189,6 +212,9 @@ function ScriptEditor({ project, navigate }: PageProps) {
       </div>
     </Modal>
     <Modal open={documentsOpen} onClose={() => setDocumentsOpen(false)} title="导出创作文档" description="导出的是文本文档，不包含图片和音视频文件。"><div className="stack"><Field label="选择文档"><select value={documentName} onChange={e => setDocumentName(e.target.value)}>{Object.keys(documents).map(name => <option key={name}>{name}</option>)}</select></Field><textarea aria-label="文档预览" rows={12} readOnly value={documents[documentName]} /><div className="toolbar"><Button onClick={() => downloadBlob(new Blob([documents[documentName]], { type: 'text/markdown;charset=utf-8' }), `${project.name}-${documentName}`)}>下载当前文档</Button><Button variant="secondary" onClick={() => void copyText(documents[documentName])}>复制内容</Button><Button variant="ghost" onClick={() => navigate('export')}>前往完整导出</Button></div></div></Modal>
+    <Modal open={styleOpen} onClose={() => setStyleOpen(false)} title="新增自定义视觉风格" description="写一句画风描述，保存后所有作品都能选用它；它会随剧本、图片与视频提示词一起发给模型。">
+      <div className="stack"><Field label="风格名称" hint="例如：赛博霓虹，冷青加洋红，高对比。"><input autoFocus value={styleDraft} placeholder="一句话描述画风" onChange={e => setStyleDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') saveCustomStyle(); }} /></Field><div className="toolbar"><Button onClick={saveCustomStyle} disabled={!styleDraft.trim()}>保存并使用</Button><Button variant="ghost" onClick={() => setStyleOpen(false)}>取消</Button></div></div>
+    </Modal>
     <TemplateEditor project={project} open={templateOpen} onClose={() => setTemplateOpen(false)} initialKind="script" />
   </div>;
 }

@@ -95,6 +95,8 @@ export interface Settings {
   imageConcurrency?: number;
   /** 自定义文本端点是否发送 response_format（老中转站不支持时可关）。 */
   customJsonMode?: boolean;
+  /** 用户自定义的视觉风格名称，存本机，所有作品都能选用。 */
+  styles?: string[];
 }
 export interface ProviderStatus { status: 'available' | 'failed'; action: string; model?: string; error?: string; hint?: string }
 export interface StudioState {
@@ -106,6 +108,8 @@ export const uid = () => crypto.randomUUID();
 /** 原文模式一次可发送的原文上限；超过会让提示词预算与模型注意力都失控。 */
 export const MAX_SOURCE_CHARS = 12000;
 export const defaultStyle = '东方玄幻水墨风，冷灰 + 金色灵光';
+/** 内置视觉风格：系统给的起手式，用户可在剧本页自建更多。 */
+export const builtinStyles: string[] = [defaultStyle, '清新日系动画，柔和色彩与自然光', '电影写实风，克制配色与戏剧光影'];
 
 /**
  * 内置端点目录：平台清单的唯一来源（协议、默认模型、默认并发、展示名、能力都写在这里）。
@@ -139,6 +143,7 @@ export const defaultSettings: Settings = {
   endpoints: builtinEndpoints(),
   models: defaultModels(),
   speechModel: 'speech-2.8-hd',
+  styles: [],
 };
 export function makeShot(number: number): Shot {
   return { id: uid(), number, duration: 9, visual: '', camera: '缓慢推进', start: '', action: '', end: '', dialogues: [], assetIds: [], references: [], audioMode: 'original' };
