@@ -61,7 +61,7 @@ export type PromptDataSource =
   | 'video.heading' | 'video.continuity' | 'video.references' | 'video.action'
   | 'video.dialogue' | 'video.audio' | 'video.assets' | 'video.style' | 'video.skills';
 /** 用户在模板编辑器里排好的一块。text 是用户写的正文；source 是数据来源（数据块）。 */
-export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string }
+export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string; shared?: boolean }
 /** 一个 kind 的完整块计划，顺序即发送顺序。 */
 export interface PromptTemplatePlan { blocks: PromptBlockPlan[] }
 /**

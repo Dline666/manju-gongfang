@@ -105,9 +105,68 @@ try {
     await editor3.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '场景', exact: true }).waitFor();
     assert.equal(await editor3.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '场景', exact: true }).getAttribute('aria-selected'), 'true', '资产页跳过去要直接停在场景段');
 
+    // 10. 真实生图链路：场景与道具的设定图提示词里不能出现人物那段条款。
+    await page.goto('http://127.0.0.1:5173/#/assets');
+    await page.waitForTimeout(300);
+    const prompts = await page.evaluate(async () => {
+      const names = performance.getEntriesByType('resource').map(e => e.name);
+      const store = await import(names.find(n => n.includes('/src/store/studio.ts')));
+      const lib = await import(names.find(n => n.includes('/src/lib/prompts.ts')));
+      const state = store.getStudio();
+      const project = state.projects[0];
+      const assets = [
+        { id: 'a-hero', kind: 'character', name: '阿青', description: '少年', lock: '灰白旧衣' },
+        { id: 'a-scene', kind: 'scene', name: '山门', description: '石阶', lock: '青灰石阶' },
+        { id: 'a-prop', kind: 'prop', name: '断剑', description: '断剑', lock: '断口有金光' },
+      ];
+      const out = {};
+      for (const asset of assets) out[asset.kind] = lib.imagePrompt(project, asset, state.settings.promptTemplates);
+      return out;
+    });
+    assert.ok(prompts.character.includes('三视图'), '人物图用人物那段条款');
+    assert.ok(!prompts.scene.includes('三视图'), '场景图不能带人物那段条款');
+    assert.ok(!prompts.prop.includes('三视图'), '道具图不能带人物那段条款');
+    assert.ok(prompts.scene.includes('主体：山门'), '场景图仍然带自己的作品数据');
+
     assert.deepEqual(errors, []);
     results.push({ width, passed: true });
     await context.close();
+
+    // 11. 旧存档（人物/场景/道具共用一份 image 模板）载入后，场景与道具也不该带人物条款。
+    const legacy = {
+      version: 1, projects: [], activeId: null,
+      settings: {
+        scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance', speechModel: 'speech-01',
+        promptTemplates: { templates: { image: { blocks: [
+          { id: 'legacy-rule', title: '角色条款', text: '只输出一张角色设定卡：正面、侧面、背面三视图。' },
+        ] } } },
+      },
+    };
+    const legacyContext = await browser.newContext({ viewport: { width, height: 900 } });
+    await legacyContext.addInitScript(`localStorage.setItem('manju-studio-v1', ${JSON.stringify(JSON.stringify(legacy))})`);
+    const legacyPage = await legacyContext.newPage();
+    const legacyErrors = [];
+    legacyPage.on('pageerror', e => legacyErrors.push(e.message));
+    await legacyPage.route('**/functions/v1/app?*', route => route.fulfill({ json: { ok: true, data: { instruction: 'x', schema: {} } } }));
+    await legacyPage.goto('http://127.0.0.1:5173/#/settings/templates?kind=image');
+    await legacyPage.locator('.template-editor').waitFor();
+    const legacyPrompts = await legacyPage.evaluate(async () => {
+      const names = performance.getEntriesByType('resource').map(e => e.name);
+      const store = await import(names.find(n => n.includes('/src/store/studio.ts')));
+      const lib = await import(names.find(n => n.includes('/src/lib/prompts.ts')));
+      const state = store.getStudio();
+      const project = { id: 'p', name: 'x', theme: '断剑归门', style: '水墨', createdAt: '', updatedAt: '', revision: 0, skills: [], shots: [], assets: [], source: 'empty', storyboardReady: false };
+      const out = {};
+      for (const kind of ['character', 'scene', 'prop']) {
+        out[kind] = lib.imagePrompt(project, { id: kind, kind, name: `${kind}-1`, description: '描述', lock: '固定短语' }, state.settings.promptTemplates);
+      }
+      return out;
+    });
+    assert.ok(legacyPrompts.character.includes('三视图'), '旧存档里人物那段条款仍然生效');
+    assert.ok(!legacyPrompts.scene.includes('三视图'), '旧存档的场景图不能带人物条款');
+    assert.ok(!legacyPrompts.prop.includes('三视图'), '旧存档的道具图不能带人物条款');
+    assert.deepEqual(legacyErrors, []);
+    await legacyContext.close();
   }
   console.log(JSON.stringify(results, null, 2));
 } finally { await browser.close(); }

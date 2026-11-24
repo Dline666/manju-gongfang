@@ -111,19 +111,37 @@ export type PromptTemplateMap =
 | `image.prop-composition` | 只进道具段（改名 `image.prop.composition`） |
 | `image.forbidden` | 拆成三份：人物 / 场景 / 道具禁写清单 |
 | `image.priority` | 拆成三份：人物 / 场景 / 道具优先级 |
-| 用户自己新建的块 | **复制到三份** |
+| 用户自己新建的块 | **只进人物段**，并标成 `shared` |
 
-最后一条是关键：用户自己写的块过去对三类都生效（因为共用一份模板），复制到三份后**行为一字不变**；之后要各写各的，就到对应那一份里改。
+最后一条是这轮返工的重点。原来「复制到三份」是为了保持旧行为一字不变，但那份旧行为本身就是用户要拆掉的东西：角色条款会被带进场景图和道具图的提示词，模型收到「只输出一张角色设定卡：正面、侧面、背面三视图」去画一张山门空镜，结果是三份模板依旧耦合。
 
-### 4.2 实现
+改成只落人物段之后：
+
+- 内容一个字没丢——它还在人物段里，编辑器给它挂一个「旧模板」标签。
+- 场景段、道具段不再自动带上这段文字，符合「三类各写各的」。
+- 用户如果发现这段规则对场景也适用，在场景段新建一条照抄即可。
+
+代价是：旧模板里那些**本来就对三类通用**的规则（例如「不要出现任何文字」），迁移后只对人物生效。这是有意的取舍——把通用规则从一份共用模板里自动猜出来归类，只能靠猜；让用户在场景段自己补一条，比模型收到一段自相矛盾的提示词要好。编辑器里有一行说明把这个取舍讲清楚。
+
+### 4.2 已经被拆过的存档
+
+第一版拆分规则（复制到三份）上线后，有一批存档已经是三份结构、每份里躺着同 id 的副本。这些存档里没有 `image` 键，按 4.1 的规则不会再被迁移。
+
+补救办法是识别副本特征：**同一个块 id 同时出现在三份里**。编辑器里新建的块 id 各不相同（`uid()`），内置块按品类各有各的 id，只有复制才会撞 id——所以同 id 必然是旧模板的副本。
+
+`dropSharedImageCopies` 据此把场景、道具两份里的副本清掉，只留人物那份并标成 `shared`。这一步同样幂等，清完再跑不会二次误伤（人物那份不会被自己的规则当成副本删掉）。
+
+### 4.3 实现
 
 ```ts
 // src/lib/promptBlocks.ts
 const IMAGE_BLOCK_ROUTES: Record<string, { kind: PromptKindId; id: string; title: string }[]> = { ... };
+function dropSharedImageCopies(templates: Partial<Record<PromptKindId, PromptTemplatePlan>>): Partial<Record<PromptKindId, PromptTemplatePlan>>;
 export function migrateTemplateSet(set: PromptTemplateSet | undefined): PromptTemplateSet | undefined;
 ```
 
-- 触发条件：存在 `templates.image` 键。**幂等**——拆完就没有 `image` 键了，再跑一次是空操作。
+- 触发条件：存在 `templates.image` 键 → 按 4.1 拆分；没有该键 → 直接走 4.2 的副本清理。两条路径**幂等**，再跑一次是空操作。
+- `migratePromptConfig` 在 v3 分支里**无条件**调用 `migrateTemplateSet`（早期版本只在存在 `image` 键时才调，导致已被拆过的存档永远清不掉副本）。
 - 走同一个函数的三条路径：
   1. 全局模板 `settings.promptTemplates`（`src/lib/endpoints.ts` 的 `migrateSettings`）；
   2. 作品覆盖层 `project.promptConfig.overrides.templates`（`migratePromptConfig` 在 v3 分支里处理）；
@@ -172,6 +190,7 @@ export function imageSpec(project: Project, asset: Asset, global?: PromptTemplat
 - 段的 id / kind 映射：`character → image-character`、`scene → image-scene`、`prop → image-prop`。
 - 切换品类只换 `kind`，块的归属各自独立，切回来还在。
 - 内置块下拉只列当前品类的那三个。
+- 来自旧模板的块挂一个「旧模板」标签；图片栏顶部有一行说明，讲清这段过去三类共用、现在只在人物那份。
 
 ### 6.2 预览按品类取资产
 
@@ -200,7 +219,9 @@ export function imageSpec(project: Project, asset: Asset, global?: PromptTemplat
 
 - 图片内置块共 9 个、目录总数 43。
 - 三份设定图模板各自独立，人物段的块不出现在场景 / 道具段。
-- legacy `image` 拆分：内置块按品类归位、用户块复制三份、拆完不再有 `image` 键、重复迁移幂等。
+- legacy `image` 拆分：内置块按品类归位、用户块只落人物那份并标 `shared`、拆完不再有 `image` 键、重复迁移幂等。
+- 已被旧规则拆过的存档：三份里的同 id 副本被清掉，只留人物那份。
+- 旧模板的用户块不会跑进场景与道具的**提示词**（不只是模板结构对）。
 
 ### 浏览器（Edge 1440 / 390，`tests/browser-image-templates.mjs`）
 
@@ -209,6 +230,8 @@ export function imageSpec(project: Project, asset: Asset, global?: PromptTemplat
 - 给人物段写块保存 → 切到场景段是空的；切回人物段块还在；刷新后仍在。
 - 三段预览内容互不相同。
 - 资产页「编辑模板」跳转带 `sub=scene` 并直接停在场景段。
+- **真实生图链路**：场景资产的提示词里没有人物那段条款，道具同理。
+- **旧存档**：一份共用的 `image` 模板载入后，场景与道具的提示词里同样没有人物条款。
 
 ### 命令
 

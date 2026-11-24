@@ -3,7 +3,7 @@
 // 作品数据不属于模板块，渲染时由系统固定附带。
 // 模型的固定契约由后端持有，编辑器通过 contracts 接口原样展示。
 import type {
-  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, StyleSpec,
+  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplateMap, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, StyleSpec,
 } from '../domain/types';
 import { speakerName } from '../domain/types';
 import { skills } from './skills';
@@ -346,9 +346,10 @@ function shotAssetText(project: Project, shot: Shot): string {
 
 /**
  * 旧结构里人物 / 场景 / 道具共用一份设定图模板，拆成三份时的归类规则。
- * 带内置 id 的块按它的品类走（人物三视图条款 → 人物，场景构图 → 场景，道具构图 → 道具）；
- * 原来三类通用的禁写清单与优先级拆成三份；用户自己新建的块过去对三类都生效，复制到三份，
- * 行为一字不变——之后要各写各的，就到对应那一份里改。
+ * 带内置 id 的块按它的品类走（人物三视图条款 → 人物，场景构图 → 场景，道具构图 → 道具）。
+ * 用户自己写的块过去对三类都生效，但「三类共用」正是这次要拆掉的东西：
+ * 复制到三份会让角色条款继续出现在场景图和道具图的提示词里。
+ * 所以它只落人物那一份，并标成 shared，编辑器里会说明这段来自旧模板。
  */
 const IMAGE_BLOCK_ROUTES: Record<string, { kind: PromptKindId; id: string; title: string }[]> = {
   'image.three-view': [{ kind: 'image-character', id: 'image.character.three-view', title: '人物三视图条款' }],
@@ -368,27 +369,54 @@ const IMAGE_BLOCK_ROUTES: Record<string, { kind: PromptKindId; id: string; title
 
 const IMAGE_KINDS: PromptKindId[] = ['image-character', 'image-scene', 'image-prop'];
 
+/**
+ * 已经被旧规则拆过的存档：三份里留着同一个块 id 的副本（编辑器里新建的块 id 各不相同，
+ * 只有复制才会撞 id）。这种副本是旧模板的遗留，把场景、道具两份里的清掉，只留人物那份。
+ */
+function dropSharedImageCopies(templates: Partial<Record<PromptKindId, PromptTemplatePlan>>): Partial<Record<PromptKindId, PromptTemplatePlan>> {
+  const character = templates['image-character']?.blocks;
+  if (!character?.length) return templates;
+  const duplicated = new Set<string>();
+  for (const kind of IMAGE_KINDS) {
+    if (kind === 'image-character') continue;
+    for (const block of templates[kind]?.blocks ?? []) {
+      if (character.some(item => item.id === block.id)) duplicated.add(block.id);
+    }
+  }
+  if (!duplicated.size) return templates;
+  const next: Partial<Record<PromptKindId, PromptTemplatePlan>> = { ...templates };
+  for (const kind of IMAGE_KINDS) {
+    if (kind === 'image-character') continue;
+    const plan = next[kind];
+    if (plan) next[kind] = { blocks: plan.blocks.filter(block => !duplicated.has(block.id)) };
+  }
+  next['image-character'] = { blocks: character.map(block => (duplicated.has(block.id) ? { ...block, shared: true } : block)) };
+  return next;
+}
+
 /** 把一份模板集合里的旧设定图模板拆成三份；没有旧的就原样返回。 */
 export function migrateTemplateSet(set: PromptTemplateSet | undefined): PromptTemplateSet | undefined {
-  if (!set) return set;
-  const legacy = set.templates?.image;
-  if (!legacy) return set;
-  const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = { ...set.templates };
-  delete (templates as Partial<Record<'image', PromptTemplatePlan>>).image;
-  const append = (kind: PromptKindId, block: PromptBlockPlan) => {
-    const plan = templates[kind] ?? { blocks: [] };
-    templates[kind] = { blocks: [...plan.blocks, block] };
-  };
-  for (const block of legacy.blocks ?? []) {
-    const routes = IMAGE_BLOCK_ROUTES[block.builtin ?? block.id];
-    if (routes) {
-      for (const route of routes) append(route.kind, { ...block, id: route.id, title: route.title, builtin: route.id });
-      continue;
+  if (!set?.templates) return set;
+  // templates 里可能还留着旧的 `image` 键，拆完要删掉。
+  const templates: PromptTemplateMap = { ...set.templates };
+  const legacy = templates.image;
+  if (legacy) {
+    delete templates.image;
+    const append = (kind: PromptKindId, block: PromptBlockPlan) => {
+      const plan = templates[kind] ?? { blocks: [] };
+      templates[kind] = { blocks: [...plan.blocks, block] };
+    };
+    for (const block of legacy.blocks ?? []) {
+      const routes = IMAGE_BLOCK_ROUTES[block.builtin ?? block.id];
+      if (routes) {
+        for (const route of routes) append(route.kind, { ...block, id: route.id, title: route.title, builtin: route.id });
+        continue;
+      }
+      // 用户自己写的块：过去三类共用，现在只落人物那一份并标出来。
+      append('image-character', { ...block, shared: true });
     }
-    // 用户自己写的块：过去三类共用，复制到三份。
-    for (const kind of IMAGE_KINDS) append(kind, { ...block });
   }
-  return { ...set, templates };
+  return { ...set, templates: dropSharedImageCopies(templates) };
 }
 
 /**
@@ -402,8 +430,7 @@ export function migrateTemplateSet(set: PromptTemplateSet | undefined): PromptTe
 export function migratePromptConfig(config: Project['promptConfig']): Project['promptConfig'] {
   if (!config) return undefined;
   if (config.v === 3) {
-    // v3 的覆盖层里可能还留着旧的共用设定图模板，一并拆开。
-    if (!config.overrides?.templates?.image) return config;
+    // v3 的覆盖层里可能还留着旧的共用设定图模板，也可能有旧规则复制出来的副本，一并收拾干净。
     return { ...config, overrides: migrateTemplateSet(config.overrides) };
   }
   const v2 = config.v === 1 ? migrateV1ToV2(config) : config;

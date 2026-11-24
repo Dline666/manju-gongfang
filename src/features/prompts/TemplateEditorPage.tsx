@@ -47,6 +47,9 @@ const CONTRACT_TARGETS: Partial<Record<PromptKindId, string>> = {
   director: 'director',
 };
 
+/** 设定图的三份模板：人物 / 场景 / 道具，各自独立。 */
+const IMAGE_TEMPLATE_KINDS: PromptKindId[] = ['image-character', 'image-scene', 'image-prop'];
+
 /** 设定图预览用的示例资产：没有真实资产时按品类各给一个。 */
 const IMAGE_SAMPLES: Record<'character' | 'scene' | 'prop', Asset> = {
   character: { id: 'preview-character', kind: 'character', name: '示例人物', description: '示例描述', lock: '示例固定短语：灰白旧衣，背空剑鞘', imageId: 'preview-image' },
@@ -124,6 +127,18 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   const editable = kindIsOwned;
   const ownsStyleSpec = scope === 'global' || draft.style !== undefined;
   const styleValue = scope === 'global' ? cleanStyle(draft.style) : (ownsStyleSpec ? cleanStyle(draft.style) : cleanStyle(savedGlobal?.style));
+  // 旧模板共用过的块：只留在人物那份，编辑器里说明它从哪儿来。
+  const sharedBlockCount = useMemo(() => {
+    if (tab !== 'image') return 0;
+    let count = 0;
+    for (const imageKind of IMAGE_TEMPLATE_KINDS) {
+      const own = scope === 'global'
+        ? globalDraft.templates?.[imageKind]?.blocks
+        : (projectDraft.templates?.[imageKind]?.blocks ?? savedGlobal?.templates?.[imageKind]?.blocks ?? []);
+      count += (own ?? []).filter(block => block.shared).length;
+    }
+    return count;
+  }, [tab, scope, globalDraft, projectDraft, savedGlobal]);
 
   const sampleProject = useMemo<Project>(() => project ?? {
     id: 'preview-project', name: '示例作品', theme: '示例主题', style: '东方玄幻水墨风，冷灰 + 金色灵光',
@@ -275,6 +290,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
         {mode === 'blocks' && <section className="stack">
           <div className="section-title"><h3>{TEMPLATE_TABS.find(item => item.id === tab)?.title}模板</h3><span className="small muted">{TEMPLATE_TABS.find(item => item.id === tab)?.description}</span></div>
           {subs && <div className="tabs-row" role="tablist" aria-label="品类">{subs.map(item => <button key={item.id} role="tab" aria-selected={subId === item.id} className={subId === item.id ? 'active' : ''} onClick={() => setSub(previous => ({ ...previous, [tab]: item.id }))}>{item.label}</button>)}</div>}
+          {tab === 'image' && sharedBlockCount > 0 && <p className="small muted">旧模板曾让人物、场景、道具共用同一段文字。拆分后这段只留在「人物」那份，场景与道具不再自动带上它；需要同样的约束时，在对应那段里新建一条照抄即可。</p>}
           {scope === 'project' && (kindIsOwned
             ? <div className="toolbar"><span className="tag">本作品独立</span><Button variant="ghost" size="sm" onClick={followGlobal}>恢复跟随全局</Button></div>
             : <div className="alert" role="alert">这一步正在跟随全局模板，下面显示的是全局的内容。<Button variant="secondary" size="sm" onClick={makeIndependent}>改为独立编辑</Button></div>)}
@@ -293,6 +309,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
               <div className="section-title">
                 <input aria-label={`块标题 ${index + 1}`} value={block.title} disabled={!editable} onChange={event => updateBlock(block.id, { title: event.target.value })} />
                 <span className="small muted">{block.text.length} 字</span>
+                {block.shared && <span className="tag">旧模板</span>}
                 <div className="row">
                   <Button variant="ghost" size="sm" aria-label={`上移 ${block.title}`} onClick={() => moveBlock(index, -1)} disabled={index === 0 || !editable}><ChevronUp size={14} /></Button>
                   <Button variant="ghost" size="sm" aria-label={`下移 ${block.title}`} onClick={() => moveBlock(index, 1)} disabled={index === blocks.length - 1 || !editable}><ChevronDown size={14} /></Button>

@@ -3,19 +3,20 @@ import assert from 'node:assert/strict';
 import { directorPrompt, directorSpec, extractCharactersPrompt, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
 import { promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
 import { findUnknownVariables } from '../src/lib/promptTemplates';
-import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig } from '../src/lib/promptBlocks';
+import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, migrateTemplateSet } from '../src/lib/promptBlocks';
 import { effectivePlan, effectiveStyle, ownsKind, ownsStyle } from '../src/lib/promptScope';
 import { savedStudioSchema } from '../src/store/schema';
 import { defaultSettings, defaultStyle, makeShot, type Asset, type Project, type PromptTemplateSet } from '../src/domain/types';
 
 const hero: Asset = { id: 'hero', kind: 'character', name: '沈砚', description: '灰白布衣', lock: '十七岁少年，灰白旧布衣，背空剑鞘', imageId: 'image-hero' };
 const scene: Asset = { id: 'scene', kind: 'scene', name: '山门', description: '石阶', lock: '青灰石阶九十九级，晨雾低垂', imageId: 'image-scene' };
+const prop: Asset = { id: 'prop', kind: 'prop', name: '断剑', description: '断口有金光', lock: '红绳缠绕的剑柄，断口有微弱金色灵光', imageId: 'image-prop' };
 
 function makeProject(promptConfig?: Project['promptConfig']): Project {
   return {
     id: 'project', name: '断剑归门', theme: '少年拾起断剑', style: defaultStyle,
     createdAt: '', updatedAt: '', revision: 0, source: 'template', skills: ['script', 'storyboard', 'image', 'video'],
-    storyboardReady: true, assets: [hero, scene],
+    storyboardReady: true, assets: [hero, scene, prop],
     shots: [{ ...makeShot(1), visual: '沈砚走上石阶', start: '石阶前', action: '抬手', end: '站定', dialogues: [{ id: 'd1', speakerId: 'hero', text: '我回来了。' }] }],
     promptConfig,
   };
@@ -257,7 +258,7 @@ test('设定图按品类各用各的模板，互不串', () => {
   assert.ok(!scenePrompt.includes('道具设定图'), '场景提示词里不该有道具模板');
 });
 
-test('旧的共用设定图模板按品类拆开：内置块归类，用户块复制三份', () => {
+test('旧的共用设定图模板按品类拆开：内置块归类，用户块只落人物那份', () => {
   const legacy = makeProject({ v: 3, overrides: { templates: { image: { blocks: [
     { id: 'image.three-view', title: '人物三视图条款', text: '只输出一张三视图。', builtin: 'image.three-view' },
     { id: 'image.scene-composition', title: '场景构图说明', text: '空镜全景。', builtin: 'image.scene-composition' },
@@ -267,9 +268,61 @@ test('旧的共用设定图模板按品类拆开：内置块归类，用户块�
   const templates = migrated.overrides!.templates!;
   assert.equal((templates as Record<string, unknown>).image, undefined, '旧的那份不再保留');
   assert.deepEqual(templates['image-character']!.blocks.map(block => block.text), ['只输出一张三视图。', '统一打光。']);
-  assert.deepEqual(templates['image-scene']!.blocks.map(block => block.text), ['空镜全景。', '统一打光。']);
-  assert.deepEqual(templates['image-prop']!.blocks.map(block => block.text), ['统一打光。']);
+  assert.deepEqual(templates['image-scene']!.blocks.map(block => block.text), ['空镜全景。']);
+  assert.equal(templates['image-prop'], undefined, '道具那份没有内容就不建');
   assert.equal(templates['image-character']!.blocks[0].id, 'image.character.three-view', '块 id 跟着新目录改名');
+  assert.equal(templates['image-character']!.blocks[1].shared, true, '用户块标出来历：过去三类共用');
+});
+
+test('旧模板的用户块不会跑到场景与道具的提示词里', () => {
+  const legacy = makeProject({ v: 3, overrides: { templates: { image: { blocks: [
+    { id: 'mine', title: '角色条款', text: '只输出一张角色设定卡：正面、侧面、背面三视图。' },
+  ] } } } });
+  const upgraded = { ...legacy, promptConfig: migratePromptConfig(legacy.promptConfig)! };
+  const characterPrompt = imagePrompt(upgraded, hero);
+  const scenePrompt = imagePrompt(upgraded, scene);
+  const propPrompt = imagePrompt(upgraded, prop);
+  assert.ok(characterPrompt.includes('三视图'), '人物图仍用这段规则');
+  assert.ok(!scenePrompt.includes('三视图'), '场景图不该带人物条款');
+  assert.ok(!propPrompt.includes('三视图'), '道具图不该带人物条款');
+  assert.ok(scenePrompt.includes('主体：'), '场景图仍然带作品数据');
+});
+
+test('已经被旧规则拆过的存档：三份里的同 id 副本只留人物那份', () => {
+  const copy = { id: 'mine', title: '角色条款', text: '只输出一张角色设定卡：正面、侧面、背面三视图。' };
+  const alreadySplit = makeProject({ v: 3, overrides: { templates: {
+    'image-character': { blocks: [{ ...copy }] },
+    'image-scene': { blocks: [{ ...copy }] },
+    'image-prop': { blocks: [{ ...copy }] },
+  } } });
+  const migrated = migratePromptConfig(alreadySplit.promptConfig)!;
+  const templates = migrated.overrides!.templates!;
+  assert.equal(templates['image-character']!.blocks.length, 1, '人物那份留下');
+  assert.deepEqual(templates['image-scene']!.blocks, [], '场景那份的副本清掉');
+  assert.deepEqual(templates['image-prop']!.blocks, [], '道具那份的副本清掉');
+  assert.equal(templates['image-character']!.blocks[0].shared, true, '留下来的那份标出来历');
+});
+
+test('迁移是幂等的：人物那份不会被自己的副本规则误伤', () => {
+  const copy = { id: 'mine', title: '角色条款', text: '只输出一张角色设定卡。' };
+  const once = migratePromptConfig(makeProject({ v: 3, overrides: { templates: {
+    'image-character': { blocks: [{ ...copy }] },
+    'image-scene': { blocks: [{ ...copy }] },
+  } } }).promptConfig)!;
+  const twice = migratePromptConfig(once)!;
+  assert.deepEqual(twice.overrides!.templates!['image-character']!.blocks.map(block => block.text), [copy.text]);
+  assert.deepEqual(twice.overrides!.templates!['image-scene']!.blocks, []);
+});
+
+test('全局模板里的旧共用模板同样只落人物那份', () => {
+  const migrated = migrateTemplateSet({ templates: { image: { blocks: [
+    { id: 'mine', title: '角色条款', text: '只输出一张角色设定卡。' },
+  ] } } })!;
+  const templates = migrated.templates!;
+  assert.equal((templates as Record<string, unknown>).image, undefined);
+  assert.equal(templates['image-character']!.blocks.length, 1);
+  assert.equal(templates['image-scene'], undefined, '场景那份不建');
+  assert.equal(templates['image-prop'], undefined, '道具那份不建');
 });
 
 test('剧本层与导演层互不串块', () => {
