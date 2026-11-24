@@ -44,6 +44,17 @@ try {
     });
 
     // 1. 设置页有「提示词模板」页签，模板在整页里编辑。
+    await page.goto('http://127.0.0.1:5173/#/settings');
+    await page.getByRole('tab', { name: '提示词模板' }).click();
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('.template-editor').count(), 1, '点「提示词模板」要立刻切到模板页');
+    await page.getByRole('tab', { name: '连接模型' }).click();
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('.template-editor').count(), 0, '点「连接模型」要立刻切回连接页');
+    await page.getByRole('tab', { name: '提示词模板' }).click();
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('.template-editor').count(), 1, '再切回来也要立刻生效');
+
     await page.goto('http://127.0.0.1:5173/#/settings/templates?kind=script');
     const editor = page.locator('.template-editor');
     await editor.waitFor();
