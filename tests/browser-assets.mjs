@@ -88,7 +88,7 @@ try {
       await expect(referenceCell.locator('img')).toHaveAttribute('alt', '参考图：阿青');
       await page.getByRole('button', { name: '清除阿青 · 战损的参考图', exact: true }).click();
       await expect(referenceCell).toHaveClass(/is-empty/);
-      assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, undefined, '清除后留空，不残留挂载');
+      assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, '', '清除后写入明确清空，不残留挂载');
       await page.getByRole('button', { name: '查看阿青图片', exact: true }).dragTo(referenceCell);
       await expect(referenceCell.locator('img')).toHaveAttribute('alt', '参考图：阿青');
       assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, baseSaved.id, '拖动其他资产图片即可挂载参考图');

@@ -35,7 +35,7 @@ test('同名但不同类别的资产、以及找不到的基础形态都不会�
   assert.equal(formBaseAsset(asset('self', '阿青 · 战损'), [asset('self', '阿青 · 战损')]), undefined);
 });
 
-test('参考图只解析仍存在且不是自己的资产，删除来源时引用被清掉', () => {
+test('参考图只解析仍存在且不是自己的资产，旧形态沿用基础形态，清除后保持为空', () => {
   const source = asset('source', '阿青', { imageId: 'img-a' });
   const form = asset('form', '阿青 · 战损', { referenceAssetId: 'source' });
   const other = asset('other', '阿青 · 夜行', { referenceAssetId: 'source' });
@@ -45,6 +45,8 @@ test('参考图只解析仍存在且不是自己的资产，删除来源时引�
   assert.equal(referenceAssetFor(asset('none', '无参考'), assets), undefined);
   assert.equal(referenceAssetFor(self, assets), undefined, '不能引用自己');
   assert.equal(referenceAssetFor(asset('dangling', '悬空', { referenceAssetId: 'gone' }), assets), undefined);
+  assert.equal(referenceAssetFor(asset('legacy', '阿青 · 旧形态'), [source, asset('legacy', '阿青 · 旧形态')])?.id, 'source', '旧存档里的形态自动沿用基础形态的设定图');
+  assert.equal(referenceAssetFor(asset('cleared', '阿青 · 已清空', { referenceAssetId: '' }), [source, asset('cleared', '阿青 · 已清空', { referenceAssetId: '' })]), undefined, '空字符串表示明确清空，不能回落到基础形态');
   const removed = removeAsset(projectWith([source, form, other]), 'source');
-  assert.deepEqual(removed.assets.map(item => item.referenceAssetId), [undefined, undefined], '删除来源资产后清空挂载，避免留下悬空引用');
+  assert.deepEqual(removed.assets.map(item => item.referenceAssetId), ['', ''], '删除来源资产后写入明确清空，避免回落到基础形态');
 });

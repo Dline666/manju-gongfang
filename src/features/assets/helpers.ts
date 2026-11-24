@@ -20,12 +20,17 @@ export function formBaseAsset(asset: Asset, assets: Asset[]): Asset | undefined 
 }
 
 /**
- * 某个资产挂载的参考图来源：不能是自己，且来源资产必须仍存在。
+ * 某个资产挂载的参考图来源。
+ * - `referenceAssetId` 是资产 id：用它；
+ * - 空字符串：用户明确清空，纯文本生成；
+ * - undefined：旧数据兼容——新形态沿用基础形态的当前设定图，其它资产留空。
  * 参考图按资产动态解析，所以来源资产换了设定图，引用它的资产也会跟着用新图。
  */
 export function referenceAssetFor(asset: Asset, assets: Asset[]): Asset | undefined {
-  if (!asset.referenceAssetId) return undefined;
-  return assets.find(item => item.id === asset.referenceAssetId && item.id !== asset.id);
+  if (asset.referenceAssetId === '') return undefined;
+  if (asset.referenceAssetId) return assets.find(item => item.id === asset.referenceAssetId && item.id !== asset.id);
+  const base = formBaseAsset(asset, assets);
+  return base?.imageId ? base : undefined;
 }
 
 /**
@@ -55,7 +60,7 @@ export function removeAsset(project: Project, id: string): Project {
     assets: project.assets.filter(a => a.id !== id).map(a => ({
       ...a,
       ...(a.voiceAssetId === id ? { voiceAssetId: undefined } : {}),
-      ...(a.referenceAssetId === id ? { referenceAssetId: undefined } : {}),
+      ...(a.referenceAssetId === id ? { referenceAssetId: '' } : {}),
     })),
     shots: project.shots.map(s => ({ ...s, assetIds: s.assetIds.filter(assetId => assetId !== id), references: s.references.filter(r => r.assetId !== id), dialogues: s.dialogues.map(d => d.speakerId === id ? { ...d, speakerId: '' } : d) })),
   };

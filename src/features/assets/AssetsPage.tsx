@@ -75,13 +75,14 @@ function AssetImage({ asset, detail = false }: { asset: Asset; detail?: boolean 
 function AssetReference({ asset, source, onMount, onClear }: { asset: Asset; source?: Asset; onMount: (sourceId: string) => void; onClear: () => void }) {
   const url = useMediaUrl(source?.imageId);
   const [over, setOver] = useState(false);
-  const missing = !!asset.referenceAssetId && (!source || !source.imageId);
+  const hasReference = !!source || (asset.referenceAssetId !== undefined && asset.referenceAssetId !== '');
+  const missing = hasReference && (!source || !source.imageId);
   const accepts = (event: DragEvent) => event.dataTransfer.types.includes(ASSET_DRAG_TYPE);
   return <div
     className={`asset-reference-drop ${url ? 'has-image' : 'is-empty'}${over ? ' is-over' : ''}`}
     role="group"
-    aria-label={asset.referenceAssetId ? `${asset.name}的参考图${source ? `来自「${source.name}」` : '来源已删除'}` : `为${asset.name}挂载参考图：把其他资产的图片拖到这里`}
-    title={asset.referenceAssetId
+    aria-label={hasReference ? `${asset.name}的参考图${source ? `来自「${source.name}」` : '来源已删除'}` : `为${asset.name}挂载参考图：把其他资产的图片拖到这里`}
+    title={hasReference
       ? source ? `参考图来自「${source.name}」；生成时会把这张图作为参考图发送。` : '参考图来源资产已删除，请清除后重新挂载。'
       : '把其他资产的图片拖到这里作为参考图；留空表示纯文本生成。'}
     onDragOver={event => { if (accepts(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setOver(true); } }}
@@ -94,7 +95,7 @@ function AssetReference({ asset, source, onMount, onClear }: { asset: Asset; sou
     }}
   >
     {url ? <img className="asset-reference-image" src={url} alt={`参考图：${source?.name ?? ''}`} /> : <span className="asset-reference-empty">{missing ? '参考图缺失' : source?.imageId ? '读取中' : <ImagePlus size={14} />}</span>}
-    {asset.referenceAssetId && <button type="button" className="asset-reference-clear" aria-label={`清除${asset.name}的参考图`} onClick={event => { event.stopPropagation(); onClear(); }}><X size={12} /></button>}
+    {hasReference && <button type="button" className="asset-reference-clear" aria-label={`清除${asset.name}的参考图`} onClick={event => { event.stopPropagation(); onClear(); }}><X size={12} /></button>}
   </div>;
 }
 function AudioPreview({ preview }: { preview: Preview }) {
@@ -532,7 +533,7 @@ function AssetEditor({ project, navigate }: PageProps) {
           toast.success(`已把「${source.name}」的当前设定图挂为「${asset.name}」的参考图。`);
         }}
         onClear={() => {
-          updateProject(project.id, p => ({ ...p, assets: p.assets.map(item => item.id === asset.id ? { ...item, referenceAssetId: undefined } : item) }), false);
+          updateProject(project.id, p => ({ ...p, assets: p.assets.map(item => item.id === asset.id ? { ...item, referenceAssetId: '' } : item) }), false);
           toast.success('已清除参考图，之后按纯文本生成。');
         }}
       />}</td>
@@ -627,7 +628,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     <Modal open={!!editing} onClose={() => setEditing(undefined)} title={`${editing?.isNew ? '新建' : '编辑'}${kinds.find(k => k.id === editing?.asset.kind)?.name || '资产'}`} description="保存后会使相关下游制作结果标为待更新。固定短语会原样用于后续生成。">
       {editing && <div className="stack"><Field label="名称"><input value={editing.asset.name} onChange={e => draftPatch({ name: e.target.value })} /></Field><Field label="描述"><textarea rows={3} value={editing.asset.description} onChange={e => draftPatch({ description: e.target.value, ...(!editing.asset.lock || editing.asset.lock === editing.asset.description ? { lock: e.target.value } : {}) })} /></Field>
         {editing.asset.kind !== 'voice' && <><Field label="固定短语（默认使用描述）" hint="只在这里维护角色、场景、道具的一致性描述；自定义后不会随描述自动改写。"><textarea rows={3} value={editing.asset.lock} onChange={e => draftPatch({ lock: e.target.value })} /></Field><Button variant="ghost" onClick={() => draftPatch({ lock: editing.asset.description })}>使用当前描述作为固定短语</Button>
-          <Field label="参考图来源（也可在表格里拖入图片）" hint="生成时把来源资产当前的设定图作为图生图参考；留空表示纯文本生成。"><select value={editing.asset.referenceAssetId ?? ''} onChange={e => draftPatch({ referenceAssetId: e.target.value || undefined })}><option value="">不挂载（纯文本生成）</option>{project.assets.filter(a => a.id !== editing.asset.id && a.kind !== 'voice' && (a.imageId || a.id === editing.asset.referenceAssetId)).map(a => <option key={a.id} value={a.id}>{a.imageId ? a.name : `${a.name}（尚无设定图）`}</option>)}</select></Field></>}
+          <Field label="参考图来源（也可在表格里拖入图片）" hint="生成时把来源资产当前的设定图作为图生图参考；留空表示纯文本生成。"><select value={referenceAssetFor(editing.asset, project.assets)?.id ?? ''} onChange={e => draftPatch({ referenceAssetId: e.target.value || '' })}><option value="">不挂载（纯文本生成）</option>{project.assets.filter(a => a.id !== editing.asset.id && a.kind !== 'voice' && (a.imageId || a.id === editing.asset.referenceAssetId)).map(a => <option key={a.id} value={a.id}>{a.imageId ? a.name : `${a.name}（尚无设定图）`}</option>)}</select></Field></>}
         {editing.asset.kind === 'character' && <Field label="角色配音音色"><select value={editing.asset.voiceAssetId || ''} onChange={e => draftPatch({ voiceAssetId: e.target.value || undefined })}><option value="">暂不关联</option>{project.assets.filter(a => a.kind === 'voice').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}
         {editing.asset.kind === 'voice' && <><div className="toolbar"><Button variant="secondary" disabled={voicesBusy} onClick={loadVoices}>{voicesBusy ? '获取中…' : '加载在线音色'}</Button></div>{voices.length > 0 && <SearchSelect label="从服务商列表选择" placeholder="请选择，或在下方手动填写" value={editing.asset.voiceId && voices.some(v => v.id === editing.asset.voiceId) ? editing.asset.voiceId : ''} onChange={voiceId => { if (voiceId) draftPatch({ voiceId }); }} options={voices.map(v => ({ value: v.id, label: v.name, hint: v.id }))} />}<Field label="音色ID" hint="保存后可试听并分配给人物；本机试听使用系统声音而非此ID。"><input value={editing.asset.voiceId || ''} onChange={e => draftPatch({ voiceId: e.target.value })} /></Field><Field label="语速（0.5–2）"><input type="number" min={0.5} max={2} step={0.1} value={editing.asset.speed ?? 1} onChange={e => draftPatch({ speed: Number(e.target.value) })} /></Field></>}
         <div className="toolbar"><Button onClick={save}>保存资产</Button><Button variant="ghost" onClick={() => setEditing(undefined)}>取消</Button></div></div>}
