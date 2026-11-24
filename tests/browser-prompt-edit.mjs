@@ -64,6 +64,9 @@ try {
           return store.getStudio().projects[0].shots.map(shot => ({ number: shot.number, shotSize: '中景', movement: '固定', angle: '平视', start: shot.start || '石阶前', action: shot.action || '抬手', end: shot.end || '站定' }));
         });
         await route.fulfill({ json: { ok: true, data: { shots } } });
+      } else if (action === 'contracts') {
+        // 模板编辑器展示后端固定契约时读的接口；这里给一份假的就够了
+        await route.fulfill({ json: { ok: true, data: { instruction: '固定契约（测试替身）', schema: { type: 'object' } } } });
       } else throw new Error(`Unexpected network action: ${action}`);
     });
     const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem('manju-studio-v1')).projects[0]);
@@ -142,6 +145,23 @@ try {
     const box = await sheet.boundingBox();
     assert.ok(box.x <= 2, `模板面板必须贴左边展开，实际 x=${box.x}`);
     if (width === 1440) assert.ok(box.x + box.width <= width - 100, `模板面板必须靠左，实际 right=${box.x + box.width}`);
+
+    // 5.1 数据块不在模板里：没有插入入口，作品数据仍由系统自动附带。
+    assert.equal(await sheet.locator('select[aria-label="选择数据块"]').count(), 0, '不应再有插入数据块的下拉');
+    const previewText = await sheet.locator('textarea[aria-label="模板预览"]').inputValue();
+    assert.ok(previewText.includes('主体：'), '作品数据仍会自动附带进提示词');
+
+    // 5.2 资产三类：一次只预览当前子类，不把三个预览一起摊开。
+    await sheet.getByRole('button', { name: /^资产/ }).first().click();
+    await page.waitForTimeout(300);
+    assert.equal(await sheet.locator('textarea[aria-label^="模板预览"]').count(), 1, '资产页签一次只预览一个子类');
+    const characterPreview = await sheet.locator('textarea[aria-label^="模板预览"]').inputValue();
+    assert.ok(characterPreview.includes('说话人清单'), '人物子类预览人物提示词');
+    await sheet.getByRole('button', { name: '场景', exact: true }).click();
+    await page.waitForTimeout(300);
+    const scenePreview = await sheet.locator('textarea[aria-label^="模板预览"]').inputValue();
+    assert.ok(scenePreview.includes('场景清单'), '场景子类预览场景提示词');
+    assert.notEqual(scenePreview, characterPreview, '不同子类预览不同内容');
     await page.keyboard.press('Escape');
     await sheet.waitFor({ state: 'hidden' });
 

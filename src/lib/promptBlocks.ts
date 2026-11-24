@@ -1,5 +1,6 @@
-// 提示词块：内置块目录、数据块清单与数据渲染、块计划读取、存档迁移。
-// 设计约束：系统不提供任何默认提示词文案——这里只有「标题目录」与「作品数据」。
+// 提示词块：内置块目录、固定注入的数据源、块计划读取与存档迁移。
+// 设计约束：系统不提供任何默认提示词文案——模板里只有用户自己写的块；
+// 作品数据不属于模板块，渲染时由系统固定附带。
 // 模型的固定契约由后端持有，编辑器通过 contracts 接口原样展示。
 import type {
   Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplatePlan, Shot, SkillId,
@@ -70,10 +71,13 @@ export function builtinBlocksFor(kind: PromptKindId): BuiltinBlock[] {
   return builtinBlocks.filter(block => block.kinds.includes(kind));
 }
 
-/** 数据块：内容来自作品数据，本身不是文案。用户可改标题、追加说明、删除、调序。 */
+/**
+ * 固定注入的数据源：不属于模板，用户不能增删调序。
+ * 每次渲染时由系统按 kind 带上，排在用户写的块之后。
+ */
 export interface DataBlockDef { source: PromptDataSource; title: string }
 
-const DATA_BLOCKS: Record<PromptKindId, DataBlockDef[]> = {
+const DATA_SOURCES: Record<PromptKindId, DataBlockDef[]> = {
   script: [
     { source: 'script.theme', title: '主题与风格' },
     { source: 'script.source', title: '原文' },
@@ -115,19 +119,25 @@ const DATA_BLOCKS: Record<PromptKindId, DataBlockDef[]> = {
   ],
 };
 
-export function dataBlocksFor(kind: PromptKindId): DataBlockDef[] {
-  return DATA_BLOCKS[kind] ?? [];
+export function dataSourcesFor(kind: PromptKindId): DataBlockDef[] {
+  return DATA_SOURCES[kind] ?? [];
 }
 
-/** 没有用户计划时的兜底：只有数据块，没有任何文案。 */
-export function defaultBlocksFor(kind: PromptKindId): PromptBlockPlan[] {
-  return dataBlocksFor(kind).map(def => ({ id: `data.${def.source}`, title: def.title, text: '', source: def.source }));
-}
-
-/** 取该 kind 的块计划：用户保存过就用用户的（可能是空数组＝用户清空了模板）。 */
+/**
+ * 模板默认是空的：模板里只有用户自己写的块。
+ * 旧存档里保存过的数据块会被剔除（数据改由系统固定注入），
+ * 但用户当年写在数据块里的补充说明保留成普通块，一个字都不丢。
+ */
 export function planFor(project: Project, kind: PromptKindId): PromptBlockPlan[] {
   const plan = project.promptConfig?.templates?.[kind];
-  return plan ? plan.blocks : defaultBlocksFor(kind);
+  if (!plan) return [];
+  return plan.blocks.flatMap(block => {
+    if (!block.source) return [block];
+    const text = (block.text || '').trim();
+    if (!text) return [];
+    const { source, ...rest } = block;
+    return [{ ...rest, id: `legacy.${source}` }];
+  });
 }
 
 // ── 作品数据渲染 ──────────────────────────────────────────────

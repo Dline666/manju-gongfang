@@ -1,26 +1,28 @@
-// 各生成步骤的提示词：完全按用户排好的块计划拼装。
-// 系统不再插入任何规则文案——规则由用户在模板编辑器里自己写。
+// 各生成步骤的提示词：用户排好的块在前，作品数据由系统固定附带在后。
+// 系统不插入任何规则文案——规则由用户在模板编辑器里自己写。
 import type { Asset, Project, Shot } from '../domain/types';
 import { renderPrompt, type PromptBlock, type PromptKind, type PromptSpec } from './promptSpec';
 import { applyVariables, promptVariables, styleSpecFor } from './promptTemplates';
-import { planFor, renderData, type RenderContext } from './promptBlocks';
+import { dataSourcesFor, planFor, renderData, type RenderContext } from './promptBlocks';
 
 export { parseSceneHead, fixedDescription, assetSpecs, assetPromptGroups, assetText, fullAssetText, visualKinds } from './promptBlocks';
 export type { ExtractCategory } from './promptBlocks';
 
 /**
  * 按块计划拼出一个 spec：
- * 块的正文是用户写的；数据块追加作品数据；两者都走变量替换；空块渲染时跳过。
+ * 用户写的块在前；作品数据不是模板块，由系统固定附带，排在后面。
  */
 function buildSpec(project: Project, kind: PromptKind, ctx: Omit<RenderContext, 'project'> = {}): PromptSpec {
   const style = styleSpecFor(project);
   const vars = promptVariables(project, style);
-  const blocks: PromptBlock[] = planFor(project, kind).map(plan => {
-    const data = plan.source ? renderData(plan.source, { project, ...ctx }) : '';
-    const text = [plan.text.trim(), data].filter(Boolean).join('\n');
-    return { id: plan.id, label: plan.title, locked: false, text: applyVariables(text, vars) };
-  });
-  return { kind, blocks };
+  const userBlocks: PromptBlock[] = planFor(project, kind).map(plan => ({
+    id: plan.id, label: plan.title, locked: false, text: applyVariables(plan.text.trim(), vars),
+  }));
+  const dataBlocks: PromptBlock[] = dataSourcesFor(kind).map(def => ({
+    id: `data.${def.source}`, label: def.title, locked: true, reason: '作品数据，由系统自动附带',
+    text: applyVariables(renderData(def.source, { project, ...ctx }), vars),
+  }));
+  return { kind, blocks: [...userBlocks, ...dataBlocks] };
 }
 
 export function scriptSpec(project: Project): PromptSpec {

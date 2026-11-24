@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { directorPrompt, directorSpec, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
+import { directorPrompt, directorSpec, extractCharactersPrompt, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
 import { promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
 import { findUnknownVariables, styleSpecFor } from '../src/lib/promptTemplates';
-import { builtinBlocks, builtinBlocksFor, dataBlocksFor, defaultBlocksFor, migratePromptConfig } from '../src/lib/promptBlocks';
+import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, planFor } from '../src/lib/promptBlocks';
 import { savedStudioSchema } from '../src/store/schema';
 import { defaultSettings, defaultStyle, makeShot, type Asset, type Project } from '../src/domain/types';
 
@@ -44,32 +44,65 @@ test('没有默认提示词：渲染只包含作品数据', () => {
   assert.ok(!videoPrompt(project, project.shots[0]).includes('动作按时间顺序描述'));
   assert.ok(!directorPrompt(project).includes('【镜头分配规则】'));
   const director = directorSpec(project);
-  for (const block of director.blocks) assert.notEqual(block.locked, true, `${block.id} 不应是锁定块`);
-});
-
-test('数据块清单按 kind 覆盖三类提取与四个步骤', () => {
-  assert.deepEqual(dataBlocksFor('script').map(item => item.source), ['script.theme', 'script.source', 'script.characters', 'script.skills']);
-  assert.deepEqual(dataBlocksFor('extract-characters').map(item => item.source), ['extract.characters.shots', 'extract.characters.existing']);
-  assert.deepEqual(dataBlocksFor('extract-scenes').map(item => item.source), ['extract.scenes.shots', 'extract.scenes.existing']);
-  assert.deepEqual(dataBlocksFor('extract-props').map(item => item.source), ['extract.props.shots', 'extract.props.existing']);
-  assert.ok(dataBlocksFor('director').some(item => item.source === 'director.shots'));
-  assert.ok(dataBlocksFor('image').some(item => item.source === 'image.subject'));
-  assert.ok(dataBlocksFor('video').some(item => item.source === 'video.assets'));
-  for (const kind of ['script', 'director', 'image', 'video'] as const) {
-    assert.ok(dataBlocksFor(kind).some(item => item.source.endsWith('skills')), `${kind} 必须有 Skill 数据块`);
+  for (const block of director.blocks) {
+    // 注入的作品数据是锁定块；用户写的块永远可编辑
+    assert.equal(block.locked, block.id.startsWith('data.') ? true : false, `${block.id} 的锁定状态不对`);
   }
-  assert.ok(defaultBlocksFor('script').every(block => block.text === '' && block.source));
 });
 
-test('用户块计划按顺序渲染，空块被跳过', () => {
+test('数据源清单按 kind 覆盖三类提取与四个步骤，且不属于模板块', () => {
+  assert.deepEqual(dataSourcesFor('script').map(item => item.source), ['script.theme', 'script.source', 'script.characters', 'script.skills']);
+  assert.deepEqual(dataSourcesFor('extract-characters').map(item => item.source), ['extract.characters.shots', 'extract.characters.existing']);
+  assert.deepEqual(dataSourcesFor('extract-scenes').map(item => item.source), ['extract.scenes.shots', 'extract.scenes.existing']);
+  assert.deepEqual(dataSourcesFor('extract-props').map(item => item.source), ['extract.props.shots', 'extract.props.existing']);
+  assert.ok(dataSourcesFor('director').some(item => item.source === 'director.shots'));
+  assert.ok(dataSourcesFor('image').some(item => item.source === 'image.subject'));
+  assert.ok(dataSourcesFor('video').some(item => item.source === 'video.assets'));
+  for (const kind of ['script', 'director', 'image', 'video'] as const) {
+    assert.ok(dataSourcesFor(kind).some(item => item.source.endsWith('skills')), `${kind} 必须有 Skill 数据源`);
+  }
+});
+
+test('模板默认是空的：没有用户计划就没有块，数据由系统固定注入', () => {
+  const project = makeProject();
+  for (const kind of ['script', 'extract-characters', 'director', 'image', 'video'] as const) {
+    assert.deepEqual(planFor(project, kind), [], `${kind} 的模板默认应为空`);
+  }
+  const script = scriptSpec(project);
+  assert.ok(script.blocks.length > 0, '数据仍要注入，提示词不能空');
+  assert.ok(script.blocks.every(block => block.locked === true), '注入的数据块不可编辑');
+  assert.ok(script.blocks.every(block => block.id.startsWith('data.')), '注入块只来自数据源');
+});
+
+test('旧存档里的数据块从模板消失，用户写过的补充说明保留成普通块', () => {
+  const project = makeProject({ v: 2, templates: { 'extract-characters': { blocks: [
+    { id: 'data.extract.characters.shots', title: '本类线索', text: '', source: 'extract.characters.shots' } as never,
+    { id: 'data.extract.characters.existing', title: '已有本类固定资产', text: '只认有台词的', source: 'extract.characters.existing' } as never,
+    { id: 'mine', title: '我的规则', text: '按我的口径识别。' },
+  ] } } });
+  const plan = planFor(project, 'extract-characters');
+  assert.equal(plan.length, 2, '空的数据块被剔除，有文字的留下');
+  assert.equal(plan[0].id, 'legacy.extract.characters.existing');
+  assert.equal(plan[0].text, '只认有台词的');
+  assert.equal(plan[0].source, undefined, '留下的块不再是数据块');
+  assert.equal(plan[1].id, 'mine');
+  const text = extractCharactersPrompt(project);
+  assert.ok(text.includes('按我的口径识别。'));
+  assert.ok(text.includes('【说话人清单】'), '数据仍由系统注入');
+  assert.ok(text.indexOf('按我的口径识别。') < text.indexOf('【说话人清单】'), '用户块排在数据前面');
+});
+
+test('用户块计划按顺序渲染，空块被跳过，数据固定跟在后面', () => {
   const project = makeProject({ v: 2, templates: { script: { blocks: [
     { id: 'a', title: '甲', text: '第一条规则' },
     { id: 'b', title: '乙', text: '' },
     { id: 'c', title: '丙', text: '第三条规则' },
   ] } } });
   const script = scriptPrompt(project);
-  assert.equal(script, '第一条规则\n\n第三条规则');
+  assert.ok(script.startsWith('第一条规则\n\n第三条规则'), '用户块按顺序排在前面');
   assert.ok(script.indexOf('第一条规则') < script.indexOf('第三条规则'));
+  assert.ok(script.includes('主题：少年拾起断剑'), '作品数据仍由系统注入');
+  assert.ok(script.indexOf('第三条规则') < script.indexOf('主题：少年拾起断剑'), '数据排在用户块之后');
 });
 
 test('变量白名单：已知变量替换，未知变量被报告', () => {

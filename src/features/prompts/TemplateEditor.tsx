@@ -6,7 +6,7 @@ import { Button, ErrorNote, Field } from '../../components/Ui';
 import { PROMPT_LIMITS, renderPrompt, validatePromptSpec } from '../../lib/promptSpec';
 import { defaultStyleSpec, findUnknownVariables } from '../../lib/promptTemplates';
 import {
-  PROMPT_KINDS, builtinBlocksFor, dataBlocksFor, defaultBlocksFor, planFor, renderData,
+  PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, planFor,
   type BuiltinBlock, type ExtractCategory,
 } from '../../lib/promptBlocks';
 import { directorSpec, extractCharactersSpec, extractPropsSpec, extractScenesSpec, imageSpec, scriptSpec, videoSpec } from '../../lib/prompts';
@@ -61,21 +61,19 @@ export default function TemplateEditor({ project, open, onClose, initialKind = '
   const [style, setStyle] = useState<StyleSpec>({});
   const [mode, setMode] = useState<'blocks' | 'style'>('blocks');
   const [builtinChoice, setBuiltinChoice] = useState('');
-  const [dataChoice, setDataChoice] = useState('');
   const [contract, setContract] = useState<{ instruction: string; schema: unknown } | undefined>();
 
   useEffect(() => {
     if (!open) return;
     const initialStyle = cleanStyle(project.promptConfig?.style ?? defaultStyleSpec(project.style));
     const next: Partial<Record<PromptKindId, PromptBlockPlan[]>> = {};
-    for (const kind of PROMPT_KINDS) next[kind] = project.promptConfig?.templates?.[kind]?.blocks ?? defaultBlocksFor(kind);
+    for (const kind of PROMPT_KINDS) next[kind] = planFor(project, kind);
     setTab(initialKind);
     setAssetKind('character');
     setStyle(initialStyle);
     setPlans(next);
     setMode('blocks');
     setBuiltinChoice('');
-    setDataChoice('');
   }, [open, project.id, initialKind]);
 
   const kind: PromptKindId = tab === 'assets' ? ASSET_KINDS.find(item => item.id === assetKind)!.kind : tab;
@@ -92,12 +90,17 @@ export default function TemplateEditor({ project, open, onClose, initialKind = '
   const previewShot = useMemo(() => project.shots[0] ?? { ...makeShot(1), visual: '示例画面：人物走上石阶', start: '示例开场', action: '示例动作', end: '示例终点' }, [project.shots]);
 
   const previewSpecs = useMemo(() => {
+    // 资产三类各看各的：当前在看哪个板块，就只预览那一个
+    if (tab === 'assets') {
+      const item = ASSET_KINDS.find(entry => entry.id === assetKind) ?? ASSET_KINDS[0];
+      const spec = item.id === 'character' ? extractCharactersSpec(draftProject) : item.id === 'scene' ? extractScenesSpec(draftProject) : extractPropsSpec(draftProject);
+      return [{ label: item.label, spec }];
+    }
     if (tab === 'script') return [{ label: '', spec: scriptSpec(draftProject) }];
-    if (tab === 'assets') return ASSET_KINDS.map(item => ({ label: item.label, spec: item.id === 'character' ? extractCharactersSpec(draftProject) : item.id === 'scene' ? extractScenesSpec(draftProject) : extractPropsSpec(draftProject) }));
     if (tab === 'director') return [{ label: '', spec: directorSpec(draftProject) }];
     if (tab === 'image') return [{ label: '', spec: imageSpec(draftProject, previewAsset) }];
     return [{ label: '', spec: videoSpec(draftProject, previewShot) }];
-  }, [tab, draftProject, previewAsset, previewShot]);
+  }, [tab, assetKind, draftProject, previewAsset, previewShot]);
 
   const previews = previewSpecs.map(item => {
     const text = renderPrompt(item.spec);
@@ -139,14 +142,6 @@ export default function TemplateEditor({ project, open, onClose, initialKind = '
     setKindBlocks([...blocks, { id: found.id, title: found.title, text: '', builtin: found.id }]);
     setBuiltinChoice('');
   };
-  const insertData = () => {
-    const found = dataBlocksFor(kind).find(item => item.source === dataChoice);
-    if (!found) return;
-    const id = `data.${found.source}`;
-    if (blocks.some(block => block.id === id)) { toast.error(`「${found.title}」已经在模板里了。`); return; }
-    setKindBlocks([...blocks, { id, title: found.title, text: '', source: found.source }]);
-    setDataChoice('');
-  };
   const clearKind = () => {
     if (!window.confirm(`清空「${TEMPLATE_TABS.find(item => item.id === tab)?.title}」模板的全部块？清空后该步骤就没有任何提示词了。`)) return;
     setKindBlocks([]);
@@ -162,11 +157,11 @@ export default function TemplateEditor({ project, open, onClose, initialKind = '
   };
 
   const builtinOptions = builtinBlocksFor(kind).filter(item => !blocks.some(block => block.id === item.id));
-  const dataOptions = dataBlocksFor(kind).filter(item => !blocks.some(block => block.source === item.source));
+  const injectedSources = dataSourcesFor(kind);
 
   return <Sheet open={open} onOpenChange={value => { if (!value) onClose(); }}>
     <SheetContent side="left" className="w-full overflow-y-auto p-6 sm:max-w-6xl">
-      <SheetHeader className="p-0"><SheetTitle>提示词模板</SheetTitle><SheetDescription>每一块都可改、可增、可删、可调序，没有锁定块。保存后对下一次生成立效，不改动已生成素材。实时预览就是发往模型的全部内容。</SheetDescription></SheetHeader>
+      <SheetHeader className="p-0"><SheetTitle>提示词模板</SheetTitle><SheetDescription>模板里只有你写的块，可改、可增、可删、可调序。作品数据不在模板里，由系统每次自动附带。保存后对下一次生成立效，不改动已生成素材。实时预览就是发往模型的全部内容。</SheetDescription></SheetHeader>
       <div className="template-editor">
         <nav className="template-tabs" aria-label="模板选择">{TEMPLATE_TABS.map(item => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}><strong>{item.title}</strong><small>{item.description}</small></button>)}</nav>
         <div className="template-body stack">
@@ -182,28 +177,21 @@ export default function TemplateEditor({ project, open, onClose, initialKind = '
                 {builtinOptions.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
               </select>
               <Button variant="outline" size="sm" onClick={insertBuiltin} disabled={!builtinChoice}>插入</Button>
-              <select aria-label="选择数据块" value={dataChoice} onChange={event => setDataChoice(event.target.value)}>
-                <option value="">插入数据块…</option>
-                {dataOptions.map(item => <option key={item.source} value={item.source}>{item.title}</option>)}
-              </select>
-              <Button variant="outline" size="sm" onClick={insertData} disabled={!dataChoice}>插入</Button>
               <Button variant="ghost" size="sm" onClick={clearKind}>清空模板</Button>
             </div>
             {blocks.length === 0 && <p className="muted">这个模板还没有块。用「新增块」写自己的提示词，或「插入内置块」取一个空标题再填。</p>}
             {blocks.map((block, index) => {
-              const data = block.source ? renderData(block.source, { project, asset: previewAsset, shot: previewShot }) : '';
               return <section className="panel stack" key={block.id}>
                 <div className="section-title">
                   <input aria-label={`块标题 ${index + 1}`} value={block.title} onChange={event => updateBlock(block.id, { title: event.target.value })} />
-                  <span className="small muted">{block.text.length} 字{block.source ? ' · 数据块' : ''}</span>
+                  <span className="small muted">{block.text.length} 字</span>
                   <div className="row">
                     <Button variant="ghost" size="sm" aria-label={`上移 ${block.title}`} onClick={() => moveBlock(index, -1)} disabled={index === 0}><ChevronUp size={14} /></Button>
                     <Button variant="ghost" size="sm" aria-label={`下移 ${block.title}`} onClick={() => moveBlock(index, 1)} disabled={index === blocks.length - 1}><ChevronDown size={14} /></Button>
                     <Button variant="ghost" size="sm" aria-label={`删除 ${block.title}`} onClick={() => removeBlock(block.id)}><Trash2 size={14} /></Button>
                   </div>
                 </div>
-                {block.source && <details className="panel"><summary>数据预览（{block.source}）</summary><pre>{data || '（当前没有数据）'}</pre></details>}
-                <Field label={block.source ? '补充说明（可留空）' : '正文'} hint="支持变量：{{project.theme}}、{{project.style}}、{{style.medium}} 等；未知变量会阻止保存。">
+                <Field label="正文" hint="支持变量：{{project.theme}}、{{project.style}}、{{style.medium}} 等；未知变量会阻止保存。">
                   <textarea rows={4} value={block.text} onChange={event => updateBlock(block.id, { text: event.target.value })} />
                 </Field>
                 {findUnknownVariables(block.text).length > 0 && <small className="text-[#e88b93]">未知变量：{findUnknownVariables(block.text).map(item => `{{${item}}}`).join('、')}</small>}
@@ -212,6 +200,7 @@ export default function TemplateEditor({ project, open, onClose, initialKind = '
           </section>}
           {previews.map(item => <section className="panel stack" key={item.spec.kind}>
             <div className="section-title"><h3>{item.label ? `实时预览 · ${item.label}` : '实时预览'}</h3><span className={`small ${item.over ? 'text-[#e88b93]' : item.text.length > item.warningAt ? 'text-[#d8b26a]' : 'muted'}`}>{item.text.length} / {item.limit} 字</span></div>
+            {injectedSources.length > 0 && <p className="small muted">下面是你写的块，后面由系统自动附带作品数据：{injectedSources.map(source => source.title).join('、')}。数据不在模板里，不能增删调序。</p>}
             <textarea readOnly rows={14} aria-label={item.label ? `模板预览 · ${item.label}` : '模板预览'} value={item.text} />
             {item.over && <ErrorNote message={`提示词 ${item.text.length} 字，超过上限 ${item.limit} 字，请精简后可保存。`} />}
             {!item.over && unknown.length > 0 && <ErrorNote message={`${unknown.join('；')}。请修正未知变量后再保存。`} />}
