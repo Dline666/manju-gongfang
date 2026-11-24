@@ -20,6 +20,15 @@ export function formBaseAsset(asset: Asset, assets: Asset[]): Asset | undefined 
 }
 
 /**
+ * 某个资产挂载的参考图来源：不能是自己，且来源资产必须仍存在。
+ * 参考图按资产动态解析，所以来源资产换了设定图，引用它的资产也会跟着用新图。
+ */
+export function referenceAssetFor(asset: Asset, assets: Asset[]): Asset | undefined {
+  if (!asset.referenceAssetId) return undefined;
+  return assets.find(item => item.id === asset.referenceAssetId && item.id !== asset.id);
+}
+
+/**
  * 人物资产与剧本说话人按名字对齐：新建或改名人物后，台词自动挂到这个人身上。
  * 剧本阶段不建人物，所以这一步是「资产真正产生」的时刻。
  */
@@ -43,7 +52,11 @@ export function linkSpeakersToCharacter(project: Project, character: Asset): Pro
 export function removeAsset(project: Project, id: string): Project {
   return {
     ...project, storyboardReady: false,
-    assets: project.assets.filter(a => a.id !== id).map(a => a.voiceAssetId === id ? { ...a, voiceAssetId: undefined } : a),
+    assets: project.assets.filter(a => a.id !== id).map(a => ({
+      ...a,
+      ...(a.voiceAssetId === id ? { voiceAssetId: undefined } : {}),
+      ...(a.referenceAssetId === id ? { referenceAssetId: undefined } : {}),
+    })),
     shots: project.shots.map(s => ({ ...s, assetIds: s.assetIds.filter(assetId => assetId !== id), references: s.references.filter(r => r.assetId !== id), dialogues: s.dialogues.map(d => d.speakerId === id ? { ...d, speakerId: '' } : d) })),
   };
 }

@@ -24,8 +24,13 @@ test('keys never enter persisted state, even when projects/settings change', () 
 
 test('duplicate remaps nested references, drops tasks and remains independent', () => {
   const project = store.createProject('有资产的作品');
-  const character = uid(); const voice = uid(); const shot = makeShot(1);
-  store.updateProject(project.id, { assets: [{ id: character, kind: 'character', name: '主角', description: '青衣', lock: '青衣', voiceAssetId: voice, imageId: 'shared-image' }, { id: voice, kind: 'voice', name: '音色', description: '', lock: '', voiceId: 'fixture-voice' }], shots: [{ ...shot, assetIds: [character], references: [{ assetId: character, role: 'reference_image' }], dialogues: [{ id: uid(), speakerId: character, text: '开始吧。' }], task: { id: 'fixture-task', provider: 'seedance', model: 'fixture', revision: 0, status: 'running', createdAt: '' } }] });
+  const character = uid(); const voice = uid(); const reference = uid(); const shot = makeShot(1);
+  store.updateProject(project.id, { assets: [
+    { id: character, kind: 'character', name: '主角', description: '青衣', lock: '青衣', voiceAssetId: voice, imageId: 'shared-image', referenceAssetId: reference },
+    { id: voice, kind: 'voice', name: '音色', description: '', lock: '', voiceId: 'fixture-voice' },
+    { id: reference, kind: 'prop', name: '雨夜山门', description: '', lock: '', imageId: 'reference-image' },
+  ], shots: [{ ...shot, assetIds: [character], references: [{ assetId: character, role: 'reference_image' }], dialogues: [{ id: uid(), speakerId: character, text: '开始吧。' }], task: { id: 'fixture-task', provider: 'seedance', model: 'fixture', revision: 0, status: 'running', createdAt: '' } }] });
+  assert.doesNotThrow(() => savedStudioSchema.parse(JSON.parse(values.get('manju-studio-v1')!)), 'referenceAssetId 必须能存档');
   const copy = store.duplicateProject(project.id)!;
   assert.notEqual(copy.id, project.id);
   assert.equal(copy.shots[0].task, undefined);
@@ -33,6 +38,7 @@ test('duplicate remaps nested references, drops tasks and remains independent', 
   assert.equal(copy.shots[0].references[0].assetId, copy.assets[0].id);
   assert.equal(copy.shots[0].dialogues[0].speakerId, copy.assets[0].id);
   assert.equal(copy.assets[0].voiceAssetId, copy.assets[1].id);
+  assert.equal(copy.assets[0].referenceAssetId, copy.assets[2].id, '副本的参考图必须指向副本里的资产');
   store.updateProject(copy.id, p => ({ ...p, assets: p.assets.map(a => ({ ...a, lock: '副本专属' })) }), true);
   assert.equal(store.getStudio().projects.find(p => p.id === project.id)!.assets[0].lock, '青衣');
   store.deleteProject(project.id);

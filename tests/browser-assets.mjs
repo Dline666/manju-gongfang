@@ -74,15 +74,28 @@ try {
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
     await page.getByRole('dialog').locator('img').waitFor(); await overflow(); await close();
     assert.equal(calls[0].body.reference, undefined, '基础形态仍是纯文本请求');
-    // 新形态：确认弹窗展示基础形态的当前设定图，并把它作为参考图随请求发送。
+    // 新形态：默认挂载基础形态的当前设定图，参考图格显示为图片；可清除，也可从别的资产图片拖回来。
     await page.getByRole('button', { name: '为阿青新增形态', exact: true }).click();
     await page.getByLabel('名称').fill('阿青 · 战损');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: '展开阿青的形态', exact: true }).click();
+    const baseSaved = (await saved()).assets.find(a => a.name === '阿青');
+    assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, baseSaved.id, '新形态默认挂载基础形态');
+    if (width === 1440) {
+      const referenceCell = page.locator('tr.asset-row.is-form').filter({ hasText: '战损' }).locator('.asset-reference-drop');
+      await expect(referenceCell).toHaveAttribute('aria-label', /参考图来自「阿青」/);
+      await expect(referenceCell.locator('img')).toHaveAttribute('alt', '参考图：阿青');
+      await page.getByRole('button', { name: '清除阿青 · 战损的参考图', exact: true }).click();
+      await expect(referenceCell).toHaveClass(/is-empty/);
+      assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, undefined, '清除后留空，不残留挂载');
+      await page.getByRole('button', { name: '查看阿青图片', exact: true }).dragTo(referenceCell);
+      await expect(referenceCell.locator('img')).toHaveAttribute('alt', '参考图：阿青');
+      assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, baseSaved.id, '拖动其他资产图片即可挂载参考图');
+    }
     await page.getByRole('button', { name: '生成阿青 · 战损图片', exact: true }).click();
-    await expect(page.getByRole('dialog').getByText('将作为新形态的参考图发送', { exact: false })).toBeVisible();
-    await page.getByRole('dialog').locator('img[alt*="基础形态「阿青」的当前设定图"]').waitFor();
+    await expect(page.getByRole('dialog').getByText('将作为本次生成的参考图发送', { exact: false })).toBeVisible();
+    await page.getByRole('dialog').locator('img[alt*="参考图来源「阿青」的当前设定图"]').waitFor();
     await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     assert.equal(calls.length, 2);
@@ -248,7 +261,7 @@ try {
     await page.reload();
     await page.getByText('本地视频未加载，请重新选择文件', { exact: true }).waitFor();
     assert.equal(calls.length, 6); assert.deepEqual(errors, []);
-    results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['data-block prompt exact request', 'compact details and copy', 'new form sends the base image as reference', 'per-category asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
+    results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['data-block prompt exact request', 'compact details and copy', 'reference image mounts, clears and drag-fills', 'per-category asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
     await context.close();
   }
   console.log(JSON.stringify(results, null, 2));

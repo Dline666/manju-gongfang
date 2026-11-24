@@ -139,7 +139,7 @@ details.alert.fold ul{margin-top:2px}
 .asset-table th:nth-child(1){width:100px}
 .asset-table th:nth-child(2){width:130px}
 .asset-table th:nth-child(4){width:110px}
-.asset-table th:nth-child(5){width:150px}
+.asset-table th:nth-child(5){width:100px}
 .asset-table th:nth-child(6){width:88px}
 .asset-table th:nth-child(7){width:140px}
 .asset-table th{position:sticky;top:0;z-index:1;background:#17181b;text-align:left;padding:10px 12px;border-bottom:1px solid var(--site-border);font-weight:500;color:#9aa0a8;white-space:nowrap}
@@ -164,6 +164,17 @@ details.alert.fold ul{margin-top:2px}
 .asset-table-thumb:hover{border-color:var(--site-accent)}
 .asset-table-thumb .compact-media-image{width:100%;height:100%;object-fit:cover;border-radius:0}
 .asset-table-thumb .compact-media-placeholder{min-height:0;height:100%;padding:4px;font-size:10px;gap:2px}
+.asset-reference-drop{position:relative;display:flex;align-items:center;justify-content:center;width:64px;height:76px;border:1px dashed #3a3d43;border-radius:8px;background:transparent;color:var(--site-muted);overflow:hidden}
+.asset-reference-drop.has-image{border-style:solid;border-color:var(--site-border);background:var(--site-bg)}
+.asset-reference-drop.is-over{border-color:var(--site-accent);box-shadow:0 0 0 2px #2e594f66}
+.asset-reference-image{display:block;width:100%;height:100%;object-fit:cover}
+.asset-reference-empty{display:flex;align-items:center;justify-content:center;width:100%;height:100%;padding:4px;font-size:10px;line-height:1.25;text-align:center;color:var(--site-muted)}
+.asset-reference-empty svg{opacity:0;transition:opacity .15s}
+.asset-reference-drop:hover .asset-reference-empty svg,.asset-reference-drop.is-over .asset-reference-empty svg{opacity:1}
+.asset-reference-clear{position:absolute;top:3px;right:3px;display:flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:1px solid var(--site-border);border-radius:50%;background:#17181be6;color:var(--site-fg);cursor:pointer;opacity:0;transition:opacity .15s}
+.asset-reference-drop:hover .asset-reference-clear,.asset-reference-clear:focus-visible{opacity:1}
+.asset-table-thumb[draggable=true]{cursor:grab}
+.asset-table-thumb[draggable=true]:active{cursor:grabbing}
 .asset-row-actions{display:grid;grid-template-columns:repeat(2,30px);gap:4px;justify-content:end}
 .asset-row-actions [data-slot=button]{width:30px;height:30px;padding:0!important}
 .search-select-trigger{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:9px 12px;border:1px solid var(--site-border);border-radius:10px;background:#151618;color:var(--site-fg);text-align:left;font-size:13px}
