@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Eye, EyeOff, Plus, Trash2, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button, ErrorNote, Field } from '../../components/Ui';
+import SearchSelect from '../../components/SearchSelect';
 import { imageConcurrency } from '../../lib/models';
 import {
   createCustomEndpoint, endpointsFor, modelFor, removeEndpoint, removedBuiltins, restoreEndpoint,
@@ -124,7 +125,7 @@ function CustomRow({ endpoint, state, visible, onToggle, onDelete, onChange, ope
 
 function EndpointSelect({ settings, capability, value, onChange, label }: { settings: Settings; capability: Capability; value: string; onChange: (id: string) => void; label: string }) {
   const options = endpointsFor(settings, capability);
-  return <div className="provider-group-select"><Field label={label}><select value={value} onChange={e => onChange(e.target.value)} disabled={!options.length}>{options.length ? options.map(endpoint => <option key={endpoint.id} value={endpoint.id}>{endpoint.name} · {modelFor(settings, endpoint.id, capability) || '未填模型'}</option>) : <option value="">没有可用端点</option>}</select></Field></div>;
+  return <div className="provider-group-select"><SearchSelect label={label} value={value} onChange={onChange} disabled={!options.length} placeholder="没有可用端点" options={options.map(endpoint => ({ value: endpoint.id, label: `${endpoint.name} · ${modelFor(settings, endpoint.id, capability) || '未填模型'}` }))} /></div>;
 }
 
 /** 上次停留的页签：同一会话内离开再回到设置页时，还停在原来那一栏。 */

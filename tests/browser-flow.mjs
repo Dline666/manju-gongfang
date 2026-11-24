@@ -15,7 +15,7 @@ try {
       const result = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, offenders: [...document.querySelectorAll('main *')].filter(e => e.getBoundingClientRect().right > innerWidth + 2).slice(0, 8).map(e => [e.tagName, e.className, e.getBoundingClientRect().right]) }));
       assert.ok(result.scroll <= width + 2, `${width} ${label}: ${JSON.stringify(result)}`);
       if (width === 390) {
-        const title = page.locator('.topbar-trail > span:last-child');
+        const title = page.locator('.topbar-trail > span.small:not(.muted)');
         assert.ok((await title.boundingBox()).height < 30, `${label}: mobile breadcrumb wrapped`);
         assert.equal(await page.locator('.saved-label').isVisible(), false);
       }
@@ -56,26 +56,26 @@ try {
     await checkOverflow('settings');
     await page.goto('http://127.0.0.1:5173/#/assets');
     await page.getByRole('tab', { name: /人物/ }).click();
-    await page.getByRole('button', { name: '新建人物', exact: true }).click();
+    await page.getByRole('button', { name: '新增角色', exact: true }).click();
     await page.getByLabel('名称', { exact: true }).fill('沈砚');
     await page.getByLabel('描述', { exact: true }).fill('十七岁少年，灰白旧布衣，背空剑鞘');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();
     await page.getByRole('button', { name: '查看沈砚详情', exact: true }).waitFor();
     await page.getByRole('tab', { name: /场景/ }).click();
-    await page.getByRole('button', { name: '新建场景', exact: true }).click();
+    await page.getByRole('button', { name: '新增场景', exact: true }).click();
     await page.getByLabel('名称', { exact: true }).fill('雨夜山门');
     await page.getByLabel('描述', { exact: true }).fill('黑色石阶与金色门环，细雨与低雾');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();
     await page.getByRole('button', { name: '查看雨夜山门详情', exact: true }).waitFor();
     await page.getByRole('tab', { name: /道具/ }).click();
-    await page.getByRole('button', { name: '新建道具', exact: true }).click();
+    await page.getByRole('button', { name: '新增道具', exact: true }).click();
     await page.getByLabel('名称', { exact: true }).fill('断剑');
     await page.getByLabel('描述', { exact: true }).fill('红绳缠柄，断口有金色灵光');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();
     await page.getByRole('button', { name: '查看断剑详情', exact: true }).waitFor();
     await checkOverflow('assets');
     await page.getByRole('tab', { name: /音色/ }).click();
-    await page.getByRole('button', { name: '新建音色', exact: true }).click();
+    await page.getByRole('button', { name: '新增音色', exact: true }).click();
     await page.getByLabel('名称', { exact: true }).fill('测试音色');
     await page.getByLabel('音色ID', { exact: false }).fill('test-only-not-a-real-voice');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();

@@ -15,6 +15,7 @@
 // Key 只走环境变量进页面内存：不打印、不落盘、不进存档。
 import { chromium } from '@playwright/test';
 import assert from 'node:assert/strict';
+import { pickSearchOption } from './select-helpers.mjs';
 
 const BASE = process.env.CUSTOM_BASE_URL || 'https://ai.cangyuansuanli.cn/v1';
 const GEMINI_KEY = process.env.GEMINI_KEY;
@@ -71,9 +72,9 @@ try {
 
   // 各挂各的默认端点
   await openTab('剧本');
-  await page.getByLabel('剧本默认模型平台').selectOption({ label: `文本端点 · ${TEXT_MODEL}` });
-  await openTab('生图');
-  await page.getByLabel('生图默认模型平台').selectOption({ label: `图像端点 · ${IMAGE_MODEL}` });
+  await pickSearchOption(page, '剧本默认模型平台', '文本端点');
+  await page.getByRole('tab', { name: /^生图/ }).click();
+  await pickSearchOption(page, '生图默认模型平台', '图像端点');
 
   // ── 链路一：剧本（chat/completions）
   if (process.env.SKIP_TEXT !== '1') {

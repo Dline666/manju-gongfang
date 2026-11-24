@@ -48,12 +48,11 @@ try {
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '黑短发，青色布衣');
     await overflow(); await close();
     assert.equal(await page.locator('main input[type=file]').count(), 0);
-    const wallThumbs = page.locator('.asset-wall .compact-media-thumbnail');
-    assert.equal(await wallThumbs.count(), 1);
-    assert.ok((await wallThumbs.first().boundingBox()).height >= 300, 'asset wall thumbnails are enlarged');
+    assert.deepEqual(await page.locator('.asset-table thead th').allTextContents(), ['形态', '角色 / 形态', '形态描述', '音色', '参考图', '图片', '操作']);
+    assert.equal(await page.locator('.asset-table tbody tr').count(), 1, '资产表默认只显示基础形态');
     await page.screenshot({ path: `dev/asset-cards-${width}.png` });
     await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); s.setKey('openai', 'fixture-not-transmitted'); s.setKey('gemini', 'fixture-not-transmitted'); });
-    await page.getByRole('button', { name: /生成缺图/ }).click();
+    await page.getByRole('button', { name: /批量生成角色图片/ }).click();
     const batchBox = page.getByLabel('「阿青」· 即将发送的图片提示词');
     const batchDefault = await batchBox.inputValue();
     await batchBox.fill(`${batchDefault}\n批量补充：只影响本次`);

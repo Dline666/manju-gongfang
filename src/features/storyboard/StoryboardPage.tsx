@@ -6,19 +6,31 @@ import type { Asset, PageProps, Reference, Shot } from '../../domain/types';
 import { speakerName } from '../../domain/types';
 import { getStudio, updateProject } from '../../store/studio';
 import { useMediaUrl } from '../../store/media';
-import { assetPromptGroups, assetText, fullAssetText, videoPrompt } from '../../lib/prompts';
+import { assetPromptGroups, assetText, fixedDescription, fullAssetText, videoPrompt } from '../../lib/prompts';
 import { errorMessage } from '../../lib/api';
 import { extractLocalAssets } from '../script/creation';
 import { validateProject } from '../../domain/validation';
 import { fillStoryboard, updateReference } from './helpers';
 import ShotTimeline, { timelineState } from './ShotTimeline';
 import TemplateEditor from '../prompts/TemplateEditor';
+import { PageHeader } from '../../components/PageHeader';
 import DurationStrip from '../script/DurationStrip';
 
 const roleNames = { reference_image: '参考图', first_frame: '首帧', last_frame: '尾帧' };
 function Thumbnail({ asset }: { asset: Asset }) {
   const url = useMediaUrl(asset.imageId);
   return url ? <img src={url} alt={asset.name} width={96} height={72} style={{ objectFit: 'contain', borderRadius: 8 }} /> : <span className="muted">{asset.imageId ? '图片不可用或读取中' : '未添加图片'}</span>;
+}
+/** 点角色名只看固定短语与设定图；编辑仍回资产页。 */
+function CharacterPeek({ asset }: { asset: Asset }) {
+  const url = useMediaUrl(asset.imageId);
+  return <div className="character-peek">
+    <div className="character-peek-media">{url ? <img src={url} alt={`${asset.name}的设定图`} /> : <span className="muted small">{asset.imageId ? '图片读取中…' : '未添加设定图'}</span>}</div>
+    <div className="stack">
+      <div><h3>固定短语 · 逐字复用</h3><p className="media-detail-text">{fixedDescription(asset) || '尚未设置'}</p></div>
+      <p className="muted small">设定图即三视图素材；修改外观请回资产页。</p>
+    </div>
+  </div>;
 }
 export default function StoryboardPage(props: PageProps) { return <StoryboardEditor key={props.project.id} {...props} />; }
 function StoryboardEditor({ project, navigate }: PageProps) {
@@ -31,6 +43,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
     setConfirmation({ ...draft, shots: fillStoryboard(draft.shots), revision: project.revision });
   };
   const [promptShotId, setPromptShotId] = useState<string>();
+  const [peek, setPeek] = useState<Asset>();
   const images = project.assets.filter(a => a.kind !== 'voice' && a.imageId);
   const promptShot = project.shots.find(s => s.id === promptShotId);
   const issues = validateProject(project);
@@ -100,7 +113,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
     toast.success('已按镜头资产自动挂载参考图，请核对图序。');
   };
   return <div className="stack">
-    <header className="page-heading"><div className="page-heading-title"><h1>把文字，放进镜头里</h1><HelpPopover label="分镜编排说明" title="分镜编排"><p>直接沿用已有镜头，不生成额外剧情。逐镜确认开场、动作、终点与参考图片。</p><p className="mt-2">只补空白字段：后一镜开场承接上一镜终点；已有文字保持不变。以下分镜与剧本一一对应，修改会同步回剧本并标记下游待更新。不进行额外自动衔接检查。</p><p className="mt-2">「固定资产」是文字设定，「实际图片附件」才会进入图片列表。参考图模式和首尾帧模式不能混用；尾帧需要首帧。图片编号就是提交附件顺序。</p></HelpPopover></div><Button disabled={!project.shots.length} onClick={previewMapping}><Check size={16} />{project.storyboardReady ? '重新确认对应关系' : '预览并确认对应关系'}</Button></header>
+    <PageHeader title="把文字，放进镜头里" help={<HelpPopover label="分镜编排说明" title="分镜编排"><p>直接沿用已有镜头，不生成额外剧情。逐镜确认开场、动作、终点与参考图片。</p><p className="mt-2">只补空白字段：后一镜开场承接上一镜终点；已有文字保持不变。以下分镜与剧本一一对应，修改会同步回剧本并标记下游待更新。不进行额外自动衔接检查。</p><p className="mt-2">「固定资产」是文字设定，「实际图片附件」才会进入图片列表。参考图模式和首尾帧模式不能混用；尾帧需要首帧。图片编号就是提交附件顺序。</p></HelpPopover>} actions={<Button disabled={!project.shots.length} onClick={previewMapping}><Check size={16} />{project.storyboardReady ? '重新确认对应关系' : '预览并确认对应关系'}</Button>} />
     <div className="workbench"><div className="workbench-main stack">
     <div className="panel stack"><div className="section-title"><div className="row"><h2>{project.shots.length} 镜 / {Number(total.toFixed(2))} 秒</h2><span className="tag">{project.storyboardReady ? '对应关系已确认' : '对应关系待确认'}</span></div><span className="small muted">每镜默认一行摘要，点开再改字段</span></div>
       {project.shots.length > 0 && <><ShotTimeline project={project} onLocate={locate} /><div className="toolbar"><Button variant="outline" onClick={toggleAll}>{allOpen ? '全部折叠' : '全部展开'}</Button><Button variant="outline" onClick={copyAllVideoPrompts}>复制全部视频提示词</Button><Button variant="secondary" onClick={prepareAutoAttach}>按镜头资产自动挂参考图</Button></div></>}
@@ -116,7 +129,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
       <div className="grid-2"><section className="panel stack"><div className="section-title"><h3>固定资产 · 文字设定</h3><HelpPopover title="固定资产说明">台词人物和已挂图片的资产也会自动进入固定资产块；音色ID由配音流程使用。</HelpPopover></div>{!project.assets.length && <p className="muted">还没有资产，请先到资产页创建。</p>}{project.assets.map(asset => <label className="row" key={asset.id}><input type="checkbox" checked={shot.assetIds.includes(asset.id)} onChange={e => {
         if (!e.target.checked && shot.references.some(r => r.assetId === asset.id)) { toast.error('请先取消该资产的实际图片附件，再解除文字关联。'); return; }
         edit(shot.id, { assetIds: e.target.checked ? [...new Set([...shot.assetIds, asset.id])] : shot.assetIds.filter(id => id !== asset.id) });
-      }} /><span>{asset.name} <small className="muted">{asset.kind === 'character' ? '人物' : asset.kind === 'scene' ? '场景' : asset.kind === 'prop' ? '道具' : '音色'}</small></span></label>)}<div className="stack">{assetPromptGroups(project, shot).map(group => <section key={group.kind} className={group.missing ? 'alert' : 'panel'}><h4>{group.label}{group.missing ? ' · 缺失待补充' : ''}</h4><pre>{group.text}</pre><Button variant="outline" onClick={() => void copyText(group.text)}>复制{group.label}</Button></section>)}</div><div className="toolbar"><Button variant="outline" onClick={() => void copyText(fullAssetText(project, shot))}>复制完整资产</Button><Button variant="ghost" onClick={() => navigate('assets')}>管理资产</Button></div></section>
+      }} /><span className="asset-pick">{asset.kind === 'character' ? <button type="button" className="text-button asset-pick-name" onClick={event => { event.preventDefault(); event.stopPropagation(); setPeek(asset); }}>{asset.name}</button> : asset.name} <small className="muted">{asset.kind === 'character' ? '人物' : asset.kind === 'scene' ? '场景' : asset.kind === 'prop' ? '道具' : '音色'}</small></span></label>)}<div className="stack">{assetPromptGroups(project, shot).map(group => <section key={group.kind} className={group.missing ? 'alert' : 'panel'}><h4>{group.label}{group.missing ? ' · 缺失待补充' : ''}</h4><pre>{group.text}</pre><Button variant="outline" onClick={() => void copyText(group.text)}>复制{group.label}</Button></section>)}</div><div className="toolbar"><Button variant="outline" onClick={() => void copyText(fullAssetText(project, shot))}>复制完整资产</Button><Button variant="ghost" onClick={() => navigate('assets')}>管理资产</Button></div></section>
       <section className="panel stack"><div className="section-title"><h3><Link2 size={16} /> 实际图片附件</h3><HelpPopover title="挂图规则">要切换首尾帧模式，请先移除其他参考图，再将保留图片的角色改为「首帧」。后续勾选图片默认作为尾帧。</HelpPopover></div>{!images.length && <p className="muted">没有真实图片可挂载。请先到资产页上传或生成设定图。</p>}{images.map(asset => <label className="row" key={asset.id}><input type="checkbox" checked={shot.references.some(r => r.assetId === asset.id)} onChange={e => e.target.checked ? addReference(shot, asset.id) : reference(shot, asset.id)} /><Thumbnail asset={asset} /><span>{asset.name}</span></label>)}</section></div>
       {shot.references.length > 0 && <section className="stack"><h3>提交图序</h3>{shot.references.map((ref, index) => {
         const asset = project.assets.find(a => a.id === ref.assetId);
@@ -135,6 +148,7 @@ function StoryboardEditor({ project, navigate }: PageProps) {
       {confirmation && <div className="stack"><p>剧本 {confirmation.shots.length} 镜 → 分镜 {confirmation.shots.length} 镜，一一对应。请逐项审核下面的实际保存内容。</p><div className="panel"><h3>待保存资产清单</h3>{confirmation.assets.filter(a => a.kind !== 'voice').map(a => <p key={a.id}>{a.kind === 'character' ? '人物' : a.kind === 'scene' ? '场景' : '道具'}「{a.name}」：{a.lock || a.description}{project.assets.some(old => old.id === a.id) ? '（沿用）' : '（新增）'}</p>)}</div>{confirmation.shots.map(s => <details className="panel" key={s.id}><summary>剧本第{s.number}镜 → 分镜第{s.number}镜 · {s.duration}秒</summary><p>画面：{s.visual}</p><p>开场：{s.start}</p><p>动作：{s.action}</p><p>终点：{s.end}</p><p>运镜：{s.camera}</p><pre>{assetText({ ...project, assets: confirmation.assets }, s)}</pre></details>)}<div className="toolbar"><Button onClick={confirmMapping}>确认对应并保存补全</Button><Button variant="ghost" onClick={() => setConfirmation(undefined)}>取消</Button></div></div>}
     </Modal>
     <Modal open={!!promptShot} onClose={() => setPromptShotId(undefined)} title={`第${promptShot?.number || ''}镜 · 完整视频提示词`} description="有图时侧重动作、对白和运镜；无图时明确开场。文字复制不会自动上传图片，实际附件在生成页提交。">{promptShot && <div className="stack"><textarea rows={16} readOnly aria-label="视频提示词全文" value={videoPrompt(project, promptShot)} /><div className="toolbar"><Button onClick={() => void copyText(videoPrompt(project, promptShot))}>复制提示词</Button><Button variant="ghost" onClick={() => setPromptShotId(undefined)}>关闭</Button></div></div>}</Modal>
+    <Modal open={!!peek} onClose={() => setPeek(undefined)} title={peek ? `${peek.name} · 角色设定` : '角色设定'} description="只核对固定短语与三视图；要修改请回资产页。">{peek && <div className="stack"><CharacterPeek asset={peek} /><div className="toolbar"><Button variant="ghost" onClick={() => setPeek(undefined)}>关闭</Button><Button variant="outline" onClick={() => { setPeek(undefined); navigate('assets'); }}>去资产页编辑</Button></div></div>}</Modal>
     <TemplateEditor project={project} open={templateOpen} onClose={() => setTemplateOpen(false)} initialKind="assets" />
   </div>;
 }

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronDown, ChevronRight, Sparkles, WandSparkles } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, IssueList, Modal, ProgressPanel } from '../../components/Ui';
+import { PageHeader } from '../../components/PageHeader';
 import DurationStrip from '../script/DurationStrip';
 import { normalizeDirector, type GeneratedDirector } from '../script/creation';
 import { directorPrompt } from '../../lib/prompts';
@@ -78,7 +79,7 @@ export default function DirectorPage({ project, navigate }: PageProps) {
   };
   if (!project.shots.length) return <Empty title="先完成剧本" text="导演步骤需要剧本里拆出的全部镜头。"><Button onClick={() => navigate('script')}>去写剧本</Button></Empty>;
   return <div className="stack">
-    <header className="page-heading"><div className="page-heading-title"><h1>把剧本，拆成可拍的镜头</h1><HelpPopover label="导演分镜说明" title="导演分镜"><p>按剧本指定的画面类型补齐运镜与开场、动作、终点，不改剧情、对白和时长。</p><p className="mt-2">每镜默认只显示一行摘要，点开再逐项填写；可以用「全部展开」一次看到所有镜头。</p></HelpPopover></div><div className="row wrap"><Button variant="outline" onClick={localFill}><WandSparkles size={16} />本地补全</Button><Button onClick={prepare}><Sparkles size={16} />AI 生成分镜（先确认）</Button></div></header>
+    <PageHeader title="把剧本，拆成可拍的镜头" help={<HelpPopover label="导演分镜说明" title="导演分镜"><p>按剧本指定的画面类型补齐运镜与开场、动作、终点，不改剧情、对白和时长。</p><p className="mt-2">每镜默认只显示一行摘要，点开再逐项填写；可以用「全部展开」一次看到所有镜头。</p></HelpPopover>} actions={<><Button variant="outline" onClick={localFill}><WandSparkles size={16} />本地补全</Button><Button onClick={prepare}><Sparkles size={16} />AI 生成分镜（先确认）</Button></>} />
     <Fold title="剧本时长表" meta={`${project.shots.length} 镜`}><DurationStrip project={project} /></Fold>
     {issues.length > 0 ? <section className="panel stack"><div className="section-title"><h3>需要完善</h3><span className="tag">{issues.length} 项</span></div><IssueList issues={issues} /></section> : <div className="notice"><Check size={20} /><div><strong>本步已完整</strong><p>可以确认并进入分镜编排。</p></div></div>}
     <div className="toolbar"><span className="small muted">每镜默认一行摘要，点开再编辑</span><Button variant="outline" onClick={toggleAll}>{allOpen ? '全部折叠' : '全部展开'}</Button></div>

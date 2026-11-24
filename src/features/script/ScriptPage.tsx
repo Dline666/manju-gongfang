@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { Sparkles, Download, FileText } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
 import TemplateEditor from '../prompts/TemplateEditor';
+import { PageHeader } from '../../components/PageHeader';
 import { MAX_SOURCE_CHARS, defaultStyle, type PageProps, type Project } from '../../domain/types';
 import { scriptWarnings, validateScriptStage, withConfirmation } from '../../domain/flow';
 import { getStudio, updateProject, useStudio } from '../../store/studio';
@@ -147,7 +148,7 @@ function ScriptEditor({ project, navigate }: PageProps) {
     } catch (error) { toast.error(errorMessage(error)); }
   };
   return <div className="stack">
-    <header className="page-heading"><div className="page-heading-title"><h1>让一个念头，成为好故事</h1><HelpPopover label="故事创作说明" title="故事创作"><p>从主题或小说原文出发，写出一份完整的漫剧剧本。</p><p className="mt-2">剧本按四部分结构生成，每个动作块与对白块都标【镜头：类型】和时长，保存时会自动拆成镜头。原文模式下对白逐字保留，不增删改写。</p></HelpPopover></div><Button variant="outline" onClick={() => setDocumentsOpen(true)}><Download size={16} />导出文档</Button></header>
+    <PageHeader title="让一个念头，成为好故事" help={<HelpPopover label="故事创作说明" title="故事创作"><p>从主题或小说原文出发，写出一份完整的漫剧剧本。</p><p className="mt-2">剧本按四部分结构生成，每个动作块与对白块都标【镜头：类型】和时长，保存时会自动拆成镜头。原文模式下对白逐字保留，不增删改写。</p></HelpPopover>} actions={<Button variant="outline" onClick={() => setDocumentsOpen(true)}><Download size={16} />导出文档</Button>} />
     <div className="workbench"><div className="workbench-main stack">
     <section className="panel stack">
       <div className="section-title"><h2>故事种子</h2><span className="tag">完整剧本 · 逐镜拆解</span></div>

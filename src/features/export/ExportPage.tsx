@@ -3,6 +3,7 @@ import { Archive, Download, Film, RefreshCw, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PageProps } from '../../domain/types';
 import { Button, Empty, Fold, HelpPopover, downloadBlob } from '../../components/Ui';
+import { PageHeader } from '../../components/PageHeader';
 import PreflightDialog from './PreflightDialog';
 import { errorMessage } from '../../lib/api';
 import { inspectProject, type MediaReport } from '../../lib/media/inputs';
@@ -85,7 +86,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
   if (!project.shots.length) return <Empty title="还没有可导出的分镜" text="先完成十镜分镜，再到生成页导入或生成视频与配音。"><Button onClick={() => navigate('storyboard')}>前往分镜</Button></Empty>;
 
   return <div className="stack">
-    <header className="page-heading"><div className="page-heading-title"><h1>预览与导出</h1><HelpPopover label="导出说明" title="预览与导出"><p>全部分镜同一时间轴 · 720 × 1280 · 24 fps · H.264 / AAC。</p><p className="mt-2">视频仅在内存中保留，刷新后本地视频需重新导入。空文件、缺失配音、过期素材不能算就绪。</p></HelpPopover></div><Button variant="outline" disabled={!!job} onClick={() => navigate('generation')}>返回生成 / 重新导入</Button></header>
+    <PageHeader title="预览与导出" help={<HelpPopover label="导出说明" title="预览与导出"><p>全部分镜同一时间轴 · 720 × 1280 · 24 fps · H.264 / AAC。</p><p className="mt-2">视频仅在内存中保留，刷新后本地视频需重新导入。空文件、缺失配音、过期素材不能算就绪。</p></HelpPopover>} actions={<Button variant="outline" disabled={!!job} onClick={() => navigate('generation')}>返回生成 / 重新导入</Button>} />
     {report && <TimelinePreview report={report} />}
     <section className="panel stack">
       <div className="section-title"><div className="row"><h2>导出文件</h2><HelpPopover title="导出说明"><p>ZIP 保留原始逐镜视频、所有已关联配音与参考图、SRT、五份文档和不含密钥的 manifest.json；缺任何已关联素材均阻止完整包。不是剪映专有工程。字幕按对白均分估算，不烧录进 MP4，需手工校对。</p><p className="mt-2">MP4 生成还会由 FFmpeg 检查真实音视频轨道；“素材可读”不代表编码已成功。只显示当前实际阶段，不提供推测的总体百分比。</p><p className="mt-2">编码组件：ffmpeg.wasm wrapper（MIT）与单线程 core（GPL-2.0-or-later）。<a href={`${import.meta.env.BASE_URL}ffmpeg/SOURCE-AND-LICENSE.txt`} target="_blank" rel="noreferrer">许可证与源码获取说明</a></p></HelpPopover></div><span className="tag">{readyCount} / {project.shots.length} 镜通过素材检查</span></div>
