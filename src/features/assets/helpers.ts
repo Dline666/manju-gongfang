@@ -1,6 +1,39 @@
 import type { Asset, Project } from '../../domain/types';
 
 /**
+ * 多形态沿用现有资产数据：名字写成「角色 · 形态」即归到同一角色下，基础形态就是角色名本身。
+ * 点、间隔号、斜杠都接受，便于从旧清单里粘贴进来的名字直接归组。
+ */
+export function splitFormName(name: string) {
+  const match = name.match(/^(.*?)\s*[·・/]\s*(.+)$/);
+  return match ? { base: match[1].trim(), form: match[2].trim() } : { base: name.trim(), form: '' };
+}
+
+/**
+ * 非基础形态对应的基础形态资产；基础形态本身、名字解析不出基础形态时返回 undefined。
+ * 只认同类别、名字完全等于基础名的资产，避免「阿青 · 战损」被同名场景误认。
+ */
+export function formBaseAsset(asset: Asset, assets: Asset[]): Asset | undefined {
+  const { base, form } = splitFormName(asset.name);
+  if (!form) return undefined;
+  return assets.find(item => item.id !== asset.id && item.kind === asset.kind && splitFormName(item.name).form === '' && item.name.trim() === base);
+}
+
+/**
+ * 某个资产挂载的参考图来源。
+ * - `referenceAssetId` 是资产 id：用它；
+ * - 空字符串：用户明确清空，纯文本生成；
+ * - undefined：旧数据兼容——新形态沿用基础形态的当前设定图，其它资产留空。
+ * 参考图按资产动态解析，所以来源资产换了设定图，引用它的资产也会跟着用新图。
+ */
+export function referenceAssetFor(asset: Asset, assets: Asset[]): Asset | undefined {
+  if (asset.referenceAssetId === '') return undefined;
+  if (asset.referenceAssetId) return assets.find(item => item.id === asset.referenceAssetId && item.id !== asset.id);
+  const base = formBaseAsset(asset, assets);
+  return base?.imageId ? base : undefined;
+}
+
+/**
  * 人物资产与剧本说话人按名字对齐：新建或改名人物后，台词自动挂到这个人身上。
  * 剧本阶段不建人物，所以这一步是「资产真正产生」的时刻。
  */
@@ -24,7 +57,11 @@ export function linkSpeakersToCharacter(project: Project, character: Asset): Pro
 export function removeAsset(project: Project, id: string): Project {
   return {
     ...project, storyboardReady: false,
-    assets: project.assets.filter(a => a.id !== id).map(a => a.voiceAssetId === id ? { ...a, voiceAssetId: undefined } : a),
+    assets: project.assets.filter(a => a.id !== id).map(a => ({
+      ...a,
+      ...(a.voiceAssetId === id ? { voiceAssetId: undefined } : {}),
+      ...(a.referenceAssetId === id ? { referenceAssetId: '' } : {}),
+    })),
     shots: project.shots.map(s => ({ ...s, assetIds: s.assetIds.filter(assetId => assetId !== id), references: s.references.filter(r => r.assetId !== id), dialogues: s.dialogues.map(d => d.speakerId === id ? { ...d, speakerId: '' } : d) })),
   };
 }

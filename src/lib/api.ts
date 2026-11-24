@@ -10,6 +10,11 @@ const messages: Record<string, string> = {
   endpoint_model_unavailable: '该端点下没有这个模型或渠道：请检查模型 ID，以及中转站的分组/渠道是否覆盖它。',
   endpoint_timeout: '端点在两分钟内没有返回：模型可能正在排队，或这条线路暂时不通。这次请求可能已经送达，请先到平台确认是否计费，再决定要不要重试。',
   provider_rejected: '模型平台拒绝了请求，请检查内容、模型权限及参考图。', invalid_images: '参考图格式或组合无效，首尾帧不能与参考图模式混用。',
+  invalid_upstream_response: '服务商返回的图片数据不符合预期：请确认端点兼容 OpenAI 图片接口，并按 b64_json 返回图片。',
+  upstream_too_large: '服务商返回的数据过大，请稍后重试或换用其他端点。',
+  internal_error: '本地生成服务遇到未预期错误，请重启本地 Function 服务后再试。',
+  invalid_reference_image: '参考图数据无效：只支持 5MB 以内的 PNG / JPEG / WebP 本地图片。',
+  reference_not_supported: '当前生图渠道不支持参考图，本次请求没有提交：请换用支持图生图的模型或端点（OpenAI / Seedream / 自定义端点，或 SiliconFlow 的 Edit 模型）。',
   request_too_large: '请求太大，请压缩参考图或减少图片数量。', upstream_timeout: '查询超时，已有任务不会重发，请稍后查询。',
   upstream_unavailable: '模型查询暂不可用，请稍后再试。', media_not_ready: '视频尚未完成，请等待任务结束。',
   rate_limited: '服务商请求过于频繁，请稍后查询或重试。', insufficient_balance: '服务商额度不足，请检查账户余额。',
@@ -37,6 +42,8 @@ const hints = {
 };
 export function hintFor(code: string, status = 0): string | undefined {
   if (code === 'unknown_action') return hints.route;
+  // 这是「返回格式不对」或本地服务内部错误，不是上游暂时不可用；说成稍后重试会误导。
+  if (code === 'invalid_upstream_response' || code === 'upstream_too_large' || code === 'internal_error') return undefined;
   if (status === 401 || code === 'invalid_key' || code === 'provider_auth_failed') return hints.credential;
   if (status === 403 || code === 'provider_forbidden') return hints.forbidden;
   if (status === 402 || code === 'insufficient_balance') return hints.balance;
@@ -73,6 +80,21 @@ export function credentials(endpointId: string, capability: Capability) {
     model: modelFor(state.settings, endpointId, capability),
     ...(endpoint.baseUrl ? { baseUrl: endpoint.baseUrl } : {}),
   };
+}
+/** 生图请求：reference 是本地读取的 data URL，只在本次请求里出现，不进入项目存档。 */
+export type ImageRequest = ReturnType<typeof credentials> & { prompt: string; reference?: string };
+export type ImageResult = { base64: string; mime: string };
+/**
+ * 哪些生图渠道能在本次请求里接收参考图（与后端实现一致）。
+ * 参数可以是本地端点 ID，也可以直接是端点协议：自定义端点常常长着
+ * `custom-xxxx` 的 ID，但协议是 `openai-compatible`，不能按 ID 误判。
+ * SiliconFlow 只有 Edit/Kontext 系列模型支持 image 字段，Kolors 会被后端明确拒绝。
+ * UI 用它提前说明「这次会被拒绝」，后端仍然做最终判定。
+ */
+export function supportsImageReference(provider: string, model = ''): boolean {
+  const protocol = endpointById(getStudio().settings, provider)?.protocol ?? provider;
+  if (protocol === 'siliconflow') return /(?:edit|kontext)/i.test(model.slice(model.indexOf('/') + 1));
+  return protocol === 'openai' || protocol === 'seedream' || protocol === 'openai-compatible';
 }
 async function request(action: string, payload: object, signal?: AbortSignal) {
   const body: Record<string, unknown> = { ...payload };

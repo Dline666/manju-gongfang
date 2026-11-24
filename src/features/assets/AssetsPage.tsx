@@ -1,19 +1,19 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type DragEvent } from 'react';
 import { toast } from 'sonner';
-import { Check, ChevronLeft, ChevronRight, Download, FileText, Play, Plus, Pencil, Trash2, Sparkles, Upload, Volume2, ImagePlus, Copy } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Download, FileText, Play, Plus, Pencil, Trash2, Sparkles, Upload, Volume2, ImagePlus, Copy, X } from 'lucide-react';
 import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, Modal, ProgressPanel, StatusChip, copyText, downloadBlob, errorAction, formatElapsed } from '../../components/Ui';
 import { PageHeader } from '../../components/PageHeader';
 import SearchSelect from '../../components/SearchSelect';
 import { makeShot, uid, type Asset, type AssetKind, type PageProps, type Project, type Shot } from '../../domain/types';
 import { getStudio, setAssetImage, setSettings, updateProject, useStudio } from '../../store/studio';
 import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
-import { putMedia, useMediaUrl } from '../../store/media';
-import { ApiError, callApi, callBinary, credentials, errorMessage } from '../../lib/api';
+import { putMedia, getMedia, blobDataUrl, useMediaUrl } from '../../store/media';
+import { ApiError, callApi, callBinary, credentials, errorMessage, supportsImageReference, type ImageRequest, type ImageResult } from '../../lib/api';
 import { extractCharactersPrompt, extractPropsPrompt, extractScenesPrompt, fixedDescription, imagePrompt, type ExtractCategory } from '../../lib/prompts';
 import { imageConcurrency, modelOptions } from '../../lib/models';
 import { endpointsFor, modelFor } from '../../lib/endpoints';
 import { runPool } from '../../lib/pool';
-import { assetShotIds, assetUsage, generatedImageBlob, linkSpeakersToCharacter, removeAsset, validateImage } from './helpers';
+import { assetShotIds, assetUsage, generatedImageBlob, linkSpeakersToCharacter, referenceAssetFor, removeAsset, splitFormName, validateImage } from './helpers';
 import { applyCategoryExtraction, extractLocalAssets, mergeDraftAssets } from '../script/creation';
 import TemplateEditor from '../prompts/TemplateEditor';
 import { assetWarnings, validateAssetsStage, withConfirmation } from '../../domain/flow';
@@ -24,7 +24,8 @@ const kinds: { id: AssetKind; name: string; text: string }[] = [
   { id: 'prop', name: '道具', text: '固定轮廓、材质与细节，让关键物件有迹可循。' },
   { id: 'voice', name: '音色', text: '选定音色与语速，再把声音分配给人物。' },
 ];
-type Pending = { kind: 'image'; asset: Asset; revision: number; prompt: string; defaultPrompt: string; provider: string; model: string; providerName: string } | { kind: 'speech'; asset: Asset; revision: number; model: string; local: boolean };
+type Pending = { kind: 'image'; asset: Asset; revision: number; prompt: string; defaultPrompt: string; provider: string; model: string; providerName: string; reference?: string; referenceName?: string; referenceWarning?: string } | { kind: 'speech'; asset: Asset; revision: number; model: string; local: boolean };
+type Reference = { reference?: string; referenceName?: string; warning?: string; problem?: string };
 type Preview = { mediaId: string; text: string };
 type BatchStatus = 'queued' | 'running' | 'done' | 'failed' | 'canceled' | 'not_submitted';
 type BatchItem = { id: string; name: string; status: BatchStatus; error?: unknown; startedAt?: number; finishedAt?: number };
@@ -41,12 +42,9 @@ const extractKindLabel = (kind: ExtractCategory) => extractKinds.find(item => it
 const extractActionFor = (kind: ExtractCategory) => kind === 'character' ? 'extract-characters' : kind === 'scene' ? 'extract-scenes' : 'extract-props';
 const extractPromptFor = (kind: ExtractCategory, project: Project) => kind === 'character' ? extractCharactersPrompt(project) : kind === 'scene' ? extractScenesPrompt(project) : extractPropsPrompt(project);
 const batchTones = { queued: 'neutral', running: 'running', done: 'success', failed: 'danger', canceled: 'neutral', not_submitted: 'warning' } as const;
+/** 表格内拖动资产图片时携带的数据类型；只接受本页自己放进去的资产 ID。 */
+const ASSET_DRAG_TYPE = 'application/x-manju-asset-id';
 function fixedHash(value: string) { let hash = 5381; for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) + hash + value.charCodeAt(index)) >>> 0; return String(hash); }
-/** 多形态沿用现有资产数据：名字写成「角色 · 形态」即归到同一角色下，基础形态就是角色名本身。 */
-function splitFormName(name: string) {
-  const match = name.match(/^(.*?)\s*[·・/]\s*(.+)$/);
-  return match ? { base: match[1].trim(), form: match[2].trim() } : { base: name.trim(), form: '' };
-}
 type AssetGroup = { key: string; base: Asset; forms: Asset[] };
 function groupByForm(list: Asset[]): AssetGroup[] {
   const map = new Map<string, Asset[]>();
@@ -69,6 +67,36 @@ function Elapsed({ since }: { since?: number }) {
 function AssetImage({ asset, detail = false }: { asset: Asset; detail?: boolean }) {
   const url = useMediaUrl(asset.imageId);
   return url ? <img className={detail ? 'media-detail-media' : 'compact-media-image'} src={url} alt={`${asset.name}的设定图`} /> : <span className="compact-media-placeholder muted">{asset.imageId ? '图片加载中；若持续为空，请重新上传本地素材。' : '未添加设定图'}</span>;
+}
+/**
+ * 资产表里的「参考图」格：默认留空，把其他资产的图片拖进来即挂载。
+ * 挂载后显示来源资产当前的设定图；生成时会把它作为图生图参考发送。
+ */
+function AssetReference({ asset, source, onMount, onClear }: { asset: Asset; source?: Asset; onMount: (sourceId: string) => void; onClear: () => void }) {
+  const url = useMediaUrl(source?.imageId);
+  const [over, setOver] = useState(false);
+  const hasReference = !!source || (asset.referenceAssetId !== undefined && asset.referenceAssetId !== '');
+  const missing = hasReference && (!source || !source.imageId);
+  const accepts = (event: DragEvent) => event.dataTransfer.types.includes(ASSET_DRAG_TYPE);
+  return <div
+    className={`asset-reference-drop ${url ? 'has-image' : 'is-empty'}${over ? ' is-over' : ''}`}
+    role="group"
+    aria-label={hasReference ? `${asset.name}的参考图${source ? `来自「${source.name}」` : '来源已删除'}` : `为${asset.name}挂载参考图：把其他资产的图片拖到这里`}
+    title={hasReference
+      ? source ? `参考图来自「${source.name}」；生成时会把这张图作为参考图发送。` : '参考图来源资产已删除，请清除后重新挂载。'
+      : '把其他资产的图片拖到这里作为参考图；留空表示纯文本生成。'}
+    onDragOver={event => { if (accepts(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setOver(true); } }}
+    onDragLeave={event => { const related = event.relatedTarget; if (!(related instanceof Node) || !event.currentTarget.contains(related)) setOver(false); }}
+    onDrop={event => {
+      event.preventDefault();
+      setOver(false);
+      const sourceId = event.dataTransfer.getData(ASSET_DRAG_TYPE);
+      if (sourceId) onMount(sourceId);
+    }}
+  >
+    {url ? <img className="asset-reference-image" src={url} alt={`参考图：${source?.name ?? ''}`} /> : <span className="asset-reference-empty">{missing ? '参考图缺失' : source?.imageId ? '读取中' : <ImagePlus size={14} />}</span>}
+    {hasReference && <button type="button" className="asset-reference-clear" aria-label={`清除${asset.name}的参考图`} onClick={event => { event.stopPropagation(); onClear(); }}><X size={12} /></button>}
+  </div>;
 }
 function AudioPreview({ preview }: { preview: Preview }) {
   const url = useMediaUrl(preview.mediaId);
@@ -156,15 +184,49 @@ function AssetEditor({ project, navigate }: PageProps) {
     } catch (error) { toast.error(errorMessage(error)); }
     finally { setBusy(false); }
   };
-  const prepareImage = (asset: Asset) => {
+  /**
+   * 生成时读取该资产挂载的参考图来源（其他资产的当前设定图）。
+   * 参考图 data URL 只存在于确认弹窗与请求体里：不写回项目存档，也不写进 IndexedDB。
+   */
+  const loadReference = async (asset: Asset, assets: Asset[]): Promise<Reference> => {
+    const source = referenceAssetFor(asset, assets);
+    if (!source) {
+      if (!asset.referenceAssetId) return {};
+      const reason = '参考图来源资产已删除';
+      return { warning: `${reason}，本次只能按纯文本生成。请重新挂载参考图。`, problem: `${reason}，请重新挂载参考图。` };
+    }
+    if (!source.imageId) {
+      const reason = `参考图来源「${source.name}」还没有设定图`;
+      return { referenceName: source.name, warning: `${reason}，本次只能按纯文本生成。`, problem: `${reason}，请先为它生成或上传图片。` };
+    }
+    try {
+      const blob = await getMedia(source.imageId);
+      if (!blob) throw new Error('本地素材库里没有这张图');
+      await validateImage(blob);
+      return { reference: await blobDataUrl(blob), referenceName: source.name };
+    } catch (error) {
+      const reason = `参考图来源「${source.name}」的设定图读取失败：${errorMessage(error)}`;
+      return { referenceName: source.name, warning: `${reason}。本次只能按纯文本生成。`, problem: reason };
+    }
+  };
+  const prepareImage = async (asset: Asset) => {
     const provider = settings.imageProvider;
-    const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
+    const endpoint = settings.endpoints.find(item => item.id === provider);
+    const providerName = endpoint?.name ?? '当前生图端点';
     if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
     if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
     if (!fixedDescription(asset).trim()) { toast.error('请先完善资产描述与固定短语。'); return; }
     setFailure(undefined);
     const prompt = imagePrompt(project, asset);
-    setPending({ kind: 'image', asset: { ...asset }, revision: project.revision, prompt, defaultPrompt: prompt, provider, model: modelFor(settings, provider, 'image'), providerName });
+    // 只有挂载了参考图的资产才读取参考图；没有挂载就是纯文本请求。
+    const reference = await loadReference(asset, project.assets);
+    setPending({
+      kind: 'image', asset: { ...asset }, revision: project.revision, prompt, defaultPrompt: prompt,
+      provider, model: modelFor(settings, provider, 'image'), providerName,
+      ...(reference.reference ? { reference: reference.reference } : {}),
+      ...(reference.referenceName ? { referenceName: reference.referenceName } : {}),
+      ...(reference.warning ? { referenceWarning: reference.warning } : {}),
+    });
   };
   const loadVoices = async () => {
     if (!keys.minimax) { toast.error('请先在设置页填写 MiniMax API Key。'); navigate('settings'); return; }
@@ -198,7 +260,8 @@ function AssetEditor({ project, navigate }: PageProps) {
         if (getStudio().settings.imageProvider !== task.provider || auth.model !== task.model) throw new Error('图片模型设置已改变，请重新确认。');
         updateJob(jobId, { detail: '生成图片中' });
         setProgress(previous => previous && { ...previous, stage: '生成图片中' });
-        const result = await callApi<{ base64: string; mime: string }>('image', { ...auth, prompt: task.prompt }, controller.signal);
+        const payload: ImageRequest = { ...auth, prompt: task.prompt, ...(task.reference ? { reference: task.reference } : {}) };
+        const result = await callApi<ImageResult>('image', payload, controller.signal);
         setProgress(previous => previous && { ...previous, stage: '保存图片' });
         current(task.revision, task.asset.id);
         const blob = await generatedImageBlob(result);
@@ -268,7 +331,11 @@ function AssetEditor({ project, navigate }: PageProps) {
         if (!live || !asset) throw new Error('资产已删除，本次不生成。');
         if (fixedHash(fixedDescription(asset)) !== item.hash) throw new Error('固定短语已修改，请重新确认。');
         if (getStudio().settings.imageProvider !== provider || modelFor(getStudio().settings, provider, 'image') !== model) throw new Error('图片模型设置已改变，请重新确认。');
-        const result = await callApi<{ base64: string; mime: string }>('image', { ...credentials(provider, 'image'), prompt: item.prompt }, controller.signal);
+        // 批量里只有非基础形态带参考图；基础形态/普通资产仍是纯文本请求。
+        const reference = await loadReference(asset, live.assets);
+        if (reference.problem) throw new Error(reference.problem);
+        const payload: ImageRequest = { ...credentials(provider, 'image'), prompt: item.prompt, ...(reference.reference ? { reference: reference.reference } : {}) };
+        const result = await callApi<ImageResult>('image', payload, controller.signal);
         const after = getStudio().projects.find(p => p.id === project.id);
         const still = after?.assets.find(a => a.id === item.id);
         if (!after || !still || fixedHash(fixedDescription(still)) !== item.hash) throw new Error('资产或固定短语已修改，本次结果未写入。');
@@ -411,10 +478,11 @@ function AssetEditor({ project, navigate }: PageProps) {
         lock: base.lock || seed,
         imageId: base.imageId,
         voiceAssetId: base.voiceAssetId,
+        referenceAssetId: base.imageId ? base.id : undefined,
       },
       revision: project.revision, isNew: true,
     });
-    if (base.imageId) toast.info('新形态已继承当前设定图与固定短语，补充差异描述后再生成。');
+    if (base.imageId) toast.info('新形态已继承当前设定图与固定短语，并把基础形态的当前设定图挂为参考图；可在表格「参考图」格里换成其他资产。');
   };
   const exportAssets = () => {
     const rows = groups.flatMap(group => [group.base, ...group.forms]);
@@ -422,6 +490,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     downloadBlob(new Blob([`# ${project.name} · ${kindName}\n\n${text}\n`], { type: 'text/markdown;charset=utf-8' }), `${project.name}-${kindName}.md`);
   };
   const focusIndex = focused ? visible.findIndex(asset => asset.id === focused.id) : -1;
+  const focusedReference = focused ? referenceAssetFor(focused, project.assets) : undefined;
   const moveFocus = (direction: number) => { if (focusIndex < 0 || visible.length < 2) return; setFocusedId(visible[(focusIndex + direction + visible.length) % visible.length].id); };
   useEffect(() => {
     if (!focused) return;
@@ -450,16 +519,31 @@ function AssetEditor({ project, navigate }: PageProps) {
         {isBase && group.forms.length > 0 ? <button type="button" className="form-toggle" aria-expanded={isOpen} aria-label={`${isOpen ? '收起' : '展开'}${group.key}的形态`} onClick={() => toggleForm(group.key)}><ChevronRight size={14} /></button> : <span className="form-toggle-space" />}
         <span className="tag subtle">{info.form || '基础形态'}</span>
       </div></td>
-      <td><div className="asset-name-cell">{asset.kind === 'voice' ? <span className="asset-name">{info.base}</span> : <button type="button" className="text-button asset-name" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}>{info.base}</button>}{asset.locked && <span className="tag subtle">已锁定</span>}</div></td>
+      <td><div className="asset-name-cell">{asset.kind === 'voice' ? <span className="asset-name">{info.base}</span> : <button type="button" className="text-button asset-name" aria-label={`查看${asset.name}详情`} title={usages.length ? `关联镜头：${usages.join('、')}` : '未被镜头引用'} onClick={() => setFocusedId(asset.id)}>{info.base}</button>}{asset.locked && <span className="tag subtle">已锁定</span>}</div></td>
       <td><button type="button" className={`text-button form-desc ${descOpen ? 'is-open' : ''}`.trim()} aria-expanded={descOpen} title={descOpen ? '收起描述' : '展开全文'} onClick={() => toggleDesc(asset.id)}>{asset.description || '尚未填写描述'}</button></td>
       <td className="asset-cell-muted">{voiceName(asset)}</td>
-      <td className="asset-cell-muted"><span className="truncate block" title={usages.join('、')}>{usages.length ? usages.join('、') : '未挂载'}</span></td>
-      <td>{asset.kind === 'voice' ? <span className="muted">—</span> : <button type="button" className="asset-table-thumb" aria-label={`查看${asset.name}图片`} onClick={() => setFocusedId(asset.id)}><AssetImage asset={asset} /></button>}</td>
+      <td>{asset.kind === 'voice' ? <span className="muted">—</span> : <AssetReference
+        asset={asset}
+        source={referenceAssetFor(asset, project.assets)}
+        onMount={sourceId => {
+          const source = project.assets.find(item => item.id === sourceId);
+          if (!source) return;
+          if (source.id === asset.id) { toast.error('不能把这个资产自己的图片作为参考图。'); return; }
+          if (!source.imageId) { toast.error(`「${source.name}」还没有设定图，不能作为参考图。`); return; }
+          updateProject(project.id, p => ({ ...p, assets: p.assets.map(item => item.id === asset.id ? { ...item, referenceAssetId: source.id } : item) }), false);
+          toast.success(`已把「${source.name}」的当前设定图挂为「${asset.name}」的参考图。`);
+        }}
+        onClear={() => {
+          updateProject(project.id, p => ({ ...p, assets: p.assets.map(item => item.id === asset.id ? { ...item, referenceAssetId: '' } : item) }), false);
+          toast.success('已清除参考图，之后按纯文本生成。');
+        }}
+      />}</td>
+      <td>{asset.kind === 'voice' ? <span className="muted">—</span> : <button type="button" className="asset-table-thumb" aria-label={`查看${asset.name}图片`} draggable={!!asset.imageId} onDragStart={event => { if (!asset.imageId) { event.preventDefault(); return; } event.dataTransfer.setData(ASSET_DRAG_TYPE, asset.id); event.dataTransfer.effectAllowed = 'copy'; }} onClick={() => setFocusedId(asset.id)}><AssetImage asset={asset} /></button>}</td>
       <td><div className="asset-row-actions">
         {asset.kind === 'voice' ? <>
           <Button variant="ghost" size="sm" aria-label={`API试听${asset.name}`} disabled={busy} onClick={() => prepareSpeech(asset, false)}><Volume2 size={14} /></Button>
           <Button variant="ghost" size="sm" aria-label={`本机试听${asset.name}`} disabled={busy} onClick={() => prepareSpeech(asset, true)}><Play size={14} /></Button>
-        </> : <Button variant="ghost" size="sm" aria-label={`生成${asset.name}图片`} disabled={busy} onClick={() => prepareImage(asset)}><Sparkles size={14} /></Button>}
+        </> : <Button variant="ghost" size="sm" aria-label={`生成${asset.name}图片`} disabled={busy} onClick={() => { void prepareImage(asset); }}><Sparkles size={14} /></Button>}
         {isBase && asset.kind !== 'voice' && <Button variant="ghost" size="sm" aria-label={`为${group.key}新增形态`} onClick={() => addForm(group.base)}><Plus size={14} /></Button>}
         <Button variant="ghost" size="sm" aria-label={`编辑${asset.name}`} onClick={() => edit(asset)}><Pencil size={14} /></Button>
         <Button variant="ghost" size="sm" aria-label={`删除${asset.name}`} onClick={() => setDeleting(asset)}><Trash2 size={14} /></Button>
@@ -467,7 +551,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     </tr>;
   };
   return <div className="stack">
-    <PageHeader title="让故事，有自己的面孔" help={<HelpPopover label="资产设定说明" title="资产设定"><p>固定人物、场景和道具描述，再为每个角色找到声音。</p><p className="mt-2">{kinds.map(item => `${item.name}：${item.text}`).join(' ')}</p><p className="mt-2">统一锁：图片与视频提示词逐字复用「固定短语」。上传或生成图片不会自动把图片发送到视频服务，请到分镜页选择实际附件。</p><p className="mt-2">多形态：把名字写成「角色 · 形态」（例：阿青 · 战损）就会归到同一角色下，基础形态就是角色名本身；音色类别可在线获取 MiniMax 音色库。</p><p className="mt-2">从剧本提取：读取 {project.shots.length} 个镜头，三类分开识别，各用各的提示词、各自一次调用；已有资产的固定短语原样保留，提取结果先预览再写入。</p></HelpPopover>} />
+    <PageHeader title="让故事，有自己的面孔" help={<HelpPopover label="资产设定说明" title="资产设定"><p>固定人物、场景和道具描述，再为每个角色找到声音。</p><p className="mt-2">{kinds.map(item => `${item.name}：${item.text}`).join(' ')}</p><p className="mt-2">统一锁：图片与视频提示词逐字复用「固定短语」。上传或生成图片不会自动把图片发送到视频服务，请到分镜页选择实际附件。</p><p className="mt-2">多形态：把名字写成「角色 · 形态」（例：阿青 · 战损）就会归到同一角色下，基础形态就是角色名本身；音色类别可在线获取 MiniMax 音色库。</p><p className="mt-2">参考图：把某个资产的图片拖到另一个资产的「参考图」格子里，生成时就会把来源资产当前的设定图作为图生图参考；格子留空表示纯文本生成。新增形态会默认挂载基础形态的当前设定图，可以换成其他资产或清除。</p><p className="mt-2">从剧本提取：读取 {project.shots.length} 个镜头，三类分开识别，各用各的提示词、各自一次调用；已有资产的固定短语原样保留，提取结果先预览再写入。</p></HelpPopover>} />
     <div className="toolbar" role="tablist" aria-label="资产类别">{kinds.map(k => <Button key={k.id} role="tab" aria-selected={kind === k.id} variant={kind === k.id ? 'default' : 'secondary'} onClick={() => setKind(k.id)}>{k.name} <span>{project.assets.filter(a => a.kind === k.id).length}</span></Button>)}</div>
     <div className="asset-bulk" aria-label="资产批量操作">
       <Button onClick={() => edit()}><Plus size={16} />新增{assetLabel}</Button>
@@ -504,11 +588,12 @@ function AssetEditor({ project, navigate }: PageProps) {
           <div><h3>描述</h3><p className="media-detail-text">{focused.description || '尚未填写描述'}</p></div>
           <div className="panel"><h3>固定短语 · 逐字复用</h3><p className="media-detail-text">{fixedDescription(focused) || '尚未设置'}</p></div>
           <p className="muted">关联镜头：{assetUsage(project, focused.id).join('、') || '未被引用'}</p>
+          <p className="muted">参考图：{focusedReference ? (focusedReference.imageId ? `来自「${focusedReference.name}」` : `来源「${focusedReference.name}」尚无设定图`) : focused.referenceAssetId ? '来源资产已删除' : '未挂载（纯文本生成）'}</p>
           {focused.kind === 'character' && <p className="muted">角色音色：{project.assets.find(a => a.id === focused.voiceAssetId)?.name || '未关联'}</p>}
           <Field label="完整图片提示词"><textarea rows={6} readOnly value={imagePrompt(project, focused)} /></Field>
           <div className="generation-actions"><Button variant="secondary" onClick={() => copyText(focused.description)}><Copy size={14} />复制描述</Button><Button variant="secondary" onClick={() => copyText(fixedDescription(focused))}><Copy size={14} />复制固定短语</Button><Button variant="secondary" onClick={() => copyText(imagePrompt(project, focused))}><Copy size={14} />复制图片提示词</Button></div>
           <Field label="上传设定图（PNG / JPEG / WebP，≤5MB）"><input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e => { void upload(focused, e.target.files?.[0]); e.target.value = ''; }} /></Field>
-          <div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => { setFocusedId(undefined); prepareImage(focused); }}><Sparkles size={16} />生成设定图</Button>{focused.imageId && <Button variant="ghost" disabled={busy} onClick={() => { setFocusedId(undefined); setRemovingImage(focused); }}><ImagePlus size={16} />移除图片</Button>}</div>
+          <div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => { setFocusedId(undefined); void prepareImage(focused); }}><Sparkles size={16} />生成设定图</Button>{focused.imageId && <Button variant="ghost" disabled={busy} onClick={() => { setFocusedId(undefined); setRemovingImage(focused); }}><ImagePlus size={16} />移除图片</Button>}</div>
           <div className="toolbar"><Button variant="outline" aria-label={`${focused.locked ? '解锁并编辑' : '编辑'}${focused.name}`} onClick={() => { setFocusedId(undefined); edit(focused); }}><Pencil size={16} />{focused.locked ? '解锁并编辑' : '编辑资产'}</Button><Button variant="ghost" aria-label={`删除${focused.name}`} onClick={() => { setFocusedId(undefined); setDeleting(focused); }}><Trash2 size={16} />删除资产</Button></div>
         </div>
       </div>
@@ -527,7 +612,10 @@ function AssetEditor({ project, navigate }: PageProps) {
       {batchPlan && <div className="stack">
         <p>{batchPlan.assets.length} 张 · {settings.endpoints.find(endpoint => endpoint.id === settings.imageProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.imageProvider, 'image')}</p>
         <div className="alert">提示词可直接修改，只影响本次请求；模板与资产固定短语不会被改写，一致性请自行核对。</div>
-        {batchPlan.assets.map(asset => <div key={asset.id}><Field label={`「${asset.name}」· 即将发送的图片提示词`} hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={8} value={batchPlan.prompts[asset.id] ?? ''} onChange={e => setBatchPlan(previous => previous && { ...previous, prompts: { ...previous.prompts, [asset.id]: e.target.value } })} /></Field><Button variant="ghost" size="sm" onClick={() => setBatchPlan(previous => previous && { ...previous, prompts: { ...previous.prompts, [asset.id]: previous.defaults[asset.id] ?? '' } })}>恢复默认提示词</Button></div>)}
+        {batchPlan.assets.map(asset => {
+          const source = referenceAssetFor(asset, project.assets);
+          return <div key={asset.id}><Field label={`「${asset.name}」· 即将发送的图片提示词`} hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={8} value={batchPlan.prompts[asset.id] ?? ''} onChange={e => setBatchPlan(previous => previous && { ...previous, prompts: { ...previous.prompts, [asset.id]: e.target.value } })} /></Field><Button variant="ghost" size="sm" onClick={() => setBatchPlan(previous => previous && { ...previous, prompts: { ...previous.prompts, [asset.id]: previous.defaults[asset.id] ?? '' } })}>恢复默认提示词</Button>{source ? <p className="small muted">{source.imageId ? `将附带「${source.name}」的当前设定图作为参考图。` : `参考图来源「${source.name}」还没有设定图：本次按纯文本生成。`}</p> : asset.referenceAssetId ? <p className="small muted">参考图来源资产已删除：本次按纯文本生成。</p> : null}</div>;
+        })}
         <div className="toolbar"><Button disabled={batchPlan.assets.some(asset => !batchPlan.prompts[asset.id]?.trim())} onClick={() => { const plan = batchPlan; setBatchPlan(undefined); void executeBatch(plan.assets, plan.prompts); }}>确认并开始生成（{batchPlan.assets.length}）</Button><Button variant="ghost" onClick={() => setBatchPlan(undefined)}>取消</Button></div>
       </div>}
     </Modal>
@@ -540,7 +628,8 @@ function AssetEditor({ project, navigate }: PageProps) {
     </Modal>
     <Modal open={!!editing} onClose={() => setEditing(undefined)} title={`${editing?.isNew ? '新建' : '编辑'}${kinds.find(k => k.id === editing?.asset.kind)?.name || '资产'}`} description="保存后会使相关下游制作结果标为待更新。固定短语会原样用于后续生成。">
       {editing && <div className="stack"><Field label="名称"><input value={editing.asset.name} onChange={e => draftPatch({ name: e.target.value })} /></Field><Field label="描述"><textarea rows={3} value={editing.asset.description} onChange={e => draftPatch({ description: e.target.value, ...(!editing.asset.lock || editing.asset.lock === editing.asset.description ? { lock: e.target.value } : {}) })} /></Field>
-        {editing.asset.kind !== 'voice' && <><Field label="固定短语（默认使用描述）" hint="只在这里维护角色、场景、道具的一致性描述；自定义后不会随描述自动改写。"><textarea rows={3} value={editing.asset.lock} onChange={e => draftPatch({ lock: e.target.value })} /></Field><Button variant="ghost" onClick={() => draftPatch({ lock: editing.asset.description })}>使用当前描述作为固定短语</Button></>}
+        {editing.asset.kind !== 'voice' && <><Field label="固定短语（默认使用描述）" hint="只在这里维护角色、场景、道具的一致性描述；自定义后不会随描述自动改写。"><textarea rows={3} value={editing.asset.lock} onChange={e => draftPatch({ lock: e.target.value })} /></Field><Button variant="ghost" onClick={() => draftPatch({ lock: editing.asset.description })}>使用当前描述作为固定短语</Button>
+          <Field label="参考图来源（也可在表格里拖入图片）" hint="生成时把来源资产当前的设定图作为图生图参考；留空表示纯文本生成。"><select value={referenceAssetFor(editing.asset, project.assets)?.id ?? ''} onChange={e => draftPatch({ referenceAssetId: e.target.value || '' })}><option value="">不挂载（纯文本生成）</option>{project.assets.filter(a => a.id !== editing.asset.id && a.kind !== 'voice' && (a.imageId || a.id === editing.asset.referenceAssetId)).map(a => <option key={a.id} value={a.id}>{a.imageId ? a.name : `${a.name}（尚无设定图）`}</option>)}</select></Field></>}
         {editing.asset.kind === 'character' && <Field label="角色配音音色"><select value={editing.asset.voiceAssetId || ''} onChange={e => draftPatch({ voiceAssetId: e.target.value || undefined })}><option value="">暂不关联</option>{project.assets.filter(a => a.kind === 'voice').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></Field>}
         {editing.asset.kind === 'voice' && <><div className="toolbar"><Button variant="secondary" disabled={voicesBusy} onClick={loadVoices}>{voicesBusy ? '获取中…' : '加载在线音色'}</Button></div>{voices.length > 0 && <SearchSelect label="从服务商列表选择" placeholder="请选择，或在下方手动填写" value={editing.asset.voiceId && voices.some(v => v.id === editing.asset.voiceId) ? editing.asset.voiceId : ''} onChange={voiceId => { if (voiceId) draftPatch({ voiceId }); }} options={voices.map(v => ({ value: v.id, label: v.name, hint: v.id }))} />}<Field label="音色ID" hint="保存后可试听并分配给人物；本机试听使用系统声音而非此ID。"><input value={editing.asset.voiceId || ''} onChange={e => draftPatch({ voiceId: e.target.value })} /></Field><Field label="语速（0.5–2）"><input type="number" min={0.5} max={2} step={0.1} value={editing.asset.speed ?? 1} onChange={e => draftPatch({ speed: Number(e.target.value) })} /></Field></>}
         <div className="toolbar"><Button onClick={save}>保存资产</Button><Button variant="ghost" onClick={() => setEditing(undefined)}>取消</Button></div></div>}
@@ -548,7 +637,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     <Modal open={!!deleting} onClose={() => setDeleting(undefined)} title={`删除「${deleting?.name || ''}」？`} description="会解除镜头资产、参考图、台词说话者和人物音色关联。台词文字保留，但需重新选择人物。此操作不能撤销。"><div className="stack"><p>引用位置：{deleting ? assetUsage(project, deleting.id).join('、') || '未被引用' : ''}</p><div className="toolbar"><Button onClick={() => { if (deleting) updateProject(project.id, p => removeAsset(p, deleting.id), true); setDeleting(undefined); }}>确认删除并解除关联</Button><Button variant="ghost" onClick={() => setDeleting(undefined)}>取消</Button></div></div></Modal>
     <Modal open={!!removingImage} onClose={() => setRemovingImage(undefined)} title="移除图片及引用？" description="保留资产文字设定，但解除所有镜头对此图片的参考附件关联。"><div className="toolbar"><Button onClick={() => { if (removingImage) updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: p.assets.map(a => a.id === removingImage.id ? { ...a, imageId: undefined } : a), shots: p.shots.map(s => ({ ...s, references: s.references.filter(r => r.assetId !== removingImage.id) })) }), true); setRemovingImage(undefined); }}>确认移除图片</Button><Button variant="ghost" onClick={() => setRemovingImage(undefined)}>取消</Button></div></Modal>
     <Modal open={!!pending} onClose={() => { if (!busy) { setPending(undefined); setFailure(undefined); setProgress(undefined); } }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
-      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.providerName} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词" hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={12} value={pending.prompt} disabled={busy} onChange={e => setPending(previous => previous && { ...previous, prompt: e.target.value })} /></Field>{pending.prompt !== pending.defaultPrompt && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setPending(previous => previous && previous.kind === 'image' ? { ...previous, prompt: previous.defaultPrompt } : previous)}>恢复默认提示词</Button>}</> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{progress && <ProgressPanel title={pending.kind === 'image' ? '生成设定图' : '试听'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={pending.kind === 'image' ? imageRemaining : speechRemaining} detail={pending.kind === 'image' ? '服务商不返回进度，按已用时等待' : '服务商不返回进度'} onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button>{pending.kind === 'image' && <Button variant="ghost" onClick={() => { setPending(undefined); setTemplateOpen(true); }}>编辑模板</Button>}<Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
+      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.providerName} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p>{pending.reference ? <div className="reference-preview"><img src={pending.reference} alt={`参考图来源「${pending.referenceName}」的当前设定图`} /><p className="small muted">「{pending.referenceName}」的当前设定图将作为本次生成的参考图发送。</p>{!supportsImageReference(pending.provider, pending.model) && <p className="small">当前渠道不支持参考图：提交会被拒绝，请先换用支持图生图的端点或模型。</p>}</div> : pending.referenceWarning ? <div className="alert" role="alert">{pending.referenceWarning}</div> : null}<Field label="即将发送的完整图片提示词" hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={12} value={pending.prompt} disabled={busy} onChange={e => setPending(previous => previous && { ...previous, prompt: e.target.value })} /></Field>{pending.prompt !== pending.defaultPrompt && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setPending(previous => previous && previous.kind === 'image' ? { ...previous, prompt: previous.defaultPrompt } : previous)}>恢复默认提示词</Button>}</> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{progress && <ProgressPanel title={pending.kind === 'image' ? '生成设定图' : '试听'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={pending.kind === 'image' ? imageRemaining : speechRemaining} detail={pending.kind === 'image' ? '服务商不返回进度，按已用时等待' : '服务商不返回进度'} onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button>{pending.kind === 'image' && <Button variant="ghost" onClick={() => { setPending(undefined); setTemplateOpen(true); }}>编辑模板</Button>}<Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
     </Modal>
     <TemplateEditor project={project} open={templateOpen} onClose={() => setTemplateOpen(false)} initialKind="image" onSaved={styleChanged => { if (styleChanged) setStyleNotice(project.assets.filter(asset => asset.kind !== 'voice' && asset.imageId).length); }} />
   </div>;

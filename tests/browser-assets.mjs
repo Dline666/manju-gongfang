@@ -73,6 +73,40 @@ try {
     assert.ok(!confirmed.includes('统一纯色'), '系统不再自带设图默认文案');
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
     await page.getByRole('dialog').locator('img').waitFor(); await overflow(); await close();
+    assert.equal(calls[0].body.reference, undefined, '基础形态仍是纯文本请求');
+    // 新形态：默认挂载基础形态的当前设定图，参考图格显示为图片；可清除，也可从别的资产图片拖回来。
+    await page.getByRole('button', { name: '为阿青新增形态', exact: true }).click();
+    await page.getByLabel('名称').fill('阿青 · 战损');
+    await page.getByRole('button', { name: '保存资产', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: '展开阿青的形态', exact: true }).click();
+    const baseSaved = (await saved()).assets.find(a => a.name === '阿青');
+    assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, baseSaved.id, '新形态默认挂载基础形态');
+    if (width === 1440) {
+      const referenceCell = page.locator('tr.asset-row.is-form').filter({ hasText: '战损' }).locator('.asset-reference-drop');
+      await expect(referenceCell).toHaveAttribute('aria-label', /参考图来自「阿青」/);
+      await expect(referenceCell.locator('img')).toHaveAttribute('alt', '参考图：阿青');
+      await page.getByRole('button', { name: '清除阿青 · 战损的参考图', exact: true }).click();
+      await expect(referenceCell).toHaveClass(/is-empty/);
+      assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, '', '清除后写入明确清空，不残留挂载');
+      await page.getByRole('button', { name: '查看阿青图片', exact: true }).dragTo(referenceCell);
+      await expect(referenceCell.locator('img')).toHaveAttribute('alt', '参考图：阿青');
+      assert.equal((await saved()).assets.find(a => a.name === '阿青 · 战损').referenceAssetId, baseSaved.id, '拖动其他资产图片即可挂载参考图');
+    }
+    await page.getByRole('button', { name: '生成阿青 · 战损图片', exact: true }).click();
+    await expect(page.getByRole('dialog').getByText('将作为本次生成的参考图发送', { exact: false })).toBeVisible();
+    await page.getByRole('dialog').locator('img[alt*="参考图来源「阿青」的当前设定图"]').waitFor();
+    await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].body.prompt.includes('战损'), true, '形态提示词照常发送');
+    assert.match(calls[1].body.reference, /^data:image\/png;base64,/, '新形态必须带基础形态的设定图');
+    assert.ok(!(await page.evaluate(() => localStorage.getItem('manju-studio-v1'))).includes('data:image/png;base64,'), '参考图不能写进本地存档');
+    // 删除临时形态，后面的提取断言仍按 3 项资产计算。
+    await page.getByRole('button', { name: '删除阿青 · 战损', exact: true }).click();
+    await page.getByRole('button', { name: '确认删除并解除关联', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal((await saved()).assets.length, 3, '删除临时形态后资产数恢复');
     await page.getByRole('tab', { name: /场景/ }).click();
     await page.getByRole('button', { name: '查看山门详情', exact: true }).click();
     await page.getByRole('button', { name: '复制图片提示词', exact: true }).click();
@@ -97,7 +131,7 @@ try {
     await page.goto('http://127.0.0.1:5173/#/assets');
     await page.locator('details.fold').filter({ hasText: '从剧本提取资产' }).locator('summary').click();
     await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     await page.getByRole('button', { name: '确认发送并提取人物资产', exact: true }).click();
     await page.getByRole('heading', { name: '提取结果预览 · 人物', exact: true }).waitFor();
     assert.equal((await saved()).assets.length, 3, 'preview must not save');
@@ -226,8 +260,8 @@ try {
     await close();
     await page.reload();
     await page.getByText('本地视频未加载，请重新选择文件', { exact: true }).waitFor();
-    assert.equal(calls.length, 5); assert.deepEqual(errors, []);
-    results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['data-block prompt exact request', 'compact details and copy', 'per-category asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
+    assert.equal(calls.length, 6); assert.deepEqual(errors, []);
+    results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['data-block prompt exact request', 'compact details and copy', 'reference image mounts, clears and drag-fills', 'per-category asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
     await context.close();
   }
   console.log(JSON.stringify(results, null, 2));

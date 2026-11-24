@@ -91,13 +91,15 @@ function input(provider: string, extra: Record<string, unknown> = {}) { return {
 function video(provider: string, extra: Record<string, unknown> = {}) {
   return input(provider, { prompt: "固定视频模板", duration: 9, images: [], ...extra });
 }
-type Call = { url: string; init: RequestInit; headers: Headers; body?: Record<string, unknown> };
+type Call = { url: string; init: RequestInit; headers: Headers; body?: Record<string, unknown>; form?: FormData };
 function fixture(responses: (unknown | Response)[], options: Parameters<typeof createHandler>[0] = {}) {
   const calls: Call[] = [];
   const handle = createHandler({
     resolveHost: async () => ["8.8.8.8", "2606:4700:4700::1111"], ...options,
     fetch: async (url, init) => {
-      calls.push({ url, init, headers: new Headers(init.headers), body: init.body ? JSON.parse(String(init.body)) : undefined });
+      // multipart 不能按 JSON 解析：图生图的 fixture 需要原样拿到 FormData。
+      const form = init.body instanceof FormData ? init.body : undefined;
+      calls.push({ url, init, headers: new Headers(init.headers), body: form ? undefined : init.body ? JSON.parse(String(init.body)) : undefined, form });
       assert.ok(responses.length > 0, "No retries or unexpected upstream calls");
       const response = responses.shift();
       return response instanceof Response ? response : Response.json(response);
@@ -586,6 +588,82 @@ test("image channels reject wrong providers/models and unsupported parameters be
   }
   assert.equal(calls.length, 0);
 });
+// ── 图生图：新形态带参考图 ───────────────────────────────────────────────
+const REFERENCE = `data:image/png;base64,${PNG}`;
+
+test("OpenAI reference goes to Images Edits as multipart and keeps the exact file bytes", async () => {
+  const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
+  assert.deepEqual(await success(await handle(request("image", input("openai", { prompt: "新形态参考", reference: REFERENCE })))), { base64: PNG, mime: "image/png" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.openai.com/v1/images/edits");
+  assert.equal(calls[0].headers.get("content-type"), null, "multipart boundary 必须交给运行时生成");
+  assert.equal(calls[0].headers.get("authorization"), `Bearer ${KEY}`);
+  const form = calls[0].form!;
+  assert.equal(form.get("model"), "gpt-image-2.6-sunburst");
+  assert.equal(form.get("prompt"), "新形态参考");
+  assert.equal(form.get("n"), "1");
+  assert.equal(form.get("output_format"), "png");
+  const file = form.get("image") as File;
+  assert.equal(file.name, "reference.png");
+  assert.equal(file.type, "image/png");
+  assert.deepEqual(Buffer.from(await file.arrayBuffer()), Buffer.from(PNG, "base64"));
+});
+
+test("Seedream reference uses the documented image data URL; the text-only body is unchanged", async () => {
+  const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
+  await success(await handle(request("image", input("seedream", { prompt: "新形态参考", reference: REFERENCE }))));
+  assert.equal(calls[0].url, "https://ark.cn-beijing.volces.com/api/v3/images/generations");
+  assert.equal(calls[0].form, undefined);
+  assert.deepEqual(calls[0].body, {
+    model: "doubao-seedream-5-5-261028", prompt: "新形态参考", size: "2K", response_format: "b64_json", output_format: "png", image: REFERENCE,
+  });
+});
+
+test("custom endpoint reference uses multipart Images Edits under its own base URL", async () => {
+  const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
+  await success(await handle(request("image", input("openai-compatible", { model: "flux-kontext", prompt: "新形态参考", baseUrl: CUSTOM_BASE, reference: REFERENCE }))));
+  assert.equal(calls[0].url, `${CUSTOM_BASE}/images/edits`);
+  assert.equal(calls[0].headers.get("content-type"), null);
+  assert.equal(calls[0].form?.get("model"), "flux-kontext");
+  assert.equal(calls[0].form?.get("prompt"), "新形态参考");
+  assert.equal(calls[0].form?.get("response_format"), "b64_json", "New API 这类网关默认只回 url，必须显式要 b64_json");
+  assert.equal(calls[0].form?.get("output_format"), null, "自定义端点不发送未在模型参数里的 output_format");
+  assert.equal((calls[0].form?.get("image") as File).type, "image/png");
+});
+
+test("SiliconFlow accepts reference images only for Edit/Kontext models and never drops them silently", async () => {
+  // Kolors 是纯文生图：带参考图时在付费请求前明确拒绝。
+  const { handle, calls } = fixture([]);
+  await error(await handle(request("image", input("siliconflow", { prompt: "新形态参考", reference: REFERENCE }))), "reference_not_supported", 422);
+  assert.equal(calls.length, 0);
+  const pngBytes = Buffer.from(PNG, "base64");
+  const edited = fixture([
+    Response.json({ images: [{ url: "https://cdn.siliconflow.cn/edited.png?Expires=fixture" }] }),
+    new Response(pngBytes, { headers: { "Content-Type": "image/png" } }),
+  ]);
+  await success(await edited.handle(request("image", input("siliconflow", { prompt: "新形态参考", model: "Qwen/Qwen-Image-Edit-2509", reference: REFERENCE }))));
+  assert.deepEqual(edited.calls[0].body, {
+    model: "Qwen/Qwen-Image-Edit-2509", prompt: "新形态参考", negative_prompt: "水印, 文字, 签名, logo, 低质量, 模糊",
+    image_size: "1024x1024", batch_size: 1, output_format: "png", image: REFERENCE,
+  });
+});
+
+test("reference images are validated before any paid request", async () => {
+  const { handle, calls } = fixture([]);
+  const invalid = [
+    "https://cdn.example.com/base.png",
+    "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+    "data:image/png;base64,not-base64",
+    "data:image/png;base64,AAAA",
+    `data:image/jpeg;base64,${PNG}`,
+    `data:image/png;base64,${Buffer.alloc(5 * 1024 * 1024 + 1).toString("base64")}`,
+  ];
+  for (const reference of invalid) {
+    await error(await handle(request("image", input("openai", { prompt: "test", reference }))), "invalid_reference_image", 400);
+  }
+  assert.equal(calls.length, 0, "非法参考图不能触发付费请求");
+});
+
 test("the removed script action is no longer routed", async () => {
   const { handle, calls } = fixture([]);
   await error(await handle(request("script", input("gemini", { prompt: "test" }))), "unknown_action", 404);
@@ -1039,6 +1117,16 @@ test("custom endpoint base URL must resolve to public addresses", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("custom endpoint HTML responses point at a likely wrong Base URL", async () => {
+  const spa = new Response("<html><body>app</body></html>", { status: 200, headers: { "Content-Type": "text/html" } });
+  const { handle } = fixture([spa]);
+  const response = await handle(request("image", input("openai-compatible", { model: "gpt-image-2", prompt: "设定图", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 502);
+  const result = await response.json();
+  assert.equal(result.error, "invalid_upstream_response");
+  assert.match(result.detail, /Base URL.*\/v1/);
+});
+
 test("custom endpoint image requests ask for base64 and reject URL responses", async () => {
   const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
   const data = await success(await handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE }))));
@@ -1046,7 +1134,21 @@ test("custom endpoint image requests ask for base64 and reject URL responses", a
   assert.deepEqual(calls[0].body, { model: "flux-1", prompt: "设定图", n: 1, response_format: "b64_json" });
   assert.equal(data.mime, "image/png");
   const urlOnly = fixture([{ data: [{ url: "https://cdn.example.com/a.png" }] }]);
-  await error(await urlOnly.handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE }))), "invalid_upstream_response", 502);
+  const response = await urlOnly.handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 502);
+  const rejected = await response.json();
+  assert.equal(rejected.error, "invalid_upstream_response");
+  assert.match(rejected.detail, /返回字段：url/, "只返回 url 时必须说明实际字段，方便定位中转站契约");
+});
+
+test("custom endpoint image results accept PNG, JPEG and WebP b64_json", async () => {
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("fixture")]).toString("base64");
+  const webp = Buffer.concat([Buffer.from("RIFF"), Buffer.from([16, 0, 0, 0]), Buffer.from("WEBP"), Buffer.from("fixture")]).toString("base64");
+  for (const [encoded, mime] of [[PNG, "image/png"], [jpeg, "image/jpeg"], [webp, "image/webp"]] as const) {
+    const { handle } = fixture([{ data: [{ b64_json: encoded }] }]);
+    const data = await success(await handle(request("image", input("openai-compatible", { model: "gpt-image-2", prompt: "设定图", baseUrl: CUSTOM_BASE }))));
+    assert.deepEqual(data, { base64: encoded, mime });
+  }
 });
 
 test("custom endpoint needs an explicit model id before any paid request", async () => {

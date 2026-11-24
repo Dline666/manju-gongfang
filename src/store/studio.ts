@@ -94,7 +94,7 @@ export function duplicateProject(id: string) {
   const copy: Project = structuredClone(source); const ids = new Map<string, string>();
   copy.assets.forEach(a => ids.set(a.id, uid()));
   copy.id = uid(); copy.name += ' · 副本'; copy.createdAt = copy.updatedAt = new Date().toISOString();
-  copy.assets = copy.assets.map(a => ({ ...a, id: ids.get(a.id)!, voiceAssetId: a.voiceAssetId ? ids.get(a.voiceAssetId) : undefined }));
+  copy.assets = copy.assets.map(a => ({ ...a, id: ids.get(a.id)!, voiceAssetId: a.voiceAssetId ? ids.get(a.voiceAssetId) : undefined, ...(a.referenceAssetId === undefined ? {} : { referenceAssetId: a.referenceAssetId === '' ? '' : ids.get(a.referenceAssetId) ?? '' }) }));
   copy.shots = copy.shots.map(s => ({ ...s, id: uid(), task: undefined, assetIds: s.assetIds.map(id => ids.get(id)!).filter(Boolean), references: s.references.map(r => ({ ...r, assetId: ids.get(r.assetId)! })), dialogues: s.dialogues.map(d => ({ ...d, id: uid(), speakerId: ids.get(d.speakerId) ?? '' })) }));
   state = { ...state, projects: [copy, ...state.projects] }; emit(); return copy;
 }

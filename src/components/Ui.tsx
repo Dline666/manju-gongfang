@@ -58,7 +58,7 @@ export function ErrorNote({ error, message, hint, action }: { error?: unknown; m
 // 8c 分级动作：鉴权/权限/模型问题去设置，限流/5xx 可重试，其余不提供按钮。
 export function errorAction(error: unknown): 'settings' | 'retry' | undefined {
   if (!(error instanceof ApiError)) return undefined;
-  if (error.status === 401 || error.status === 403 || error.status === 404 || ['invalid_key', 'provider_auth_failed', 'provider_forbidden', 'provider_not_found', 'endpoint_model_unavailable', 'invalid_model', 'missing_endpoint'].includes(error.code)) return 'settings';
+  if (error.status === 401 || error.status === 403 || error.status === 404 || ['invalid_key', 'provider_auth_failed', 'provider_forbidden', 'provider_not_found', 'endpoint_model_unavailable', 'invalid_model', 'missing_endpoint', 'reference_not_supported'].includes(error.code)) return 'settings';
   if (error.status === 429 || error.code === 'rate_limited' || error.status >= 500 || error.code === 'upstream_unavailable') return 'retry';
   return undefined;
 }

@@ -19,6 +19,8 @@ export interface Endpoint {
 export interface Asset {
   id: string; kind: AssetKind; name: string; description: string; lock: string;
   imageId?: string; voiceId?: string; voiceAssetId?: string; speed?: number; locked?: boolean;
+  /** 挂载的参考图来源：生成时把这个资产当前的设定图作为图生图参考；为空表示纯文本生成。 */
+  referenceAssetId?: string;
 }
 /** 一句台词。speaker 是剧本里写下的说话人名字；speakerId 是它关联到的人物资产（提取或手动建人物后才有）。 */
 export interface Dialogue { id: string; speakerId: string; speaker?: string; text: string }
