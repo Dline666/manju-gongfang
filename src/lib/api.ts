@@ -81,12 +81,15 @@ export type ImageRequest = ReturnType<typeof credentials> & { prompt: string; re
 export type ImageResult = { base64: string; mime: string };
 /**
  * 哪些生图渠道能在本次请求里接收参考图（与后端实现一致）。
+ * 参数可以是本地端点 ID，也可以直接是端点协议：自定义端点常常长着
+ * `custom-xxxx` 的 ID，但协议是 `openai-compatible`，不能按 ID 误判。
  * SiliconFlow 只有 Edit/Kontext 系列模型支持 image 字段，Kolors 会被后端明确拒绝。
  * UI 用它提前说明「这次会被拒绝」，后端仍然做最终判定。
  */
 export function supportsImageReference(provider: string, model = ''): boolean {
-  if (provider === 'siliconflow') return /(?:edit|kontext)/i.test(model.slice(model.indexOf('/') + 1));
-  return provider === 'openai' || provider === 'seedream' || provider === 'openai-compatible';
+  const protocol = endpointById(getStudio().settings, provider)?.protocol ?? provider;
+  if (protocol === 'siliconflow') return /(?:edit|kontext)/i.test(model.slice(model.indexOf('/') + 1));
+  return protocol === 'openai' || protocol === 'seedream' || protocol === 'openai-compatible';
 }
 async function request(action: string, payload: object, signal?: AbortSignal) {
   const body: Record<string, unknown> = { ...payload };

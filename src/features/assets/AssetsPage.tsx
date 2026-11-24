@@ -211,7 +211,8 @@ function AssetEditor({ project, navigate }: PageProps) {
   };
   const prepareImage = async (asset: Asset) => {
     const provider = settings.imageProvider;
-    const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
+    const endpoint = settings.endpoints.find(item => item.id === provider);
+    const providerName = endpoint?.name ?? '当前生图端点';
     if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
     if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
     if (!fixedDescription(asset).trim()) { toast.error('请先完善资产描述与固定短语。'); return; }
