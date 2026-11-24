@@ -10,6 +10,9 @@ const messages: Record<string, string> = {
   endpoint_model_unavailable: '该端点下没有这个模型或渠道：请检查模型 ID，以及中转站的分组/渠道是否覆盖它。',
   endpoint_timeout: '端点在两分钟内没有返回：模型可能正在排队，或这条线路暂时不通。这次请求可能已经送达，请先到平台确认是否计费，再决定要不要重试。',
   provider_rejected: '模型平台拒绝了请求，请检查内容、模型权限及参考图。', invalid_images: '参考图格式或组合无效，首尾帧不能与参考图模式混用。',
+  invalid_upstream_response: '服务商返回的图片数据不符合预期：请确认端点兼容 OpenAI 图片接口，并按 b64_json 返回图片。',
+  upstream_too_large: '服务商返回的数据过大，请稍后重试或换用其他端点。',
+  internal_error: '本地生成服务遇到未预期错误，请重启本地 Function 服务后再试。',
   invalid_reference_image: '参考图数据无效：只支持 5MB 以内的 PNG / JPEG / WebP 本地图片。',
   reference_not_supported: '当前生图渠道不支持参考图，本次请求没有提交：请换用支持图生图的模型或端点（OpenAI / Seedream / 自定义端点，或 SiliconFlow 的 Edit 模型）。',
   request_too_large: '请求太大，请压缩参考图或减少图片数量。', upstream_timeout: '查询超时，已有任务不会重发，请稍后查询。',
@@ -39,6 +42,8 @@ const hints = {
 };
 export function hintFor(code: string, status = 0): string | undefined {
   if (code === 'unknown_action') return hints.route;
+  // 这是「返回格式不对」或本地服务内部错误，不是上游暂时不可用；说成稍后重试会误导。
+  if (code === 'invalid_upstream_response' || code === 'upstream_too_large' || code === 'internal_error') return undefined;
   if (status === 401 || code === 'invalid_key' || code === 'provider_auth_failed') return hints.credential;
   if (status === 403 || code === 'provider_forbidden') return hints.forbidden;
   if (status === 402 || code === 'insufficient_balance') return hints.balance;

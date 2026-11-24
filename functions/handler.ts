@@ -465,6 +465,26 @@ function referenceBlob(reference: ReferenceImage): Blob {
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return new Blob([bytes], { type: reference.mime });
 }
+/**
+ * 自定义 OpenAI 兼容端点的图片结果。
+ * 端点必须按 `response_format: b64_json` 返回；只给 url 的端点不代理未知地址，
+ * 而是把实际返回字段带回界面（New API 会在 response_format=b64_json 时代为转 base64）。
+ * 图片格式接受 PNG / JPEG / WebP，与前端 validatesImage 的口径一致。
+ */
+function customImage(data: ObjectValue): { base64: string; mime: string } {
+  requireValue(Array.isArray(data.data) && data.data.length === 1, "invalid_upstream_response", 502);
+  const item = object(data.data[0], "invalid_upstream_response", 502);
+  if (typeof item.b64_json !== "string") {
+    throw new Fault("invalid_upstream_response", 502, undefined, `返回字段：${Object.keys(item).join("、") || "空"}；请让端点返回 b64_json`);
+  }
+  const encoded = base64(item.b64_json, LIMITS.image, "invalid_upstream_response", 502);
+  const head = atob(encoded.slice(0, 24));
+  const mime = head.startsWith("\x89PNG\r\n\x1a\n") ? "image/png"
+    : head.charCodeAt(0) === 0xff && head.charCodeAt(1) === 0xd8 && head.charCodeAt(2) === 0xff ? "image/jpeg"
+      : head.startsWith("RIFF") && head.slice(8, 12) === "WEBP" ? "image/webp" : undefined;
+  if (!mime) throw new Fault("invalid_upstream_response", 502, undefined, "返回的图片既不是 PNG、JPEG 也不是 WebP");
+  return { base64: encoded, mime };
+}
 
 // Conservative public-address check; unknown/reserved forms fail closed.
 function publicIp(ip: string): boolean {
@@ -551,6 +571,11 @@ export function createHandler(dependencies: Dependencies = {}) {
       }
       requireValue(!response.redirected, "invalid_upstream_response", 502);
       const bytes = await readBytes(response.body, response.headers, options.max ?? LIMITS.json, scope, new Fault("upstream_too_large", 502));
+      // 自定义端点最常见的配置错误：Base URL 少了 /v1，网关返回 SPA 的 HTML。
+      // 这种情况不能只说「结果未知」，要把定位方向直接写出来。
+      if (options.surfaceErrors && new TextDecoder().decode(bytes.subarray(0, 64)).trimStart().startsWith("<")) {
+        throw new Fault("invalid_upstream_response", 502, undefined, "上游返回 HTML 而不是 JSON：请检查 Base URL 是否指向 OpenAI 兼容接口（通常以 /v1 结尾）");
+      }
       const data = object(parseJson(bytes, "invalid_upstream_response", 502), "invalid_upstream_response", 502);
       if (data.type === "error" || (data.error && !["failed", "cancelled", "expired"].includes(String(data.status)))) {
         throw new Fault("provider_rejected", 422);
@@ -786,25 +811,21 @@ export function createHandler(dependencies: Dependencies = {}) {
           if (reference) {
             // OpenAI 兼容的图生图走 Images Edits 的 multipart 契约；没有这个接口的中转站
             // 会由 surfaceErrors 把上游原文带回来，而不是假装成功。
+            // New API 这类网关默认返回 data[0].url；显式要 b64_json 才会代为转 base64。
             const form = new FormData();
             form.append("model", customModel(input.model));
             form.append("prompt", prompt);
             form.append("n", "1");
+            form.append("response_format", "b64_json");
             form.append("image", referenceBlob(reference), `reference.${reference.extension}`);
             const edited = await upstream(request, `${base}/images/edits`, key, { paid: true, surfaceErrors: true, max: LIMITS.image, form });
-            requireValue(Array.isArray(edited.data) && edited.data.length === 1, "invalid_upstream_response", 502);
-            const encoded = base64(object(edited.data[0], "invalid_upstream_response", 502).b64_json, LIMITS.image, "invalid_upstream_response", 502);
-            requireValue(atob(encoded.slice(0, 12)).startsWith("\x89PNG\r\n\x1a\n"), "invalid_upstream_response", 502);
-            return json({ base64: encoded, mime: "image/png" });
+            return json(customImage(edited));
           }
           const data = await upstream(request, `${base}/images/generations`, key, { paid: true, surfaceErrors: true, max: LIMITS.image, body: {
             model: customModel(input.model),
             prompt, n: 1, response_format: "b64_json",
           } });
-          requireValue(Array.isArray(data.data) && data.data.length === 1, "invalid_upstream_response", 502);
-          const encoded = base64(object(data.data[0], "invalid_upstream_response", 502).b64_json, LIMITS.image, "invalid_upstream_response", 502);
-          requireValue(atob(encoded.slice(0, 12)).startsWith("\x89PNG\r\n\x1a\n"), "invalid_upstream_response", 502);
-          return json({ base64: encoded, mime: "image/png" });
+          return json(customImage(data));
         }
         requireValue(provider === "openai" || provider === "seedream", "invalid_provider");
         const reference = referenceImage(input.reference);

@@ -626,6 +626,8 @@ test("custom endpoint reference uses multipart Images Edits under its own base U
   assert.equal(calls[0].headers.get("content-type"), null);
   assert.equal(calls[0].form?.get("model"), "flux-kontext");
   assert.equal(calls[0].form?.get("prompt"), "新形态参考");
+  assert.equal(calls[0].form?.get("response_format"), "b64_json", "New API 这类网关默认只回 url，必须显式要 b64_json");
+  assert.equal(calls[0].form?.get("output_format"), null, "自定义端点不发送未在模型参数里的 output_format");
   assert.equal((calls[0].form?.get("image") as File).type, "image/png");
 });
 
@@ -1115,6 +1117,16 @@ test("custom endpoint base URL must resolve to public addresses", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("custom endpoint HTML responses point at a likely wrong Base URL", async () => {
+  const spa = new Response("<html><body>app</body></html>", { status: 200, headers: { "Content-Type": "text/html" } });
+  const { handle } = fixture([spa]);
+  const response = await handle(request("image", input("openai-compatible", { model: "gpt-image-2", prompt: "设定图", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 502);
+  const result = await response.json();
+  assert.equal(result.error, "invalid_upstream_response");
+  assert.match(result.detail, /Base URL.*\/v1/);
+});
+
 test("custom endpoint image requests ask for base64 and reject URL responses", async () => {
   const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
   const data = await success(await handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE }))));
@@ -1122,7 +1134,21 @@ test("custom endpoint image requests ask for base64 and reject URL responses", a
   assert.deepEqual(calls[0].body, { model: "flux-1", prompt: "设定图", n: 1, response_format: "b64_json" });
   assert.equal(data.mime, "image/png");
   const urlOnly = fixture([{ data: [{ url: "https://cdn.example.com/a.png" }] }]);
-  await error(await urlOnly.handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE }))), "invalid_upstream_response", 502);
+  const response = await urlOnly.handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 502);
+  const rejected = await response.json();
+  assert.equal(rejected.error, "invalid_upstream_response");
+  assert.match(rejected.detail, /返回字段：url/, "只返回 url 时必须说明实际字段，方便定位中转站契约");
+});
+
+test("custom endpoint image results accept PNG, JPEG and WebP b64_json", async () => {
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("fixture")]).toString("base64");
+  const webp = Buffer.concat([Buffer.from("RIFF"), Buffer.from([16, 0, 0, 0]), Buffer.from("WEBP"), Buffer.from("fixture")]).toString("base64");
+  for (const [encoded, mime] of [[PNG, "image/png"], [jpeg, "image/jpeg"], [webp, "image/webp"]] as const) {
+    const { handle } = fixture([{ data: [{ b64_json: encoded }] }]);
+    const data = await success(await handle(request("image", input("openai-compatible", { model: "gpt-image-2", prompt: "设定图", baseUrl: CUSTOM_BASE }))));
+    assert.deepEqual(data, { base64: encoded, mime });
+  }
 });
 
 test("custom endpoint needs an explicit model id before any paid request", async () => {

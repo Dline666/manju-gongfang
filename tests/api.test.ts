@@ -27,6 +27,14 @@ test('资产提取失败仍归到 invalid_assets，不被路由错误覆盖', ()
   assert.equal(error.message, '资产提取结果或逐镜关联不完整，现有剧本与资产未被修改。');
 });
 
+test('图片结果格式错误不再被说成服务商暂时不可用', () => {
+  const error = new api.ApiError('invalid_upstream_response', 502);
+  assert.match(error.message, /图片数据不符合预期/);
+  assert.equal(error.hint, undefined, '格式问题不能提示「稍后重试」');
+  assert.match(new api.ApiError('internal_error', 500).message, /重启本地 Function/);
+  assert.equal(new api.ApiError('upstream_too_large', 502).hint, undefined);
+});
+
 test('参考图渠道按端点协议判定：自定义 OpenAI 兼容端点不会被误判成不支持', () => {
   const custom = createCustomEndpoint('中转站');
   store.setSettings({
