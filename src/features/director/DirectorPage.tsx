@@ -13,7 +13,7 @@ import { fillStoryboard } from '../storyboard/helpers';
 import type { PageProps, Project, Shot } from '../../domain/types';
 import { speakerName } from '../../domain/types';
 
-type Confirmation = { prompt: string; defaultPrompt: string; provider: 'gemini' | 'deepseek'; model: string; project: Project };
+type Confirmation = { prompt: string; defaultPrompt: string; provider: string; model: string; project: Project };
 
 export default function DirectorPage({ project, navigate }: PageProps) {
   const { settings } = useStudio();
@@ -30,7 +30,7 @@ export default function DirectorPage({ project, navigate }: PageProps) {
   };
   const prepare = () => {
     try {
-      const auth = credentials(settings.scriptProvider);
+      const auth = credentials(settings.scriptProvider, 'script');
       const prompt = directorPrompt(project);
       setFailure(undefined);
       setConfirmation({ prompt, defaultPrompt: prompt, provider: settings.scriptProvider, model: auth.model, project: structuredClone(project) });
@@ -45,7 +45,7 @@ export default function DirectorPage({ project, navigate }: PageProps) {
     const jobId = startJob({ kind: 'director', label: '生成导演分镜', cancel: () => controller.abort() });
     setProgress({ stage: '提交任务', startedAt: Date.now() });
     try {
-      const auth = credentials(task.provider);
+      const auth = credentials(task.provider, 'script');
       const current = getStudio().projects.find(p => p.id === project.id);
       if (!current || current.revision !== task.project.revision) throw new Error('剧本或资产已修改，请重新确认。');
       updateJob(jobId, { detail: '模型生成中' });

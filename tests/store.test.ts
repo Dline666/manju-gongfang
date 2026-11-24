@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { savedStudioSchema } from '../src/store/schema';
+import { migrateSettings } from '../src/lib/endpoints';
 import { defaultSettings, makeShot, uid } from '../src/domain/types';
 import { putMedia } from '../src/store/media';
 const values = new Map<string, string>();
@@ -59,16 +60,19 @@ test('legacy settings gain Seedream without replacing existing models or project
   const restored = savedStudioSchema.parse(saved);
   assert.deepEqual(restored.projects, saved.projects);
   assert.equal(restored.settings.imageProvider, 'openai');
-  assert.equal(restored.settings.models.seedream, defaultSettings.models.seedream);
-  assert.equal(restored.settings.models.seedance, 'ep-original-custom-model');
-  assert.equal(defaultSettings.models.seedance, 'doubao-seedance-2-0-fast-260128');
+  // 存档本身不改写；端点清单与模型默认值由载入时的 migrateSettings 补齐。
+  const migrated = migrateSettings(restored.settings);
+  assert.deepEqual(migrated.models.seedream, { image: 'doubao-seedream-5-5-261028' }, '缺失的模型按端点能力补默认');
+  assert.deepEqual(migrated.models.seedance, { video: 'ep-original-custom-model' }, '旧的扁平模型按能力迁移，用户改过的值不丢');
+  assert.deepEqual(migrated.models.openai, { image: 'gpt-image-2.6-sunburst' });
+  assert.equal(migrated.endpoints.length, 7, '旧存档载入后补齐内置端点目录');
+  assert.equal(migrated.imageProvider, 'openai');
   const partial = savedStudioSchema.parse({ ...saved, settings: { ...saved.settings, models: { seedance: 'ep-original-custom-model' } } });
-  assert.equal(partial.settings.models.seedance, 'ep-original-custom-model');
-  assert.equal(partial.settings.models.openai, defaultSettings.models.openai);
-  store.setSettings({ ...defaultSettings, imageProvider: 'seedream', models: { ...defaultSettings.models, seedream: 'ep-selected-image-model' } });
+  assert.deepEqual(migrateSettings(partial.settings).models.seedance, { video: 'ep-original-custom-model' });
+  store.setSettings({ ...migrated, imageProvider: 'seedream', models: { ...migrated.models, seedream: { image: 'ep-selected-image-model' } } });
   const selected = savedStudioSchema.parse(JSON.parse(values.get('manju-studio-v1')!));
   assert.equal(selected.settings.imageProvider, 'seedream');
-  assert.equal(selected.settings.models.seedream, 'ep-selected-image-model');
+  assert.deepEqual(selected.settings.models.seedream, { image: 'ep-selected-image-model' });
 });
 
 test('provider status is memory-only and invalidated by key changes', () => {
@@ -102,33 +106,33 @@ test('API outcomes update channel status without retrying or leaking provider er
   store.setKey('minimax', 'fixture-key');
   try {
     globalThis.fetch = async () => { calls++; return Response.json({ ok: true, data: { base64: 'fixture', mime: 'image/png' } }); };
-    await callApi('image', credentials('openai'));
+    await callApi('image', credentials('openai', 'image'));
     assert.equal(store.getStudio().providerStatus.openai?.status, 'available');
-    assert.equal(store.getStudio().providerStatus.openai?.model, defaultSettings.models.openai);
+    assert.equal(store.getStudio().providerStatus.openai?.model, defaultSettings.models.openai.image);
     globalThis.fetch = async () => { calls++; return Response.json({ error: 'provider_auth_failed', details: 'secret-upstream-message' }, { status: 401 }); };
-    await assert.rejects(callApi('image', credentials('openai')), /拒绝/);
+    await assert.rejects(callApi('image', credentials('openai', 'image')), /拒绝/);
     assert.equal(calls, 2, 'failed paid requests are never retried or sent to another channel');
     assert.equal(store.getStudio().providerStatus.openai?.status, 'failed');
     assert.equal(store.getStudio().providerStatus.seedream, undefined);
     assert.ok(!JSON.stringify(store.getStudio().providerStatus).includes('secret-upstream-message'));
     globalThis.fetch = async () => { throw new Error('secret-network-message'); };
-    await assert.rejects(callApi('image', credentials('openai')), /重复付费/);
+    await assert.rejects(callApi('image', credentials('openai', 'image')), /重复付费/);
     assert.ok(!JSON.stringify(store.getStudio().providerStatus).includes('secret-network-message'));
     globalThis.fetch = async () => Response.json({ ok: false, error: 'upstream_error' });
-    await assert.rejects(callApi('image', credentials('openai')));
+    await assert.rejects(callApi('image', credentials('openai', 'image')));
     assert.equal(store.getStudio().providerStatus.openai?.status, 'failed');
     globalThis.fetch = async () => new Response('audio-fixture', { headers: { 'Content-Type': 'audio/wav' } });
-    await callBinary('speech', { ...credentials('minimax'), model: defaultSettings.speechModel });
+    await callBinary('speech', { ...credentials('minimax', 'speech'), model: defaultSettings.speechModel });
     assert.equal(store.getStudio().providerStatus.minimax?.status, 'available');
     assert.equal(store.getStudio().providerStatus.minimax?.model, defaultSettings.speechModel);
     globalThis.fetch = async () => new Response('', { headers: { 'Content-Type': 'audio/wav' } });
-    await callBinary('speech', credentials('minimax'));
+    await callBinary('speech', credentials('minimax', 'speech'));
     assert.equal(store.getStudio().providerStatus.minimax?.status, 'failed');
     globalThis.fetch = async () => Response.json({ ok: true, data: [] });
-    await callApi('voices', credentials('minimax'));
+    await callApi('voices', credentials('minimax', 'speech'));
     assert.equal(store.getStudio().providerStatus.minimax?.model, undefined);
     globalThis.fetch = async () => { store.setKey('openai', 'changed-during-call'); return Response.json({ ok: true, data: {} }); };
-    await callApi('image', credentials('openai'));
+    await callApi('image', credentials('openai', 'image'));
     assert.equal(store.getStudio().providerStatus.openai, undefined);
   } finally { globalThis.fetch = originalFetch; store.clearKeys(); }
 });

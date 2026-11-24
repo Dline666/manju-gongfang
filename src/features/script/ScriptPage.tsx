@@ -10,12 +10,13 @@ import { averageDuration, durationSamples, finishJob, startJob, updateJob } from
 import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
 import { skills } from '../../lib/skills';
 import { screenplayPrompt } from '../../lib/prompts';
+import { modelFor } from '../../lib/endpoints';
 import { buildDocuments } from '../../lib/documents';
 import { mergeDraftAssets, normalizeScreenplay, parseScriptText, templateScript, type GeneratedScreenplay, type ScriptDraft } from './creation';
 import DurationStrip from './DurationStrip';
 
 const styles = [defaultStyle, '清新日系动画，柔和色彩与自然光', '电影写实风，克制配色与戏剧光影'];
-type Confirmation = { kind: 'ai' | 'template'; project: Project; prompt: string; defaultPrompt: string; provider: 'gemini' | 'deepseek'; model: string };
+type Confirmation = { kind: 'ai' | 'template'; project: Project; prompt: string; defaultPrompt: string; provider: string; model: string };
 const draftUpdate = (p: Project, draft: ScriptDraft, source: Project['source']): Project => ({ ...p, ...mergeDraftAssets(p.assets, draft), name: draft.title || p.name, logline: draft.logline || p.logline, screenplay: draft.screenplay ?? p.screenplay, source, storyboardReady: false });
 
 export default function ScriptPage(props: PageProps) { return <ScriptEditor key={props.project.id} {...props} />; }
@@ -63,9 +64,9 @@ function ScriptEditor({ project, navigate }: PageProps) {
       if (!sourceLength) { toast.error('原文模式下请先粘贴或上传小说原文。'); return; }
       if (sourceLength > MAX_SOURCE_CHARS) { toast.error('原文过长（' + sourceLength + ' 字），请裁到 ' + MAX_SOURCE_CHARS + ' 字以内再生成。'); return; }
     } else if (!project.theme.trim()) { toast.error('请先填写故事主题。'); return; }
-    if (kind === 'ai' && !keys[settings.scriptProvider]) { toast.error('请先在设置页填写剧本服务的 API Key。'); navigate('settings'); return; }
+    if (kind === 'ai' && !keys[settings.scriptProvider]) { toast.error(settings.scriptProvider ? '请先在设置页填写剧本服务的 API Key。' : '还没有可用的剧本端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
     const prompt = screenplayPrompt(project);
-    setConfirm({ kind, project: structuredClone(project), prompt, defaultPrompt: prompt, provider: settings.scriptProvider, model: settings.models[settings.scriptProvider] });
+    setConfirm({ kind, project: structuredClone(project), prompt, defaultPrompt: prompt, provider: settings.scriptProvider, model: modelFor(settings, settings.scriptProvider, 'script') });
   };
   const generate = async () => {
     if (!confirm || busy) return;
@@ -81,7 +82,7 @@ function ScriptEditor({ project, navigate }: PageProps) {
       let draft: ScriptDraft;
       if (task.kind === 'template') draft = templateScript(task.project.theme);
       else {
-        const auth = credentials(task.provider);
+        const auth = credentials(task.provider, 'script');
         if (auth.model !== task.model) throw new Error('模型设置已改变，请关闭弹窗并重新确认。');
         if (jobId) updateJob(jobId, { detail: '模型生成中' });
         setProgress(previous => previous && { ...previous, stage: '模型生成中' });
@@ -157,9 +158,9 @@ function ScriptEditor({ project, navigate }: PageProps) {
         <p className="small muted">已输入 {sourceLength} 字（上限 {MAX_SOURCE_CHARS} 字）。原文只作为本次剧本生成的唯一事实来源发送，不会进入其他步骤。</p>
       </div> : <Field label="故事主题" hint="写下主角、目标与冲突，也可以只从一个灵感开始。"><textarea rows={3} placeholder="例如：一个失去灵力的少年，发现山门石阶每晚都会多出一级……" value={project.theme} onChange={e => change({ theme: e.target.value })} /></Field>}
       <Field label="一句话主线" hint="整部剧本都要服务这一句。AI 生成剧本时会一并给出，也可以自己写；修改主线不会让已有镜头失效。"><textarea rows={2} placeholder="例如：少年拾起断剑，却不知剑里封着自己被削去的神格。" value={project.logline || ''} onChange={e => updateProject(project.id, { logline: e.target.value }, false)} /></Field>
-      <div className="grid-2"><Field label="视觉风格"><select value={project.style || defaultStyle} onChange={e => change({ style: e.target.value })}>{!styles.includes(project.style) && project.style && <option>{project.style}</option>}{styles.map(style => <option key={style}>{style}</option>)}</select></Field><div className="field"><span>剧本服务</span><div className="row"><span className="tag">{settings.scriptProvider === 'gemini' ? 'Gemini' : 'DeepSeek'} · {settings.models[settings.scriptProvider]}</span><Button variant="ghost" onClick={() => navigate('settings')}>更改设置</Button></div></div></div>
+      <div className="grid-2"><Field label="视觉风格"><select value={project.style || defaultStyle} onChange={e => change({ style: e.target.value })}>{!styles.includes(project.style) && project.style && <option>{project.style}</option>}{styles.map(style => <option key={style}>{style}</option>)}</select></Field><div className="field"><span>剧本服务</span><div className="row"><span className="tag">{settings.endpoints.find(endpoint => endpoint.id === settings.scriptProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.scriptProvider, 'script')}</span><Button variant="ghost" onClick={() => navigate('settings')}>更改设置</Button></div></div></div>
       <details className="panel"><summary><strong>高级：提示词与规则</strong><span className="small muted"> · 所选 Skill 会写入对应生成任务的完整提示词</span></summary><div className="grid-2" style={{ marginTop: 12 }}>{skills.map(skill => <label className="panel row skill-option" key={skill.id}><input type="checkbox" checked={project.skills.includes(skill.id)} onChange={e => change({ skills: e.target.checked ? [...project.skills, skill.id] : project.skills.filter(id => id !== skill.id) })} /><span><strong>{skill.name}</strong><small className="muted">{skill.description}</small></span></label>)}</div><div className="toolbar" style={{ marginTop: 12 }}><Button variant="outline" onClick={() => setTemplateOpen(true)}>编辑提示词模板</Button></div></details>
-      {!keys[settings.scriptProvider] && <div className="alert">尚未配置剧本 API Key。可以前往设置，或主动使用不联网的「模板演练」。模板不是 AI 生成。<Button variant="ghost" onClick={() => navigate('settings')}>前往设置</Button></div>}
+      {!keys[settings.scriptProvider] && <div className="alert">{settings.scriptProvider ? '尚未配置剧本 API Key。' : '还没有可用的剧本端点，请到设置页添加或恢复一个。'}可以前往设置，或主动使用不联网的「模板演练」。模板不是 AI 生成。<Button variant="ghost" onClick={() => navigate('settings')}>前往设置</Button></div>}
       <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={busy || sourceMode} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
     </section>
     <div className="panel"><DurationStrip project={project} /></div>

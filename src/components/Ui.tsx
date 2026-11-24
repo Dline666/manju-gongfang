@@ -44,12 +44,13 @@ export function StatusChip({ tone = 'neutral', children }: { tone?: StatusTone; 
 // 失败提示：message 保持原文，下面补一句只读 hint，右侧放动作按钮。
 export function ErrorNote({ error, message, hint, action }: { error?: unknown; message?: string; hint?: string; action?: ReactNode }) {
   const detail = hint ?? (error instanceof ApiError ? error.hint : undefined);
-  return <div role="alert" className="alert flex items-start justify-between gap-3 text-[12px]"><div className="min-w-0"><p>{message ?? errorMessage(error)}</p>{detail && <small className="mt-1 block opacity-80">{detail}</small>}</div>{action && <div className="shrink-0">{action}</div>}</div>;
+  const upstream = error instanceof ApiError ? error.detail : undefined;
+  return <div role="alert" className="alert flex items-start justify-between gap-3 text-[12px]"><div className="min-w-0"><p>{message ?? errorMessage(error)}</p>{detail && <small className="mt-1 block opacity-80">{detail}</small>}{upstream && upstream !== detail && <small className="mt-1 block opacity-70">服务商原文：{upstream}</small>}</div>{action && <div className="shrink-0">{action}</div>}</div>;
 }
 // 8c 分级动作：鉴权/权限/模型问题去设置，限流/5xx 可重试，其余不提供按钮。
 export function errorAction(error: unknown): 'settings' | 'retry' | undefined {
   if (!(error instanceof ApiError)) return undefined;
-  if (error.status === 401 || error.status === 403 || error.status === 404 || ['invalid_key', 'provider_auth_failed', 'provider_forbidden', 'provider_not_found'].includes(error.code)) return 'settings';
+  if (error.status === 401 || error.status === 403 || error.status === 404 || ['invalid_key', 'provider_auth_failed', 'provider_forbidden', 'provider_not_found', 'endpoint_model_unavailable', 'invalid_model', 'missing_endpoint'].includes(error.code)) return 'settings';
   if (error.status === 429 || error.code === 'rate_limited' || error.status >= 500 || error.code === 'upstream_unavailable') return 'retry';
   return undefined;
 }

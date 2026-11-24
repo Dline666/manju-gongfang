@@ -26,7 +26,23 @@
 .provider-ref .status-dot{background:#6d747e}
 .provider-ref .status-dot.ready{background:#4ea68b}
 .provider-ref .status-dot.failed{background:#dc5461}
+.provider-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:6px;border:1px solid var(--site-border);border-radius:14px;background:#17181b}
+.provider-tab{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;border-radius:10px;padding:8px 14px;background:transparent;color:var(--site-muted);font-size:13px;line-height:1.5}
+.provider-tab:hover{color:var(--site-fg);background:#1e1f22}
+.provider-tab[aria-selected="true"]{background:var(--site-surface);border-color:var(--site-border);color:var(--site-fg)}
+.provider-tab-count{font-size:10px;color:var(--site-muted);font-variant-numeric:tabular-nums}
+.provider-row{padding:14px 16px;background:var(--site-surface)}
+.provider-group .provider-row{padding:14px 16px}
+.provider-row-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.provider-row-title{flex:1 1 190px;min-width:0}
+.provider-row-title h2{font-size:15px;overflow-wrap:anywhere}
+.provider-row-title p{font-size:12px}
+.provider-row-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.provider-row-model{font-size:11px;color:var(--site-muted);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+.provider-row-error{font-size:11px;color:#e88b93;overflow-wrap:anywhere;flex:1 1 100%}
+.provider-row-body{display:flex;flex-direction:column;gap:14px;margin-top:14px;padding-top:14px;border-top:1px dashed var(--site-border)}
 @media(max-width:767px){.provider-group{padding:18px}.provider-group .provider-panel{padding:16px}.provider-group-select{max-width:none}}
+@media(max-width:767px){.provider-tabs{gap:4px;padding:5px}.provider-tab{padding:7px 11px;font-size:12px}.provider-group .provider-row{padding:12px 13px}.provider-row-head{gap:9px}.provider-row-title{flex:1 1 100%}.provider-row-body{gap:12px;margin-top:12px;padding-top:12px}}
 .workbench{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;align-items:start}
 .workbench-main{display:flex;flex-direction:column;gap:calc(24px * var(--site-space));min-width:0}
 .workbench-aside{position:sticky;top:24px;display:flex;flex-direction:column;gap:16px;min-width:0}

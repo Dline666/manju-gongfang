@@ -1,7 +1,21 @@
-export type Provider = 'gemini' | 'deepseek' | 'openai' | 'seedream' | 'siliconflow' | 'seedance' | 'minimax';
+export type ProviderProtocol = 'gemini' | 'deepseek' | 'openai' | 'seedream' | 'siliconflow' | 'seedance' | 'minimax' | 'openai-compatible';
 export type Stage = 'library' | 'script' | 'assets' | 'director' | 'storyboard' | 'generation' | 'export' | 'settings';
 export type AssetKind = 'character' | 'scene' | 'prop' | 'voice';
 export type SkillId = 'script' | 'storyboard' | 'image' | 'video';
+/** 端点能承担的环节。 */
+export type Capability = 'script' | 'image' | 'video' | 'speech';
+/**
+ * 一个模型端点。内置平台与用户自填的 OpenAI 兼容服务是同一种东西，
+ * 在设置页里是同一份清单，都可删除。id 不得包含 ':'（select 用它编码取值）。
+ */
+export interface Endpoint {
+  id: string; name: string; protocol: ProviderProtocol;
+  baseUrl?: string; capabilities: Capability[]; builtin?: boolean;
+  /** 端点用途说明（显示在设置页卡片上）。 */
+  use?: string;
+  /** 内置端点的生图并发默认值。 */
+  defaultConcurrency?: number;
+}
 export interface Asset {
   id: string; kind: AssetKind; name: string; description: string; lock: string;
   imageId?: string; voiceId?: string; voiceAssetId?: string; speed?: number; locked?: boolean;
@@ -69,23 +83,59 @@ export interface Project {
   screenplay?: string;
 }
 export interface Settings {
-  scriptProvider: 'gemini' | 'deepseek'; imageProvider: 'openai' | 'seedream' | 'siliconflow'; videoProvider: 'seedance' | 'minimax';
-  models: Record<Provider, string>; speechModel: string;
+  /** 各步骤当前选中的端点 id。 */
+  scriptProvider: string; imageProvider: string; videoProvider: string;
+  /** 用户当前可见的端点清单：内置平台 + 自定义端点，删掉的就不在这里。 */
+  endpoints: Endpoint[];
+  /** 端点 id → 能力 → 模型 ID。一个端点可同时管剧本与生图，两者模型不同。 */
+  models: Record<string, Partial<Record<Capability, string>>>;
+  speechModel: string;
   imageConcurrency?: number;
+  /** 自定义文本端点是否发送 response_format（老中转站不支持时可关）。 */
+  customJsonMode?: boolean;
 }
 export interface ProviderStatus { status: 'available' | 'failed'; action: string; model?: string; error?: string; hint?: string }
 export interface StudioState {
   version: 1; projects: Project[]; activeId: string | null; settings: Settings;
-  keys: Partial<Record<Provider, string>>; providerStatus: Partial<Record<Provider, ProviderStatus>>; storageError: string | null;
+  keys: Record<string, string>; providerStatus: Record<string, ProviderStatus>; storageError: string | null;
 }
 export interface PageProps { project: Project; navigate: (stage: Stage) => void }
 export const uid = () => crypto.randomUUID();
 /** 原文模式一次可发送的原文上限；超过会让提示词预算与模型注意力都失控。 */
 export const MAX_SOURCE_CHARS = 12000;
 export const defaultStyle = '东方玄幻水墨风，冷灰 + 金色灵光';
+
+/**
+ * 内置端点目录：平台清单的唯一来源（协议、默认模型、默认并发、展示名、能力都写在这里）。
+ * id 沿用旧的 provider 名，所以旧存档里的 models 与各步骤选择可以原样当端点 id 用。
+ */
+export function builtinEndpoints(): Endpoint[] {
+  return [
+    { id: 'gemini', name: 'Google Gemini', protocol: 'gemini', capabilities: ['script'], builtin: true, use: '剧本生成 · 首选' },
+    { id: 'deepseek', name: 'DeepSeek', protocol: 'deepseek', capabilities: ['script'], builtin: true, use: '剧本生成 · 备选' },
+    { id: 'openai', name: 'OpenAI', protocol: 'openai', capabilities: ['image'], builtin: true, use: '人物、场景与参考图' },
+    { id: 'seedream', name: '火山引擎 / 即梦 · Seedream', protocol: 'seedream', capabilities: ['image'], builtin: true, use: '人物、场景与参考图 · 需要火山方舟 Key' },
+    { id: 'siliconflow', name: '硅基流动 SiliconFlow（免费）', protocol: 'siliconflow', capabilities: ['image'], builtin: true, use: 'Kolors · 免费额度，国内直连', defaultConcurrency: 2 },
+    { id: 'seedance', name: '火山引擎 Seedance', protocol: 'seedance', capabilities: ['video'], builtin: true, use: '视频生成 · 首选' },
+    { id: 'minimax', name: 'MiniMax 国内版', protocol: 'minimax', capabilities: ['video', 'speech'], builtin: true, use: 'H3 视频 · 中文配音 · 仅支持国内开放平台 Key' },
+  ];
+}
+/** 内置端点的默认模型 ID：端点 id → 能力 → 模型 ID。 */
+export function defaultModels(): Settings['models'] {
+  return {
+    gemini: { script: 'gemini-4-hydrogen' },
+    deepseek: { script: 'deepseek-flash' },
+    openai: { image: 'gpt-image-2.6-sunburst' },
+    seedream: { image: 'doubao-seedream-5-5-261028' },
+    siliconflow: { image: 'Kwai-Kolors/Kolors' },
+    seedance: { video: 'doubao-seedance-2-0-fast-260128' },
+    minimax: { video: 'MiniMax-H3' },
+  };
+}
 export const defaultSettings: Settings = {
   scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance',
-  models: { gemini: 'gemini-4-hydrogen', deepseek: 'deepseek-flash', openai: 'gpt-image-2.6-sunburst', seedream: 'doubao-seedream-5-5-261028', siliconflow: 'Kwai-Kolors/Kolors', seedance: 'doubao-seedance-2-0-fast-260128', minimax: 'MiniMax-H3' },
+  endpoints: builtinEndpoints(),
+  models: defaultModels(),
   speechModel: 'speech-2.8-hd',
 };
 export function makeShot(number: number): Shot {

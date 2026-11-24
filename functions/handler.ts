@@ -38,12 +38,12 @@ const MEDIA_HOSTS: Record<VideoProvider, readonly string[]> = {
 };
 const ACTION_FIELDS: Record<string, readonly string[]> = {
   contracts: ["for"],
-  screenplay: ["provider", "key", "model", "prompt"],
-  director: ["provider", "key", "model", "prompt"],
-  "extract-characters": ["provider", "key", "model", "prompt"],
-  "extract-scenes": ["provider", "key", "model", "prompt"],
-  "extract-props": ["provider", "key", "model", "prompt"],
-  image: ["provider", "key", "model", "prompt"],
+  screenplay: ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
+  director: ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
+  "extract-characters": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
+  "extract-scenes": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
+  "extract-props": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
+  image: ["provider", "key", "model", "prompt", "baseUrl"],
   voices: ["provider", "key"],
   speech: ["provider", "key", "model", "text", "voiceId", "speed"],
   "video-create": ["provider", "key", "model", "prompt", "duration", "images"],
@@ -55,11 +55,14 @@ class Fault extends Error {
   code: string;
   status: number;
   retryAfter?: string;
-  constructor(code: string, status = 400, retryAfter?: string) {
+  /** 服务商的错误原文：透传给界面，别把「没有可用渠道」说成「稍后再试」。 */
+  detail?: string;
+  constructor(code: string, status = 400, retryAfter?: string, detail?: string) {
     super(code);
     this.code = code;
     this.status = status;
     this.retryAfter = retryAfter;
+    this.detail = detail;
   }
 }
 function requireValue(condition: unknown, code = "invalid_input", status = 400): asserts condition {
@@ -84,12 +87,21 @@ function model(value: unknown, fallback: string, pattern: RegExp): string {
   requireValue(pattern.test(result), "invalid_model");
   return result;
 }
+/**
+ * 自定义端点的模型 ID：允许 org/model、gpt-4o、qwen-max 这类自由写法。
+ * 缺失时直接报错——绝不能像内置平台那样套默认模型名，那会变成一次意外的付费请求。
+ */
+function customModel(value: unknown): string {
+  const result = text(value, 128, "invalid_model");
+  requireValue(/^[A-Za-z0-9._:\/-]{1,128}$/.test(result), "invalid_model");
+  return result;
+}
 function json(data: unknown): Response {
   return Response.json({ ok: true, data }, { headers: HEADERS });
 }
 function failure(error: unknown): Response {
   const fault = error instanceof Fault ? error : new Fault("internal_error", 500);
-  return Response.json({ ok: false, error: fault.code }, {
+  return Response.json({ ok: false, error: fault.code, ...(fault.detail ? { detail: fault.detail } : {}) }, {
     status: fault.status,
     headers: { ...HEADERS, ...(fault.status === 405 ? { Allow: "GET, POST" } : {}), ...(fault.retryAfter ? { "Retry-After": fault.retryAfter } : {}) },
   });
@@ -160,6 +172,26 @@ function parseJson(bytes: Uint8Array, code: string, status: number): unknown {
   try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
   catch { throw new Fault(code, status); }
 }
+/**
+ * 服务商的错误原文：自定义端点最有用的信息往往在这里
+ * （例如「No available channel for model X under group Y」——重试没用，要改分组或模型）。
+ */
+async function upstreamDetail(response: Response, scope: Deadline, key: string): Promise<string | undefined> {
+  try {
+    const bytes = await readBytes(response.body, response.headers, 4096, scope, new Fault("upstream_too_large", 502));
+    const parsed = parseJson(bytes, "invalid_upstream_response", 502);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const record = parsed as Record<string, unknown>;
+    const nested = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : undefined;
+    const message = [nested?.message, nested?.code, record.message, record.code, record.detail]
+      .find(value => typeof value === "string" && value.trim().length > 0);
+    if (typeof message !== "string") return undefined;
+    // 有些服务端会把凭据回显在报错里：回传前先抹掉。
+    return message.trim().split(key).join("***").slice(0, 240);
+  } catch { return undefined; }
+}
+/** 「这个模型在你的分组下没有渠道」这一类：换 Key、改分组或改模型才有意义，重试没用。 */
+const NO_CHANNEL = /no available channel|no candidates|model_not_found|not a public model|no available/i;
 function upstreamHttp(status: number, paid: boolean, retryAfter?: string): Fault {
   if (status === 401) return new Fault("provider_auth_failed", 401);
   if (status === 403) return new Fault("provider_forbidden", 403);
@@ -421,14 +453,39 @@ async function resolveHost(host: string): Promise<string[]> {
 export function createHandler(dependencies: Dependencies = {}) {
   const fetcher: Fetcher = dependencies.fetch ?? ((url, init) => fetch(url, init));
   const dns = dependencies.resolveHost ?? resolveHost;
+  // 运行时能不能做 DNS 判定：能就要求解析出的地址全是公网 IP，不能就退回字符串判定。
+  const dnsAvailable = dependencies.resolveHost !== undefined ||
+    Boolean((globalThis as typeof globalThis & { Deno?: { resolveDns?: unknown } }).Deno?.resolveDns);
   const timeouts = { body: 15_000, generation: 120_000, query: 20_000, media: 90_000, ...dependencies.timeouts };
 
+  /**
+   * 自定义端点的 Base URL：字符串判定 + DNS 判定，两层都过才放行。
+   * 字符串层沿用 publicUrl 的口径，并额外拒绝 query（query 会让路径拼接出错）；
+   * DNS 层要求解析出的地址全是公网 IP，挡住「公网域名解析到内网」这类 SSRF。
+   */
+  async function safeBaseUrl(value: unknown): Promise<string> {
+    const raw = text(value, 2048, "invalid_base_url");
+    let url: URL;
+    try { url = new URL(raw); } catch { throw new Fault("invalid_base_url", 400); }
+    requireValue(url.protocol === "https:" && !url.username && !url.password && !url.port && !url.hash && !url.search, "invalid_base_url", 400);
+    const hostname = url.hostname;
+    requireValue(/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(hostname) &&
+      !/(?:^|\.)(?:localhost|local|internal|lan|home|test|invalid)$/.test(hostname) &&
+      !/^\d+\.\d+\.\d+\.\d+$/.test(hostname), "invalid_base_url", 400);
+    if (dnsAvailable) {
+      let addresses: string[] = [];
+      try { addresses = await dns(hostname); } catch { addresses = []; }
+      requireValue(addresses.length > 0 && addresses.every(publicIp), "invalid_base_url", 400);
+    }
+    return raw.replace(/\/+$/, "");
+  }
+
   async function upstream(request: Request, url: string, key: string, options: {
-    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number; headers?: Record<string, string>;
+    body?: ObjectValue; paid?: boolean; gemini?: boolean; max?: number; headers?: Record<string, string>; surfaceErrors?: boolean;
   } = {}): Promise<ObjectValue> {
     const paid = options.paid === true;
     const scope = deadline(paid ? timeouts.generation : timeouts.query, request.signal,
-      new Fault(paid ? "submission_unknown" : "upstream_timeout", 504));
+      new Fault(options.surfaceErrors ? "endpoint_timeout" : paid ? "submission_unknown" : "upstream_timeout", 504));
     let response: Response | undefined;
     try {
       requireValue(!request.signal.aborted, "request_aborted", 408);
@@ -438,7 +495,14 @@ export function createHandler(dependencies: Dependencies = {}) {
           ...(options.gemini ? { "x-goog-api-key": key, "Api-Revision": "2026-05-20" } : { Authorization: `Bearer ${key}` }), ...(options.headers ?? {}) },
         ...(options.body ? { body: JSON.stringify(options.body) } : {}),
       }));
-      if (!response.ok) throw upstreamHttp(response.status, paid, response.headers.get("retry-after") ?? undefined);
+      if (!response.ok) {
+        if (!options.surfaceErrors) throw upstreamHttp(response.status, paid, response.headers.get("retry-after") ?? undefined);
+        // 自定义端点：把服务商原文带回去。「没有可用渠道」不能报成「提交结果未知、别重复付费」。
+        const detail = await upstreamDetail(response, scope, key);
+        if (detail && NO_CHANNEL.test(detail)) throw new Fault("endpoint_model_unavailable", 502, undefined, detail);
+        const fault = upstreamHttp(response.status, paid, response.headers.get("retry-after") ?? undefined);
+        throw new Fault(fault.code, fault.status, fault.retryAfter, detail);
+      }
       requireValue(!response.redirected, "invalid_upstream_response", 502);
       const bytes = await readBytes(response.body, response.headers, options.max ?? LIMITS.json, scope, new Fault("upstream_too_large", 502));
       const data = object(parseJson(bytes, "invalid_upstream_response", 502), "invalid_upstream_response", 502);
@@ -447,8 +511,12 @@ export function createHandler(dependencies: Dependencies = {}) {
       }
       return data;
     } catch (error) {
+      // 上游挂死时，fetch 会先因 abort 抛出网络错误，抢在超时信号前面；
+      // 所以要先看时限是否已到，才能把「端点没回话」和「请求失败」分开。
+      const timedOut = options.surfaceErrors === true && scope.signal.aborted && !request.signal.aborted;
       scope.abort();
       if (error instanceof Fault) throw error;
+      if (timedOut) throw new Fault("endpoint_timeout", 504);
       // A POST may already have been charged. Never retry or switch providers here.
       throw new Fault(paid ? "submission_unknown" : "upstream_unavailable", paid ? 504 : 502);
     } finally { cancelBody(response?.body ?? null); scope.dispose(); }
@@ -610,7 +678,7 @@ export function createHandler(dependencies: Dependencies = {}) {
 
       const textAction = textActions[action];
       if (textAction) {
-        requireValue(provider === "gemini" || provider === "deepseek", "invalid_provider");
+        requireValue(provider === "gemini" || provider === "deepseek" || provider === "openai-compatible", "invalid_provider");
         const prompt = text(input.prompt, 32_000, "invalid_prompt");
         const { schema, instruction, validate, code } = textAction;
         let generated: string;
@@ -621,10 +689,23 @@ export function createHandler(dependencies: Dependencies = {}) {
             response_format: { type: "text", mime_type: "application/json", schema },
           } });
           generated = geminiText(data, code);
-        } else {
+        } else if (provider === "deepseek") {
           const data = await upstream(request, ENDPOINTS.deepseek, key, { paid: true, body: {
             model: model(input.model, "deepseek-flash", /^deepseek-[A-Za-z0-9._-]+$/), stream: false,
             response_format: { type: "json_object" },
+            messages: [{ role: "system", content: instruction }, { role: "user", content: prompt }],
+          } });
+          requireValue(Array.isArray(data.choices) && data.choices.length === 1, code, 502);
+          const choice = object(data.choices[0], code, 502);
+          requireValue(choice.finish_reason === "stop", code, 502);
+          generated = text(object(choice.message, code, 502).content, LIMITS.json, code, 502);
+        } else {
+          // 自定义端点：OpenAI 兼容的 chat/completions。jsonMode=false 时不发 response_format，
+          // 兼容不支持该参数的老中转站——此时只靠 system 指令约束 JSON。
+          const base = await safeBaseUrl(input.baseUrl);
+          const data = await upstream(request, `${base}/chat/completions`, key, { paid: true, surfaceErrors: true, body: {
+            model: customModel(input.model), stream: false,
+            ...(input.jsonMode === false ? {} : { response_format: { type: "json_object" } }),
             messages: [{ role: "system", content: instruction }, { role: "user", content: prompt }],
           } });
           requireValue(Array.isArray(data.choices) && data.choices.length === 1, code, 502);
@@ -645,6 +726,18 @@ export function createHandler(dependencies: Dependencies = {}) {
           requireValue(Array.isArray(data.images) && data.images.length === 1, "invalid_upstream_response", 502);
           const image = object(data.images[0], "invalid_upstream_response", 502);
           return json(await fetchImage(request, text(image.url, 8192, "invalid_upstream_response", 502)));
+        }
+        if (provider === "openai-compatible") {
+          // 自定义端点生图：只接受 base64，不代理任意图片 URL，避免把 SSRF 面扩大到 CDN 白名单之外。
+          const base = await safeBaseUrl(input.baseUrl);
+          const data = await upstream(request, `${base}/images/generations`, key, { paid: true, surfaceErrors: true, max: LIMITS.image, body: {
+            model: customModel(input.model),
+            prompt: text(input.prompt, 32_000, "invalid_prompt"), n: 1, response_format: "b64_json",
+          } });
+          requireValue(Array.isArray(data.data) && data.data.length === 1, "invalid_upstream_response", 502);
+          const encoded = base64(object(data.data[0], "invalid_upstream_response", 502).b64_json, LIMITS.image, "invalid_upstream_response", 502);
+          requireValue(atob(encoded.slice(0, 12)).startsWith("\x89PNG\r\n\x1a\n"), "invalid_upstream_response", 502);
+          return json({ base64: encoded, mime: "image/png" });
         }
         requireValue(provider === "openai" || provider === "seedream", "invalid_provider");
         const data = await upstream(request, ENDPOINTS[provider], key, { paid: true, max: LIMITS.image, body: provider === "seedream" ? {

@@ -33,6 +33,9 @@ try {
     const go = async stage => { await page.evaluate(stage => { location.hash = `/${stage}`; }, stage); };
     const overflow = async () => assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2), `overflow ${width}`);
     const panel = name => page.locator('.provider-panel').filter({ has: page.getByRole('heading', { name, exact: true }) });
+    // 设置页按环节分页签：先切到对应页签，再展开端点行才能填 Key。
+    const openTab = async title => { await page.getByRole('tab', { name: new RegExp(`^${title}`) }).click(); };
+    const expand = async name => { const button = panel(name).getByRole('button', { name: '设置', exact: true }); if (await button.count()) await button.click(); };
     const close = async () => { await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0); };
     const createImage = async () => {
       await page.getByRole('button', { name: '查看模型测试人物详情', exact: true }).click();
@@ -52,14 +55,17 @@ try {
     });
     const imageSelect = page.getByRole('combobox', { name: /^生图模型/ });
     await expect(imageSelect).toHaveValue('openai:gpt-image-2.6-sunburst');
-    assert.deepEqual(await imageSelect.locator('optgroup').evaluateAll(groups => groups.map(g => g.label)), ['OpenAI', '火山引擎 / 即梦（Seedream）', '硅基流动 SiliconFlow（免费）']);
+    assert.deepEqual(await imageSelect.locator('optgroup').evaluateAll(groups => groups.map(g => g.label)), ['OpenAI', '火山引擎 / 即梦 · Seedream', '硅基流动 SiliconFlow（免费）']);
     await imageSelect.selectOption('seedream:doubao-seedream-5-5-261028');
     await createImage();
     await page.getByRole('heading', { name: '连接你的创作能力' }).waitFor();
     assert.equal(calls.length, 0);
-    await expect(page.locator('.provider-panel .tag')).toHaveText(Array(7).fill('Key 缺失'));
+    await expect(page.locator('.provider-panel .tag')).toHaveText(Array(2).fill('Key 缺失'));
+    await openTab('视频');
     await expect(panel('MiniMax 国内版')).toContainText('仅支持国内开放平台 Key');
-    for (const name of ['OpenAI', '火山引擎 / 即梦 · Seedream', '硅基流动 SiliconFlow · 免费生图', '火山引擎 Seedance', 'MiniMax 国内版']) {
+    for (const [tab, name] of [['生图', 'OpenAI'], ['生图', '火山引擎 / 即梦 · Seedream'], ['生图', '硅基流动 SiliconFlow（免费）'], ['视频', '火山引擎 Seedance'], ['视频', 'MiniMax 国内版']]) {
+      await openTab(tab);
+      await expand(name);
       await panel(name).getByLabel('API Key', { exact: true }).fill('fixture-key-not-transmitted');
       await expect(panel(name).locator('.tag')).toHaveText('已填写 · 待验证');
     }
@@ -84,8 +90,10 @@ try {
     await imageSelect.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `dev/image-models-${width}.png` });
     await go('settings');
+    await openTab('生图');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('可用');
     await expect(panel('火山引擎 / 即梦 · Seedream').locator('.tag')).toHaveText('可用');
+    await expand('火山引擎 / 即梦 · Seedream');
     await panel('火山引擎 / 即梦 · Seedream').getByRole('textbox', { name: /^模型 ID/ }).fill('ep-custom-seedream');
     await go('assets');
     await imageSelect.selectOption('seedream:ep-custom-seedream');
@@ -105,8 +113,10 @@ try {
     assert.equal((await saved()).projects[0].assets[0].imageId, beforeImage);
     await expect(page.getByText(/当前生图渠道/)).toContainText('免费兜底暂未配置');
     await go('settings');
+    await openTab('生图');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('调用失败');
     await expect(panel('OpenAI')).toContainText('Key 错了：回设置页重新粘贴，并确认平台与地区');
+    await expand('OpenAI');
     await panel('OpenAI').getByLabel('API Key', { exact: true }).fill('replacement-fixture-key');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('已填写 · 待验证');
     await panel('OpenAI').getByLabel('API Key', { exact: true }).fill('');
@@ -158,7 +168,7 @@ try {
     await page.reload();
     await expect(videoSelect).toHaveValue('seedance:doubao-seedance-2-0-mini-260615');
     await go('settings');
-    await expect(page.locator('.provider-panel .tag')).toHaveText(Array(7).fill('Key 缺失'));
+    await expect(page.locator('.provider-panel .tag')).toHaveText(Array(2).fill('Key 缺失'));
     await page.evaluate(() => {
       const data = JSON.parse(localStorage.getItem('manju-studio-v1'));
       delete data.settings.imageProvider; delete data.settings.models.seedream;
@@ -166,7 +176,9 @@ try {
       localStorage.setItem('manju-studio-v1', JSON.stringify(data));
     });
     await page.reload();
+    await openTab('视频'); await expand('火山引擎 Seedance');
     await expect(panel('火山引擎 Seedance').getByRole('textbox', { name: /^模型 ID/ })).toHaveValue('ep-legacy-kept');
+    await openTab('生图'); await expand('火山引擎 / 即梦 · Seedream');
     await expect(panel('火山引擎 / 即梦 · Seedream').getByRole('textbox', { name: /^模型 ID/ })).toHaveValue('doubao-seedream-5-5-261028');
     await expect(page.getByText(/已停止覆盖保存/)).toHaveCount(0);
     await go('assets'); await expect(imageSelect).toHaveValue('openai:gpt-image-2.6-sunburst');

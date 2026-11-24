@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react';
 import { savedStudioSchema } from './schema';
 import { migratePromptConfig } from '../lib/promptBlocks';
-import { defaultSettings, defaultStyle, uid, type StudioState, type Project, type Settings, type Provider, type ProviderStatus } from '../domain/types';
+import { migrateSettings } from '../lib/endpoints';
+import { defaultSettings, defaultStyle, uid, type StudioState, type Project, type Settings, type ProviderStatus } from '../domain/types';
 
 const STORAGE_KEY = 'manju-studio-v1';
 
@@ -40,7 +41,7 @@ try {
     const data = savedStudioSchema.parse(JSON.parse(raw));
     data.projects.forEach(p => { p.promptConfig = migratePromptConfig(p.promptConfig); p.shots.forEach(s => { if (s.task?.status === 'submitting') s.task = { ...s.task, status: 'unknown', error: '提交时页面已关闭，结果未知；请先检查模型平台，避免重复付费。' }; }); });
     const projects = data.projects.map(dropPlaceholderCharacters);
-    state = { ...state, projects, activeId: data.activeId, settings: { ...defaultSettings, ...data.settings, models: { ...defaultSettings.models, ...data.settings?.models } } };
+    state = { ...state, projects, activeId: data.activeId, settings: migrateSettings(data.settings) };
   }
 } catch { readable = false; state.storageError = '本地作品数据无法读取，已停止覆盖保存。请先备份浏览器数据，不要清除缓存。'; }
 const listeners = new Set<() => void>();
@@ -98,16 +99,16 @@ export function duplicateProject(id: string) {
   state = { ...state, projects: [copy, ...state.projects] }; emit(); return copy;
 }
 export function setSettings(settings: Settings) { state = { ...state, settings }; emit(); }
-export function setKey(provider: Provider, key: string) {
+export function setKey(endpointId: string, key: string) {
   const value = key.trim();
   const providerStatus = { ...state.providerStatus };
-  if (state.keys[provider] !== value) delete providerStatus[provider];
-  state = { ...state, keys: { ...state.keys, [provider]: value }, providerStatus }; emit(false);
+  if (state.keys[endpointId] !== value) delete providerStatus[endpointId];
+  state = { ...state, keys: { ...state.keys, [endpointId]: value }, providerStatus }; emit(false);
 }
 export function clearKeys() { state = { ...state, keys: {}, providerStatus: {} }; emit(false); }
-export function setProviderStatus(provider: Provider, usedKey: string, result: ProviderStatus) {
-  if (!state.keys[provider] || state.keys[provider] !== usedKey) return;
-  state = { ...state, providerStatus: { ...state.providerStatus, [provider]: result } }; emit(false);
+export function setProviderStatus(endpointId: string, usedKey: string, result: ProviderStatus) {
+  if (!state.keys[endpointId] || state.keys[endpointId] !== usedKey) return;
+  state = { ...state, providerStatus: { ...state.providerStatus, [endpointId]: result } }; emit(false);
 }
 export function projectProgress(project: Project) {
   const videos = project.shots.filter(s => s.video && !s.stale).length;

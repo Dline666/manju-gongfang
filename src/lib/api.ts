@@ -1,9 +1,14 @@
 import { getStudio, setProviderStatus } from '../store/studio';
-import type { Provider, ProviderStatus } from '../domain/types';
+import { endpointById, modelFor } from './endpoints';
+import type { Capability, ProviderStatus } from '../domain/types';
 const messages: Record<string, string> = {
   invalid_key: 'API Key 无效，请到设置页检查。', missing_key: '请先在设置页填写对应的 API Key。',
+  missing_endpoint: '所选端点已被删除，请到设置页重新选择。',
+  invalid_base_url: 'Base URL 必须是公网 https 地址（不能带非默认端口、IP、内网域名或查询参数）。',
   provider_auth_failed: '模型平台拒绝了此 Key，请检查密钥及账号地区。', provider_forbidden: '账号尚未开通此模型权限，请在官方平台检查。',
   invalid_model: '模型 ID 不符合平台要求，请到设置页检查。', provider_not_found: '模型或任务不存在，可能已过期。',
+  endpoint_model_unavailable: '该端点下没有这个模型或渠道：请检查模型 ID，以及中转站的分组/渠道是否覆盖它。',
+  endpoint_timeout: '端点在两分钟内没有返回：模型可能正在排队，或这条线路暂时不通。这次请求可能已经送达，请先到平台确认是否计费，再决定要不要重试。',
   provider_rejected: '模型平台拒绝了请求，请检查内容、模型权限及参考图。', invalid_images: '参考图格式或组合无效，首尾帧不能与参考图模式混用。',
   request_too_large: '请求太大，请压缩参考图或减少图片数量。', upstream_timeout: '查询超时，已有任务不会重发，请稍后查询。',
   upstream_unavailable: '模型查询暂不可用，请稍后再试。', media_not_ready: '视频尚未完成，请等待任务结束。',
@@ -17,6 +22,7 @@ const messages: Record<string, string> = {
   invalid_input: '请求参数不符合模型要求，请检查时长、模型和参考图。',
   upstream_error: '模型服务返回异常，请检查配置后再试。', service_unavailable: '生成服务暂不可用，请稍后重试。',
   unknown_action: '接口动作不受支持，请重启本地 Function 服务后重试。',
+  local_service_unavailable: '本地服务没有响应：请确认本地 Function 正在运行（npm run dev:function），再重试。',
 };
 // 只读提示：一句话解决办法，不改 message，也不进持久化。
 const hints = {
@@ -42,15 +48,36 @@ export function hintFor(code: string, status = 0): string | undefined {
 }
 export class ApiError extends Error {
   readonly hint?: string;
-  constructor(public code: string, public status = 0, readonly retryAfter?: number) { super(messages[code] || '服务请求未完成，请检查模型配置和网络。'); this.hint = hintFor(code, status); }
+  /** 服务商返回的原文：单独一行展示，便于判断是模型、分组还是内容的问题。 */
+  readonly detail?: string;
+  constructor(public code: string, public status = 0, readonly retryAfter?: number, detail?: string) {
+    super(messages[code] || '服务请求未完成，请检查模型配置和网络。');
+    this.detail = detail;
+    this.hint = hintFor(code, status);
+  }
 }
-export function credentials(provider: Provider) {
-  const state = getStudio(); const key = state.keys[provider];
+/**
+ * 取出某个端点的调用凭据：provider 是协议（后端只认协议），endpointId 是本地记账键。
+ * 自定义端点额外带 baseUrl；模型 ID 按能力取，一个端点可以剧本与生图各用一个模型。
+ */
+export function credentials(endpointId: string, capability: Capability) {
+  const state = getStudio();
+  const endpoint = endpointById(state.settings, endpointId);
+  if (!endpoint) throw new ApiError('missing_endpoint');
+  const key = state.keys[endpointId];
   if (!key) throw new ApiError('missing_key');
-  return { provider, key, model: state.settings.models[provider] };
+  return {
+    endpointId,
+    provider: endpoint.protocol,
+    key,
+    model: modelFor(state.settings, endpointId, capability),
+    ...(endpoint.baseUrl ? { baseUrl: endpoint.baseUrl } : {}),
+  };
 }
 async function request(action: string, payload: object, signal?: AbortSignal) {
   const body: Record<string, unknown> = { ...payload };
+  // endpointId 只用于本地记账，不发给后端（后端按 provider 协议分派）。
+  delete body.endpointId;
   if (['voices', 'video-status', 'video-download'].includes(action)) delete body.model;
   let response: Response;
   try { response = await fetch(`/functions/v1/app?action=${encodeURIComponent(action)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin', signal }); }
@@ -59,15 +86,20 @@ async function request(action: string, payload: object, signal?: AbortSignal) {
     const error = await response.json().catch(() => null);
     const header = response.headers.get('Retry-After');
     const seconds = header === null ? 0 : Number(header);
-    throw new ApiError(error?.error || (response.status === 401 ? 'invalid_key' : 'service_unavailable'), response.status, Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined);
+    // 后端自己的错误一定带 JSON 信封（{ok:false,error:code}）；没有信封说明请求压根没到后端
+    // （本地 Function 没起、dev 代理 502、网关拦截），这时要说清是「服务没连上」，而不是让人去查模型配置。
+    const code = typeof error?.error === 'string' ? error.error
+      : response.status === 401 ? 'invalid_key'
+        : 'local_service_unavailable';
+    throw new ApiError(code, response.status, Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined, typeof error?.detail === 'string' ? error.detail : undefined);
   }
   return response;
 }
 function providerCallStatus(action: string, payload: object) {
-  const { provider, key, model } = payload as Partial<ReturnType<typeof credentials>>;
+  const { endpointId, provider, key, model } = payload as Partial<ReturnType<typeof credentials>>;
   return (status: ProviderStatus['status'], error?: unknown) => {
-    if (!provider || typeof key !== 'string') return;
-    setProviderStatus(provider, key, {
+    if (!endpointId || !provider || typeof key !== 'string') return;
+    setProviderStatus(endpointId, key, {
       status, action,
       model: !['voices', 'video-status', 'video-download'].includes(action) && typeof model === 'string' ? model : undefined,
       ...(status === 'failed' ? { error: error instanceof ApiError ? error.message : '操作未完成，请重试。', ...(error instanceof ApiError && error.hint ? { hint: error.hint } : {}) } : {}),

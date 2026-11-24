@@ -82,7 +82,7 @@ export async function loadVideo(project: Project, shot: Shot, signal?: AbortSign
     }
   }
   if (!blob && shot.video.origin === 'api' && shot.task?.id) {
-    try { blob = requireBlob(await callBinary('video-download', { ...credentials(shot.task.provider), taskId: shot.task.id }, signal), 'API 视频'); }
+    try { blob = requireBlob(await callBinary('video-download', { ...credentials(shot.task.provider, 'video'), taskId: shot.task.id }, signal), 'API 视频'); }
     catch (error) {
       abortIfNeeded(signal);
       throw new Error(`${error instanceof Error ? error.message : 'API 视频下载失败。'} 请在设置检查凭据，或从原平台下载后本地重新导入。`);

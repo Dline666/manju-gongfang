@@ -999,3 +999,114 @@ test("director accepts a beat that changes framing with → and snaps a near-mis
   const third = fixture([deepseek(broken)]);
   await error(await third.handle(request("director", input("deepseek", { prompt: "x" }))), "invalid_director", 502);
 });
+
+// ── 自定义端点（OpenAI 兼容）────────────────────────────────────────────
+const CUSTOM_BASE = "https://api.example.com/v1";
+
+test("custom endpoint sends OpenAI-compatible text requests to the given base URL", async () => {
+  const { handle, calls } = fixture([deepseek({ screenplay: "正文" })]);
+  await success(await handle(request("screenplay", input("openai-compatible", { model: "qwen-max", prompt: "用户提示词", baseUrl: CUSTOM_BASE }))));
+  assert.equal(calls[0].url, `${CUSTOM_BASE}/chat/completions`);
+  assert.equal(calls[0].body.model, "qwen-max");
+  assert.equal(calls[0].body.stream, false);
+  assert.deepEqual(calls[0].body.response_format, { type: "json_object" });
+  assert.equal(calls[0].body.messages[1].content, "用户提示词");
+  assert.equal(calls[0].headers.get("authorization"), `Bearer ${KEY}`);
+});
+
+test("custom endpoint can turn off response_format for older gateways", async () => {
+  const { handle, calls } = fixture([deepseek({ screenplay: "正文" })]);
+  await handle(request("screenplay", input("openai-compatible", { model: "qwen-max", prompt: "提示词", baseUrl: CUSTOM_BASE, jsonMode: false })));
+  assert.equal(calls[0].body.response_format, undefined);
+});
+
+test("custom endpoint rejects unsafe base URLs before any upstream call", async () => {
+  const { handle, calls } = fixture([]);
+  const unsafe = [
+    "http://api.example.com/v1", "https://127.0.0.1/v1", "https://a.local/v1",
+    "https://x.internal/v1", "https://api.example.com:8443/v1", "https://user:pw@api.example.com/v1",
+    "https://api.example.com/v1?x=1", "https://api.example.com/v1#h", "not-a-url",
+  ];
+  for (const baseUrl of unsafe) {
+    await error(await handle(request("screenplay", input("openai-compatible", { model: "qwen-max", prompt: "提示词", baseUrl }))), "invalid_base_url", 400);
+  }
+  assert.equal(calls.length, 0, "被拒的 Base URL 不该触发任何上游请求");
+});
+
+test("custom endpoint base URL must resolve to public addresses", async () => {
+  const { handle, calls } = fixture([], { resolveHost: async () => ["127.0.0.1"] });
+  await error(await handle(request("screenplay", input("openai-compatible", { model: "qwen-max", prompt: "提示词", baseUrl: CUSTOM_BASE }))), "invalid_base_url", 400);
+  assert.equal(calls.length, 0);
+});
+
+test("custom endpoint image requests ask for base64 and reject URL responses", async () => {
+  const { handle, calls } = fixture([{ data: [{ b64_json: PNG }] }]);
+  const data = await success(await handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE }))));
+  assert.equal(calls[0].url, `${CUSTOM_BASE}/images/generations`);
+  assert.deepEqual(calls[0].body, { model: "flux-1", prompt: "设定图", n: 1, response_format: "b64_json" });
+  assert.equal(data.mime, "image/png");
+  const urlOnly = fixture([{ data: [{ url: "https://cdn.example.com/a.png" }] }]);
+  await error(await urlOnly.handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE }))), "invalid_upstream_response", 502);
+});
+
+test("custom endpoint needs an explicit model id before any paid request", async () => {
+  const { handle, calls } = fixture([]);
+  await error(await handle(request("image", input("openai-compatible", { prompt: "设定图", baseUrl: CUSTOM_BASE }))), "invalid_model", 400);
+  await error(await handle(request("screenplay", input("openai-compatible", { prompt: "提示词", baseUrl: CUSTOM_BASE }))), "invalid_model", 400);
+  assert.equal(calls.length, 0, "缺模型 ID 不能发出付费请求");
+});
+
+test("custom endpoint base URL is required and unknown fields stay rejected", async () => {
+  const { handle } = fixture([]);
+  await error(await handle(request("screenplay", input("openai-compatible", { model: "qwen-max", prompt: "提示词" }))), "invalid_base_url", 400);
+  await error(await handle(request("image", input("openai-compatible", { model: "flux-1", prompt: "设定图", baseUrl: CUSTOM_BASE, extra: "x" }))), "invalid_input", 400);
+});
+
+test("custom endpoint surfaces the provider's own reason instead of 'try again later'", async () => {
+  const relay = new Response(JSON.stringify({ error: { code: "model_not_found", message: "No available channel for model gemini-4-argon under group default (distributor)" } }), { status: 503, headers: { "Content-Type": "application/json" } });
+  const { handle, calls } = fixture([relay]);
+  const response = await handle(request("screenplay", input("openai-compatible", { model: "gemini-4-argon", prompt: "提示词", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 502);
+  const result = await response.json();
+  assert.equal(result.error, "endpoint_model_unavailable", "没有可用渠道要改分组或模型，不能报成重试类错误");
+  assert.match(result.detail, /No available channel for model gemini-4-argon/);
+  assert.ok(!JSON.stringify(result).includes(KEY));
+  assert.equal(calls.length, 1);
+});
+
+test("custom endpoint image failures surface the provider's reason too", async () => {
+  const relay = new Response(JSON.stringify({ code: "get_channel_failed", message: "media route has no candidates: image model gpt-image-2" }), { status: 503, headers: { "Content-Type": "application/json" } });
+  const { handle } = fixture([relay]);
+  const response = await handle(request("image", input("openai-compatible", { model: "gpt-image-2", prompt: "设定图", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 502);
+  const result = await response.json();
+  assert.equal(result.error, "endpoint_model_unavailable");
+  assert.match(result.detail, /media route has no candidates/);
+});
+
+test("provider error text never carries the key back to the client", async () => {
+  const relay = new Response(JSON.stringify({ error: { message: `invalid key ${KEY} for model gpt-image-2` } }), { status: 401, headers: { "Content-Type": "application/json" } });
+  const { handle } = fixture([relay]);
+  const response = await handle(request("image", input("openai-compatible", { model: "gpt-image-2", prompt: "设定图", baseUrl: CUSTOM_BASE })));
+  const result = await response.json();
+  assert.ok(!JSON.stringify(result).includes(KEY), "回传的原文里不能带凭据");
+  assert.match(result.detail, /invalid key \*\*\* for model gpt-image-2/);
+});
+
+test("custom endpoint that never answers reports a timeout instead of 'unknown result'", async () => {
+  const handle = createHandler({
+    resolveHost: async () => ["8.8.8.8"],
+    timeouts: { generation: 80 },
+    fetch: (_url, init) => new Promise((_resolve, reject) => { init.signal?.addEventListener("abort", () => reject(new Error("aborted"))); }),
+  });
+  const response = await handle(request("screenplay", input("openai-compatible", { model: "gemini-4-argon", prompt: "提示词", baseUrl: CUSTOM_BASE })));
+  assert.equal(response.status, 504);
+  const result = await response.json();
+  assert.equal(result.error, "endpoint_timeout", "端点没回话要说超时，不能说成「结果未知」");
+});
+
+test("builtin providers keep their own error mapping", async () => {
+  const relay = new Response(JSON.stringify({ error: { message: "no available channel for model gemini-4-hydrogen" } }), { status: 503, headers: { "Content-Type": "application/json" } });
+  const { handle } = fixture([relay]);
+  await error(await handle(request("screenplay", input("gemini", { model: "gemini-4-hydrogen", prompt: "提示词" }))), "submission_unknown", 502);
+});

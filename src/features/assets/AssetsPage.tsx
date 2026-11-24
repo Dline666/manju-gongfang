@@ -8,7 +8,8 @@ import { averageDuration, durationSamples, finishJob, startJob, updateJob } from
 import { putMedia, useMediaUrl } from '../../store/media';
 import { ApiError, callApi, callBinary, credentials, errorMessage } from '../../lib/api';
 import { extractCharactersPrompt, extractPropsPrompt, extractScenesPrompt, fixedDescription, imagePrompt, type ExtractCategory } from '../../lib/prompts';
-import { imageConcurrency, imageModelGroups } from '../../lib/models';
+import { imageConcurrency, modelOptions } from '../../lib/models';
+import { endpointsFor, modelFor } from '../../lib/endpoints';
 import { runPool } from '../../lib/pool';
 import { assetShotIds, assetUsage, generatedImageBlob, linkSpeakersToCharacter, removeAsset, validateImage } from './helpers';
 import { applyCategoryExtraction, extractLocalAssets, mergeDraftAssets } from '../script/creation';
@@ -21,7 +22,7 @@ const kinds: { id: AssetKind; name: string; text: string }[] = [
   { id: 'prop', name: '道具', text: '固定轮廓、材质与细节，让关键物件有迹可循。' },
   { id: 'voice', name: '音色', text: '选定音色与语速，再把声音分配给人物。' },
 ];
-type Pending = { kind: 'image'; asset: Asset; revision: number; prompt: string; defaultPrompt: string; provider: 'openai' | 'seedream' | 'siliconflow'; model: string } | { kind: 'speech'; asset: Asset; revision: number; model: string; local: boolean };
+type Pending = { kind: 'image'; asset: Asset; revision: number; prompt: string; defaultPrompt: string; provider: string; model: string; providerName: string } | { kind: 'speech'; asset: Asset; revision: number; model: string; local: boolean };
 type Preview = { mediaId: string; text: string };
 type BatchStatus = 'queued' | 'running' | 'done' | 'failed' | 'canceled' | 'not_submitted';
 type BatchItem = { id: string; name: string; status: BatchStatus; error?: unknown; startedAt?: number; finishedAt?: number };
@@ -80,7 +81,7 @@ function AssetEditor({ project, navigate }: PageProps) {
   const [styleNotice, setStyleNotice] = useState(0);
   const [assetIssues, setAssetIssues] = useState<string[]>([]);
   const assetTips = assetWarnings(project);
-  const [extraction, setExtraction] = useState<{ kind: ExtractCategory; revision: number; prompt: string; defaultPrompt: string; provider: 'gemini' | 'deepseek'; model: string }>();
+  const [extraction, setExtraction] = useState<{ kind: ExtractCategory; revision: number; prompt: string; defaultPrompt: string; provider: string; model: string }>();
   const [extracting, setExtracting] = useState(false);
   const [extractionDraft, setExtractionDraft] = useState<{ assets: Asset[]; shots: Shot[]; warnings?: string[] }>();
   const extractionScope = extractionDraft && extraction ? extractionDraft.assets.filter(asset => asset.kind === extraction.kind) : [];
@@ -137,17 +138,19 @@ function AssetEditor({ project, navigate }: PageProps) {
   };
   const prepareImage = (asset: Asset) => {
     const provider = settings.imageProvider;
-    if (!keys[provider]) { toast.error(`请先在设置页填写 ${provider === 'openai' ? 'OpenAI' : provider === 'seedream' ? 'Seedream（火山方舟）' : '硅基流动 SiliconFlow'} API Key。`); navigate('settings'); return; }
+    const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
+    if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
+    if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
     if (!fixedDescription(asset).trim()) { toast.error('请先完善资产描述与固定短语。'); return; }
     setFailure(undefined);
     const prompt = imagePrompt(project, asset);
-    setPending({ kind: 'image', asset: { ...asset }, revision: project.revision, prompt, defaultPrompt: prompt, provider, model: settings.models[provider] });
+    setPending({ kind: 'image', asset: { ...asset }, revision: project.revision, prompt, defaultPrompt: prompt, provider, model: modelFor(settings, provider, 'image'), providerName });
   };
   const loadVoices = async () => {
     if (!keys.minimax) { toast.error('请先在设置页填写 MiniMax API Key。'); navigate('settings'); return; }
     setVoicesBusy(true);
     try {
-      const data = await callApi<{ id: string; name: string }[]>('voices', { ...credentials('minimax') });
+      const data = await callApi<{ id: string; name: string }[]>('voices', { ...credentials('minimax', 'speech') });
       if (!Array.isArray(data) || data.some(v => typeof v.id !== 'string' || typeof v.name !== 'string')) throw new Error('音色列表格式无效。');
       setVoices(data); toast.success(data.length ? `已获取${data.length}个音色。` : '服务商暂无可用音色，也可以手动填写音色ID。');
     } catch (error) { toast.error(errorMessage(error)); }
@@ -171,7 +174,7 @@ function AssetEditor({ project, navigate }: PageProps) {
       current(task.revision, task.asset.id);
       if (task.kind === 'image') {
         if (!task.prompt.trim()) throw new Error('图片提示词不能为空：请在模板编辑器里补充内容。');
-        const auth = credentials(task.provider);
+        const auth = credentials(task.provider, 'image');
         if (getStudio().settings.imageProvider !== task.provider || auth.model !== task.model) throw new Error('图片模型设置已改变，请重新确认。');
         updateJob(jobId, { detail: '生成图片中' });
         setProgress(previous => previous && { ...previous, stage: '生成图片中' });
@@ -194,7 +197,7 @@ function AssetEditor({ project, navigate }: PageProps) {
         } else {
           if (getStudio().settings.speechModel !== task.model) throw new Error('语音模型已改变，请重新确认。');
           setProgress(previous => previous && { ...previous, stage: '合成语音' });
-          const blob = await callBinary('speech', { ...credentials('minimax'), model: task.model, text, voiceId: task.asset.voiceId, speed: task.asset.speed ?? 1 }, controller.signal);
+          const blob = await callBinary('speech', { ...credentials('minimax', 'speech'), model: task.model, text, voiceId: task.asset.voiceId, speed: task.asset.speed ?? 1 }, controller.signal);
           if (!blob.type.startsWith('audio/') || !blob.size) throw new Error('服务商没有返回有效音频。');
           setProgress(previous => previous && { ...previous, stage: '保存音频' });
           current(task.revision, task.asset.id);
@@ -216,7 +219,9 @@ function AssetEditor({ project, navigate }: PageProps) {
   const prepareBatch = (assets: Asset[]) => {
     if (!assets.length) return;
     const provider = settings.imageProvider;
-    if (!keys[provider]) { toast.error(`请先在设置页填写 ${provider === 'openai' ? 'OpenAI' : provider === 'seedream' ? 'Seedream（火山方舟）' : '硅基流动 SiliconFlow'} API Key。`); navigate('settings'); return; }
+    const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
+    if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
+    if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
     if (assets.some(asset => !fixedDescription(asset).trim())) { toast.error('请先完善资产描述与固定短语。'); return; }
     setFailure(undefined);
     const defaults = Object.fromEntries(assets.map(asset => [asset.id, imagePrompt(project, asset)]));
@@ -225,8 +230,10 @@ function AssetEditor({ project, navigate }: PageProps) {
   const executeBatch = async (assets: Asset[], prompts?: Record<string, string>) => {
     if (!assets.length || batch?.running) return;
     const provider = settings.imageProvider;
-    if (!keys[provider]) { toast.error(`请先在设置页填写 ${provider === 'openai' ? 'OpenAI' : provider === 'seedream' ? 'Seedream（火山方舟）' : '硅基流动 SiliconFlow'} API Key。`); navigate('settings'); return; }
-    const model = settings.models[provider]; const concurrency = imageConcurrency(settings);
+    const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
+    if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
+    if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
+    const model = modelFor(settings, provider, 'image'); const concurrency = imageConcurrency(settings);
     const prepared = assets.map(asset => ({ id: asset.id, name: asset.name, prompt: prompts?.[asset.id] ?? imagePrompt(project, asset), hash: fixedHash(fixedDescription(asset)) }));
     if (prepared.some(item => !item.prompt.trim())) { toast.error('提示词不能为空：请在模板编辑器里补充内容后再生成。'); return; }
     const controller = new AbortController(); batchAbort.current = controller;
@@ -240,8 +247,8 @@ function AssetEditor({ project, navigate }: PageProps) {
         const asset = live?.assets.find(a => a.id === item.id);
         if (!live || !asset) throw new Error('资产已删除，本次不生成。');
         if (fixedHash(fixedDescription(asset)) !== item.hash) throw new Error('固定短语已修改，请重新确认。');
-        if (getStudio().settings.imageProvider !== provider || getStudio().settings.models[provider] !== model) throw new Error('图片模型设置已改变，请重新确认。');
-        const result = await callApi<{ base64: string; mime: string }>('image', { ...credentials(provider), prompt: item.prompt }, controller.signal);
+        if (getStudio().settings.imageProvider !== provider || modelFor(getStudio().settings, provider, 'image') !== model) throw new Error('图片模型设置已改变，请重新确认。');
+        const result = await callApi<{ base64: string; mime: string }>('image', { ...credentials(provider, 'image'), prompt: item.prompt }, controller.signal);
         const after = getStudio().projects.find(p => p.id === project.id);
         const still = after?.assets.find(a => a.id === item.id);
         if (!after || !still || fixedHash(fixedDescription(still)) !== item.hash) throw new Error('资产或固定短语已修改，本次结果未写入。');
@@ -278,7 +285,7 @@ function AssetEditor({ project, navigate }: PageProps) {
   const prepareExtraction = (kind: ExtractCategory) => {
     try {
       if (!project.shots.length) { toast.error('请先完成剧本，再提取资产。'); return; }
-      const auth = credentials(settings.scriptProvider);
+      const auth = credentials(settings.scriptProvider, 'script');
       const prompt = extractPromptFor(kind, project);
       if (prompt.length > 32_000) throw new Error('剧本过长，请精简后再提取；现有资产未修改。');
       setExtraction({ kind, revision: project.revision, prompt, defaultPrompt: prompt, provider: settings.scriptProvider, model: auth.model });
@@ -294,7 +301,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     const jobId = startJob({ kind: 'storyboard', label: `提取${extractKindLabel(task.kind)}资产`, cancel: () => controller.abort() });
     setExtractProgress({ stage: '提交任务', startedAt: Date.now() });
     try {
-      const auth = credentials(task.provider);
+      const auth = credentials(task.provider, 'script');
       const live = getStudio().projects.find(p => p.id === project.id);
       if (!live || live.revision !== task.revision) throw new Error('剧本或资产已修改，请重新确认提取。');
       if (auth.model !== task.model) throw new Error('模型设置已改变，请重新确认提取。');
@@ -392,7 +399,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     <header className="page-heading"><div><span className="tag">02 / 资产设定</span><h1>让故事，有自己的面孔</h1><p className="muted">固定人物、场景和道具描述，再为每个角色找到声音。</p></div><Button onClick={() => edit()}><Plus size={16} />新建{kinds.find(k => k.id === kind)?.name}</Button></header>
     <section className="panel stack"><div className="section-title"><h3>从剧本提取资产</h3><HelpPopover title="提取规则"><p>读取剧本的 {project.shots.length} 个镜头，提取人物、场景、道具与逐镜关联。只提取、不重写剧情、对白与时长。</p><p className="mt-2">三类分开识别，各用各的提示词、各自一次调用：人物看说话人与台词，场景按空间归组，道具只看动作摘要。已有资产的固定短语原样保留（逐字沿用）；只有仍是空白的占位人物才会被补全。提取结果必须先预览再写入。</p></HelpPopover></div><div className="row wrap">{extractKinds.map(item => <Button key={item.id} variant="secondary" disabled={!project.shots.length || extracting} onClick={() => prepareExtraction(item.id)}><Sparkles size={16} />AI 提取{item.label}（先确认）</Button>)}<span className="small muted">{project.shots.length ? `将读取 ${project.shots.length} 镜 · ${settings.scriptProvider === 'gemini' ? 'Gemini' : 'DeepSeek'} ${settings.models[settings.scriptProvider]}` : '请先在剧本步骤生成或导入剧本'}</span></div></section>
     <div className="toolbar" role="tablist" aria-label="资产类别">{kinds.map(k => <Button key={k.id} role="tab" aria-selected={kind === k.id} variant={kind === k.id ? 'default' : 'secondary'} onClick={() => setKind(k.id)}>{k.name} <span>{project.assets.filter(a => a.kind === k.id).length}</span></Button>)}</div>
-    {kind !== 'voice' && <div className="panel stack"><Field label="生图模型" hint="选择的厂商和模型会随确认任务实际提交。Seedream 需要火山方舟 Key，试用额度由服务商决定。"><select disabled={busy} value={`${settings.imageProvider}:${settings.models[settings.imageProvider]}`} onChange={e => { const [provider, model] = e.target.value.split(':') as ['openai' | 'seedream' | 'siliconflow', string]; setSettings({ ...settings, imageProvider: provider, models: { ...settings.models, [provider]: model } }); }}>{imageModelGroups.map(group => <optgroup key={group.provider} label={group.label}>{group.models.map(model => <option key={model.id} value={`${group.provider}:${model.id}`}>{model.name} · {model.description}</option>)}{!group.models.some(model => model.id === settings.models[group.provider]) && <option value={`${group.provider}:${settings.models[group.provider]}`}>自定义 · {settings.models[group.provider]}</option>}</optgroup>)}</select></Field><p className="small muted">当前生图渠道：{settings.imageProvider === 'openai' ? 'OpenAI' : settings.imageProvider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {settings.models[settings.imageProvider]}。免费兜底暂未配置，失败不会自动切换到其他收费渠道。</p></div>}
+    {kind !== 'voice' && <div className="panel stack"><Field label="生图模型" hint="选择的厂商和模型会随确认任务实际提交。Seedream 需要火山方舟 Key，试用额度由服务商决定。"><select disabled={busy} value={`${settings.imageProvider}:${modelFor(settings, settings.imageProvider, 'image')}`} onChange={e => { const cut = e.target.value.indexOf(':'); const provider = e.target.value.slice(0, cut); const model = e.target.value.slice(cut + 1); setSettings({ ...settings, imageProvider: provider, models: { ...settings.models, [provider]: { ...settings.models[provider], image: model } } }); }}>{endpointsFor(settings, 'image').map(endpoint => <optgroup key={endpoint.id} label={endpoint.name}>{modelOptions(settings, endpoint.id, 'image').map(option => <option key={option.id} value={`${endpoint.id}:${option.id}`}>{option.name} · {option.description}</option>)}</optgroup>)}</select></Field><p className="small muted">当前生图渠道：{settings.endpoints.find(endpoint => endpoint.id === settings.imageProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.imageProvider, 'image')}。免费兜底暂未配置，失败不会自动切换到其他收费渠道。</p></div>}
     {kind !== 'voice' && <div className="toolbar batch-bar" aria-label="资产批量操作"><label className="row"><input type="checkbox" aria-label="全选资产" checked={allVisibleSelected} onChange={() => setSelected(allVisibleSelected ? new Set() : new Set(visible.map(asset => asset.id)))} />全选</label><Button variant="secondary" disabled={!batchMissing.length || !!batch?.running} onClick={() => prepareBatch(batchMissing)}><Sparkles size={16} />生成缺图（{batchMissing.length}）</Button><Button variant="outline" disabled={!batchTargets.length} onClick={() => copyAllPrompts(batchTargets)}><Copy size={14} />复制全部提示词</Button><Button variant="outline" onClick={() => confirmAssets(false)}><Check size={14} />确认全部资产</Button><Button variant="outline" onClick={() => { setImportPreview(undefined); setImportOpen(true); }}><FileText size={14} />批量导入</Button><Button variant="outline" onClick={() => { setUploadPlan(undefined); setUploadOpen(true); }}><Upload size={14} />批量导图</Button><Button variant="outline" onClick={() => setTemplateOpen(true)}>编辑模板</Button></div>}
     {styleNotice > 0 && <div className="alert row between wrap" role="alert"><span>风格已更新，已生成的 {styleNotice} 张图不会自动重做。</span><Button variant="secondary" size="sm" onClick={() => { setStyleNotice(0); prepareBatch(project.assets.filter(asset => asset.kind !== 'voice')); }}>重新生成全部（{styleNotice}）</Button></div>}
     {assetIssues.length > 0 && <div className="alert" role="alert"><strong>资产还需要完善：</strong><ul>{assetIssues.map(issue => <li key={issue}>{issue}</li>)}</ul></div>}
@@ -437,7 +444,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     </Modal>
     <Modal wide open={!!batchPlan} onClose={() => setBatchPlan(undefined)} title="确认批量生成设定图" description="每张图独立提交，单张失败不影响其他。确认后才会调用付费 API。">
       {batchPlan && <div className="stack">
-        <p>{batchPlan.assets.length} 张 · {settings.imageProvider === 'openai' ? 'OpenAI' : settings.imageProvider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {settings.models[settings.imageProvider]}</p>
+        <p>{batchPlan.assets.length} 张 · {settings.endpoints.find(endpoint => endpoint.id === settings.imageProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.imageProvider, 'image')}</p>
         <div className="alert">提示词可直接修改，只影响本次请求；模板与资产固定短语不会被改写，一致性请自行核对。</div>
         {batchPlan.assets.map(asset => <div key={asset.id}><Field label={`「${asset.name}」· 即将发送的图片提示词`} hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={8} value={batchPlan.prompts[asset.id] ?? ''} onChange={e => setBatchPlan(previous => previous && { ...previous, prompts: { ...previous.prompts, [asset.id]: e.target.value } })} /></Field><Button variant="ghost" size="sm" onClick={() => setBatchPlan(previous => previous && { ...previous, prompts: { ...previous.prompts, [asset.id]: previous.defaults[asset.id] ?? '' } })}>恢复默认提示词</Button></div>)}
         <div className="toolbar"><Button disabled={batchPlan.assets.some(asset => !batchPlan.prompts[asset.id]?.trim())} onClick={() => { const plan = batchPlan; setBatchPlan(undefined); void executeBatch(plan.assets, plan.prompts); }}>确认并开始生成（{batchPlan.assets.length}）</Button><Button variant="ghost" onClick={() => setBatchPlan(undefined)}>取消</Button></div>
@@ -460,7 +467,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     <Modal open={!!deleting} onClose={() => setDeleting(undefined)} title={`删除「${deleting?.name || ''}」？`} description="会解除镜头资产、参考图、台词说话者和人物音色关联。台词文字保留，但需重新选择人物。此操作不能撤销。"><div className="stack"><p>引用位置：{deleting ? assetUsage(project, deleting.id).join('、') || '未被引用' : ''}</p><div className="toolbar"><Button onClick={() => { if (deleting) updateProject(project.id, p => removeAsset(p, deleting.id), true); setDeleting(undefined); }}>确认删除并解除关联</Button><Button variant="ghost" onClick={() => setDeleting(undefined)}>取消</Button></div></div></Modal>
     <Modal open={!!removingImage} onClose={() => setRemovingImage(undefined)} title="移除图片及引用？" description="保留资产文字设定，但解除所有镜头对此图片的参考附件关联。"><div className="toolbar"><Button onClick={() => { if (removingImage) updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: p.assets.map(a => a.id === removingImage.id ? { ...a, imageId: undefined } : a), shots: p.shots.map(s => ({ ...s, references: s.references.filter(r => r.assetId !== removingImage.id) })) }), true); setRemovingImage(undefined); }}>确认移除图片</Button><Button variant="ghost" onClick={() => setRemovingImage(undefined)}>取消</Button></div></Modal>
     <Modal open={!!pending} onClose={() => { if (!busy) { setPending(undefined); setFailure(undefined); setProgress(undefined); } }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
-      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.provider === 'openai' ? 'OpenAI' : pending.provider === 'seedream' ? '火山引擎 / 即梦 · Seedream' : '硅基流动 SiliconFlow（免费）'} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词" hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={12} value={pending.prompt} disabled={busy} onChange={e => setPending(previous => previous && { ...previous, prompt: e.target.value })} /></Field>{pending.prompt !== pending.defaultPrompt && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setPending(previous => previous && previous.kind === 'image' ? { ...previous, prompt: previous.defaultPrompt } : previous)}>恢复默认提示词</Button>}</> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{progress && <ProgressPanel title={pending.kind === 'image' ? '生成设定图' : '试听'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={pending.kind === 'image' ? imageRemaining : speechRemaining} detail={pending.kind === 'image' ? '服务商不返回进度，按已用时等待' : '服务商不返回进度'} onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button>{pending.kind === 'image' && <Button variant="ghost" onClick={() => { setPending(undefined); setTemplateOpen(true); }}>编辑模板</Button>}<Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
+      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.providerName} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p><Field label="即将发送的完整图片提示词" hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={12} value={pending.prompt} disabled={busy} onChange={e => setPending(previous => previous && { ...previous, prompt: e.target.value })} /></Field>{pending.prompt !== pending.defaultPrompt && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setPending(previous => previous && previous.kind === 'image' ? { ...previous, prompt: previous.defaultPrompt } : previous)}>恢复默认提示词</Button>}</> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{progress && <ProgressPanel title={pending.kind === 'image' ? '生成设定图' : '试听'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={pending.kind === 'image' ? imageRemaining : speechRemaining} detail={pending.kind === 'image' ? '服务商不返回进度，按已用时等待' : '服务商不返回进度'} onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button>{pending.kind === 'image' && <Button variant="ghost" onClick={() => { setPending(undefined); setTemplateOpen(true); }}>编辑模板</Button>}<Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
     </Modal>
     <TemplateEditor project={project} open={templateOpen} onClose={() => setTemplateOpen(false)} initialKind="image" onSaved={styleChanged => { if (styleChanged) setStyleNotice(project.assets.filter(asset => asset.kind !== 'voice' && asset.imageId).length); }} />
   </div>;
