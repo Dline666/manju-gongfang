@@ -399,7 +399,23 @@ function AssetEditor({ project, navigate }: PageProps) {
   const toggleForm = (key: string) => setExpandedForms(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   const toggleDesc = (id: string) => setOpenDesc(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const voiceName = (asset: Asset) => asset.kind === 'voice' ? (asset.voiceId || '未选择') : (project.assets.find(a => a.id === asset.voiceAssetId)?.name || '—');
-  const addForm = (base: Asset) => setEditing({ asset: { id: uid(), kind: base.kind, name: `${splitFormName(base.name).base} · 新形态`, description: '', lock: '' }, revision: project.revision, isNew: true });
+  const addForm = (base: Asset) => {
+    const baseInfo = splitFormName(base.name);
+    const seed = base.description.trim();
+    const prefix = seed ? (/[。！？.!?]$/.test(seed) ? seed : `${seed}。`) : '';
+    setEditing({
+      asset: {
+        id: uid(), kind: base.kind,
+        name: `${baseInfo.base} · 新形态`,
+        description: `${prefix}新形态：保持五官、发型与配色一致，需要变化的部分：`,
+        lock: base.lock || seed,
+        imageId: base.imageId,
+        voiceAssetId: base.voiceAssetId,
+      },
+      revision: project.revision, isNew: true,
+    });
+    if (base.imageId) toast.info('新形态已继承当前设定图与固定短语，补充差异描述后再生成。');
+  };
   const exportAssets = () => {
     const rows = groups.flatMap(group => [group.base, ...group.forms]);
     const text = rows.map(asset => `## ${asset.name}\n\n- 类型：${kinds.find(k => k.id === asset.kind)?.name}\n- 描述：${asset.description || '未填写'}\n- 固定短语：${fixedDescription(asset) || '未设置'}\n- 音色：${voiceName(asset)}\n- 图片：${asset.imageId ? '已有' : '缺失'}`).join('\n\n');
@@ -455,10 +471,10 @@ function AssetEditor({ project, navigate }: PageProps) {
     <div className="toolbar" role="tablist" aria-label="资产类别">{kinds.map(k => <Button key={k.id} role="tab" aria-selected={kind === k.id} variant={kind === k.id ? 'default' : 'secondary'} onClick={() => setKind(k.id)}>{k.name} <span>{project.assets.filter(a => a.kind === k.id).length}</span></Button>)}</div>
     <div className="asset-bulk" aria-label="资产批量操作">
       <Button onClick={() => edit()}><Plus size={16} />新增{assetLabel}</Button>
-      <Button variant="secondary" onClick={() => confirmAssets(false)}><Check size={16} />保存</Button>
-      {kind !== 'voice' && <Button variant="outline" onClick={() => { setUploadPlan(undefined); setUploadOpen(true); }}><Upload size={16} />一键匹配资产图片</Button>}
+      <Button variant="secondary" onClick={() => confirmAssets(false)}><Check size={16} />保存并锁定</Button>
+      {kind !== 'voice' && <Button variant="outline" onClick={() => { setUploadPlan(undefined); setUploadOpen(true); }}><Upload size={16} />按文件名匹配图片</Button>}
       {kind !== 'voice' && <Button variant="outline" disabled={!missing.length || !!batch?.running} onClick={() => prepareBatch(missing)}><Sparkles size={16} />批量生成{assetLabel}图片{missing.length ? `（${missing.length}）` : ''}</Button>}
-      <Button variant="outline" onClick={() => { setImportPreview(undefined); setImportOpen(true); }}><FileText size={16} />批量添加到资产库</Button>
+      <Button variant="outline" onClick={() => { setImportPreview(undefined); setImportOpen(true); }}><FileText size={16} />批量导入资产</Button>
       <Button variant="outline" onClick={exportAssets}><Download size={16} />{assetLabel}导出</Button>
       {kind !== 'voice' && <Button variant="ghost" onClick={() => setTemplateOpen(true)}>编辑模板</Button>}
       {kind === 'voice' && <Button variant="ghost" disabled={voicesBusy} onClick={loadVoices}>{voicesBusy ? '正在获取…' : '获取 MiniMax 音色库'}</Button>}
@@ -504,7 +520,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     <Modal open={importOpen} onClose={() => { setImportOpen(false); setImportPreview(undefined); }} title="批量导入资产" description="每行一条：类型：名称：描述。支持人物 / 场景 / 道具，先预览再写入。">
       <div className="stack"><Field label="粘贴资产清单"><textarea rows={6} value={importText} placeholder={'人物：阿青：十六岁少年，黑短发，青色布衣\n场景：山门：黑色石阶，薄雾\n道具：断剑：红绳剑柄，斜断口'} onChange={e => { setImportText(e.target.value); setImportPreview(undefined); }} /></Field><Field label="或上传 UTF-8 的 .txt / .md（≤1MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={async e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; try { if (file.size > 1024 * 1024) throw new Error('清单文件请小于1MB。'); setImportText(await file.text()); setImportPreview(undefined); } catch (error) { toast.error(errorMessage(error)); } }} /></Field><div className="toolbar"><Button variant="secondary" onClick={parseAssetImport}>解析并预览</Button><Button variant="ghost" onClick={() => { setImportOpen(false); setImportPreview(undefined); }}>取消</Button></div>{importPreview && <div className="stack"><p className="small muted">共 {importPreview.assets.length} 项：新增 {importPreview.added}，沿用 {importPreview.reused}。</p><div className="stack">{importPreview.assets.map(asset => <div className="row between" key={asset.id}><span>{kinds.find(k => k.id === asset.kind)?.name}「{asset.name}」</span><StatusChip tone={project.assets.some(old => old.id === asset.id) ? 'neutral' : 'success'}>{project.assets.some(old => old.id === asset.id) ? '沿用' : '新增'}</StatusChip></div>)}</div><Button onClick={saveAssetImport}>确认导入</Button></div>}</div>
     </Modal>
-    <Modal open={uploadOpen} onClose={() => { setUploadOpen(false); setUploadPlan(undefined); }} title="批量导入设定图" description="图片文件名需与资产名称一致（不含扩展名），按文件名匹配。先预览再写入。">
+    <Modal open={uploadOpen} onClose={() => { setUploadOpen(false); setUploadPlan(undefined); }} title="按文件名匹配设定图" description="图片文件名需与资产名称一致（不含扩展名），按文件名匹配。先预览再写入。">
       <div className="stack" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); planUpload([...e.dataTransfer.files].filter(file => file.type.startsWith('image/'))); }}><Field label="选择多张图片（可拖入；PNG / JPEG / WebP，≤5MB）"><input type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => { planUpload([...(e.target.files || [])]); e.target.value = ''; }} /></Field>{uploadPlan && <div className="stack"><p className="small muted">匹配 {uploadPlan.matched.length} 张，未匹配 {uploadPlan.unmatched.length} 张。</p>{uploadPlan.matched.map(entry => <p key={entry.asset.id}>「{entry.asset.name}」← {entry.file.name}</p>)}{uploadPlan.unmatched.length > 0 && <p className="small muted">未匹配：{uploadPlan.unmatched.map(file => file.name).join('、')}</p>}{uploadPlan.matched.length > 0 && <Button onClick={() => void saveUploads()}>确认导入 {uploadPlan.matched.length} 张</Button>}</div>}</div>
     </Modal>
     <Modal wide open={!!batchPlan} onClose={() => setBatchPlan(undefined)} title="确认批量生成设定图" description="每张图独立提交，单张失败不影响其他。确认后才会调用付费 API。">

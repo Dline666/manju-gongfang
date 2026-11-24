@@ -10,7 +10,7 @@ export function PageHeader({ title, help, actions }: { title: ReactNode; help?: 
   const nav = useContext(StageNavContext);
   return <header className="page-heading">
     <div className="page-heading-title"><h1>{title}</h1>{help}</div>
-    {nav && <div className="page-heading-nav">{nav}</div>}
     {actions && <div className="page-heading-actions">{actions}</div>}
+    {nav && <div className="page-heading-nav">{nav}</div>}
   </header>;
 }
