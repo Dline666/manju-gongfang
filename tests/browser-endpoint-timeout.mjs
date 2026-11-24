@@ -12,7 +12,9 @@ try {
 
   await page.goto('http://127.0.0.1:5173/');
   await page.evaluate(async () => {
-    const s = await import('/src/store/studio.ts');
+    // 取 app 实际加载过的那个模块 URL：HMR 之后裸路径会拿到另一个实例，存档就对不上了
+    const url = performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')) || '/src/store/studio.ts';
+    const s = await import(url);
     const p = s.createProject('超时文案回归', '少年在雨夜山门拾起一把断剑，却不知剑里封着自己被削去的神格');
     s.updateProject(p.id, { style: '东方玄幻水墨风' });
     location.hash = '/settings';
