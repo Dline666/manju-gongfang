@@ -25,7 +25,7 @@ const project: Project = {
 
 const withPlan = (kind: 'script' | 'video' | 'extract-characters', blocks: { id: string; title: string; text: string }[]): Project => ({
   ...project,
-  promptConfig: { v: 2, templates: { [kind]: { blocks } } },
+  promptConfig: { v: 3, overrides: { templates: { [kind]: { blocks } } } },
 });
 
 test('没有模板计划时只输出作品数据，没有任何默认提示词文案', async () => {

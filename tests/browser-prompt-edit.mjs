@@ -137,33 +137,33 @@ try {
     const after = await saved();
     assert.equal(after.promptConfig, undefined, '手动改写不得写回提示词模板');
 
-    // 5. 提示词模板面板从左边展开。
-    await page.goto('http://127.0.0.1:5173/#/assets');
-    await page.getByRole('button', { name: '编辑模板', exact: true }).click();
-    const sheet = page.locator('[data-slot="sheet-content"]');
-    await sheet.waitFor();
-    const box = await sheet.boundingBox();
-    assert.ok(box.x <= 2, `模板面板必须贴左边展开，实际 x=${box.x}`);
-    if (width === 1440) assert.ok(box.x + box.width <= width - 100, `模板面板必须靠左，实际 right=${box.x + box.width}`);
+    // 5. 提示词模板在设置页整页编辑，不再是从流程页弹出的抽屉。
+    await page.goto('http://127.0.0.1:5173/#/settings/templates?kind=image');
+    const editor = page.locator('.template-editor');
+    await editor.waitFor();
+    assert.equal(await page.locator('[data-slot="sheet-content"]').count(), 0, '不应再有模板抽屉');
+    assert.equal(await page.getByRole('tab', { name: '提示词模板' }).count(), 1, '设置页要有「提示词模板」页签');
 
     // 5.1 数据块不在模板里：没有插入入口，作品数据仍由系统自动附带。
-    assert.equal(await sheet.locator('select[aria-label="选择数据块"]').count(), 0, '不应再有插入数据块的下拉');
-    const previewText = await sheet.locator('textarea[aria-label="模板预览"]').inputValue();
+    assert.equal(await editor.locator('select[aria-label="选择数据块"]').count(), 0, '不应再有插入数据块的下拉');
+    const previewText = await editor.locator('textarea[aria-label="模板预览"]').inputValue();
     assert.ok(previewText.includes('主体：'), '作品数据仍会自动附带进提示词');
 
     // 5.2 资产三类：一次只预览当前子类，不把三个预览一起摊开。
-    await sheet.getByRole('button', { name: /^资产/ }).first().click();
+    await editor.getByRole('button', { name: /^资产/ }).first().click();
     await page.waitForTimeout(300);
-    assert.equal(await sheet.locator('textarea[aria-label^="模板预览"]').count(), 1, '资产页签一次只预览一个子类');
-    const characterPreview = await sheet.locator('textarea[aria-label^="模板预览"]').inputValue();
+    assert.equal(await editor.locator('textarea[aria-label^="模板预览"]').count(), 1, '资产页签一次只预览一个子类');
+    const characterPreview = await editor.locator('textarea[aria-label^="模板预览"]').inputValue();
     assert.ok(characterPreview.includes('说话人清单'), '人物子类预览人物提示词');
-    await sheet.getByRole('button', { name: '场景', exact: true }).click();
+    await editor.getByRole('button', { name: '场景', exact: true }).click();
     await page.waitForTimeout(300);
-    const scenePreview = await sheet.locator('textarea[aria-label^="模板预览"]').inputValue();
+    const scenePreview = await editor.locator('textarea[aria-label^="模板预览"]').inputValue();
     assert.ok(scenePreview.includes('场景清单'), '场景子类预览场景提示词');
     assert.notEqual(scenePreview, characterPreview, '不同子类预览不同内容');
-    await page.keyboard.press('Escape');
-    await sheet.waitFor({ state: 'hidden' });
+
+    // 5.3 作用域：全局模板是默认，单部作品可以单独覆盖某一步。
+    assert.equal(await page.getByRole('tab', { name: '全局模板（默认）' }).count(), 1, '要有全局作用域');
+    assert.equal(await page.getByRole('tab', { name: /^当前作品/ }).count(), 1, '要有作品作用域');
 
     assert.deepEqual(errors, []);
     results.push({ width, passed: true, calls: calls.map(call => call.action) });
