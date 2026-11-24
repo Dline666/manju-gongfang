@@ -48,7 +48,9 @@ try {
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '黑短发，青色布衣');
     await overflow(); await close();
     assert.equal(await page.locator('main input[type=file]').count(), 0);
-    assert.ok((await page.locator('.compact-media-thumbnail').first().boundingBox()).height <= 150);
+    const wallThumbs = page.locator('.asset-wall .compact-media-thumbnail');
+    assert.equal(await wallThumbs.count(), 1);
+    assert.ok((await wallThumbs.first().boundingBox()).height >= 300, 'asset wall thumbnails are enlarged');
     await page.screenshot({ path: `dev/asset-cards-${width}.png` });
     await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); s.setKey('openai', 'fixture-not-transmitted'); s.setKey('gemini', 'fixture-not-transmitted'); });
     await page.getByRole('button', { name: /生成缺图/ }).click();
@@ -94,6 +96,7 @@ try {
       assert.equal((copied.match(/提示词/g) || []).length, 1);
     }
     await page.goto('http://127.0.0.1:5173/#/assets');
+    await page.locator('details.fold').filter({ hasText: '从剧本提取资产' }).locator('summary').click();
     await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
     assert.equal(calls.length, 1);
     await page.getByRole('button', { name: '确认发送并提取人物资产', exact: true }).click();

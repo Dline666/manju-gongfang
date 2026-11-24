@@ -29,6 +29,14 @@ export function HelpPopover({ title, children, label = '查看说明' }: { title
   return <Popover><PopoverTrigger asChild><button type="button" className="icon-button" aria-label={label}><CircleHelp size={16} /></button></PopoverTrigger><PopoverContent align="start" sideOffset={6} className="w-80 text-[12px] leading-relaxed">{title && <h3 className="mb-2 text-[13px] font-semibold">{title}</h3>}<div className="muted">{children}</div></PopoverContent></Popover>;
 }
 
+// 默认折叠的次要内容：原生 details，零状态，键盘可直接展开。
+export function Fold({ title, meta, tone = 'panel', children }: { title: ReactNode; meta?: ReactNode; tone?: 'panel' | 'alert'; children: ReactNode }) {
+  return <details className={`${tone} fold`}>
+    <summary><span className="fold-title">{title}</span>{meta && <span className="small muted">{meta}</span>}</summary>
+    <div className="fold-body">{children}</div>
+  </details>;
+}
+
 export type StatusTone = 'neutral' | 'running' | 'success' | 'warning' | 'danger';
 const statusTones: Record<StatusTone, string> = {
   neutral: '',

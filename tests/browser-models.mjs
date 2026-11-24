@@ -73,7 +73,9 @@ try {
     await go('assets');
     for (const [provider, model] of imageModels) {
       await imageSelect.selectOption(`${provider}:${model}`);
+      await page.getByRole('button', { name: '生图模型说明' }).click();
       await expect(page.getByText(/当前生图渠道/)).toContainText(model);
+      await page.keyboard.press('Escape');
       const before = calls.filter(c => c.action === 'image').length;
       await createImage();
       await expect(page.getByRole('dialog')).toContainText(model);
@@ -111,7 +113,9 @@ try {
     await close();
     assert.equal(calls.filter(c => c.action === 'image').length, beforeFailure + 1, 'no automatic fallback or retry');
     assert.equal((await saved()).projects[0].assets[0].imageId, beforeImage);
+    await page.getByRole('button', { name: '生图模型说明' }).click();
     await expect(page.getByText(/当前生图渠道/)).toContainText('免费兜底暂未配置');
+    await page.keyboard.press('Escape');
     await go('settings');
     await openTab('生图');
     await expect(panel('OpenAI').locator('.tag')).toHaveText('调用失败');

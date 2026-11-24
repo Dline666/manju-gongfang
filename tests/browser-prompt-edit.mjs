@@ -93,6 +93,7 @@ try {
 
     // 2. 资产提取提示词：三类各自独立、各自可改写，并按改写内容发送。
     await page.goto('http://127.0.0.1:5173/#/assets');
+    await page.locator('details.fold').filter({ hasText: '从剧本提取资产' }).locator('summary').click();
     const defaults = {};
     for (const category of [{ label: '人物', action: 'extract-characters' }, { label: '场景', action: 'extract-scenes' }, { label: '道具', action: 'extract-props' }]) {
       await page.getByRole('button', { name: `AI 提取${category.label}（先确认）`, exact: true }).click();
