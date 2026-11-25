@@ -10,14 +10,16 @@ const shot = z.object({id:z.string(),number:z.number().int(),duration:z.number()
 const styleSpec = z.object({medium:z.string().optional(),line:z.string().optional(),palette:z.string().optional(),face:z.string().optional(),light:z.string().optional(),forbidden:z.array(z.string()).optional()});
 const promptDataSource=z.enum(['script.theme','script.source','script.characters','script.skills','extract.characters.shots','extract.characters.existing','extract.scenes.shots','extract.scenes.existing','extract.props.shots','extract.props.existing','director.screenplay','director.skills','director.assets','image.task','image.subject','image.style','image.skills','video.heading','video.visual','video.continuity','video.references','video.action','video.dialogue','video.audio','video.assets','video.style','video.skills']);
 const promptBlockPlan=z.object({id:z.string(),title:z.string(),text:z.string(),source:promptDataSource.optional(),builtin:z.string().optional(),shared:z.boolean().optional()});
-const promptTemplatePlan=z.object({blocks:z.array(promptBlockPlan)});
+const promptTemplatePlan=z.object({blocks:z.array(promptBlockPlan),skill:z.string().optional()});
+// Skill 库：全局一份，所有作品共用。正文由用户写，留空等于没写。
+const skillSpec=z.object({id:z.string(),name:z.string(),template:z.string(),kinds:z.array(z.enum(['script','extract-characters','extract-scenes','extract-props','director','image-character','image-scene','image-prop','video']))});
 // 模板按 kind 存一份。`image` 是旧结构：人物/场景/道具共用一份设定图模板，
 // 载入时迁移成 image-character / image-scene / image-prop 三份，所以 schema 仍然收它。
 const promptTemplateMap=z.object({script:promptTemplatePlan.optional(),'extract-characters':promptTemplatePlan.optional(),'extract-scenes':promptTemplatePlan.optional(),'extract-props':promptTemplatePlan.optional(),director:promptTemplatePlan.optional(),image:promptTemplatePlan.optional(),'image-character':promptTemplatePlan.optional(),'image-scene':promptTemplatePlan.optional(),'image-prop':promptTemplatePlan.optional(),video:promptTemplatePlan.optional()});
 const promptConfigV1=z.object({v:z.literal(1),style:styleSpec.optional(),blocks:z.record(z.string(),z.string()).optional()});
 const promptConfigV2=z.object({v:z.literal(2),style:styleSpec.optional(),templates:promptTemplateMap.optional()});
 // v3：作品覆盖层。overrides 里键存在 = 这一步归本作品管，没有的键跟随全局模板。
-const promptTemplateSet=z.object({style:styleSpec.optional(),templates:promptTemplateMap.optional()});
+const promptTemplateSet=z.object({style:styleSpec.optional(),templates:promptTemplateMap.optional(),skills:z.array(skillSpec).optional()});
 const promptConfigV3=z.object({v:z.literal(3),style:styleSpec.optional(),templates:promptTemplateMap.optional(),overrides:promptTemplateSet.optional()});
 const promptConfig=z.union([promptConfigV3,promptConfigV2,promptConfigV1]);
 const confirmed=z.object({script:z.number().optional(),assets:z.number().optional(),director:z.number().optional()});

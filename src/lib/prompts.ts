@@ -4,15 +4,15 @@
 import type { Asset, Project, PromptKindId, PromptTemplateSet, Shot } from '../domain/types';
 import { renderPrompt, type PromptBlock, type PromptKind, type PromptSpec } from './promptSpec';
 import { applyVariables, promptVariables } from './promptTemplates';
-import { dataSourcesFor, renderData, type RenderContext } from './promptBlocks';
-import { effectivePlan, effectiveStyle } from './promptScope';
+import { dataSourcesFor, findSkill, renderData, type RenderContext } from './promptBlocks';
+import { effectivePlan, effectiveSkillId, effectiveStyle } from './promptScope';
 
 export { parseSceneHead, fixedDescription, assetSpecs, assetPromptGroups, assetText, fullAssetText, visualKinds } from './promptBlocks';
 export type { ExtractCategory } from './promptBlocks';
 
 /**
  * 按块计划拼出一个 spec：
- * 用户写的块在前；作品数据不是模板块，由系统固定附带，排在后面。
+ * 用户写的块在前；这一步选中的 Skill 紧跟其后；作品数据不是模板块，由系统固定附带，排在最后。
  */
 function buildSpec(project: Project, kind: PromptKind, ctx: Omit<RenderContext, 'project'> = {}, global?: PromptTemplateSet): PromptSpec {
   const style = effectiveStyle(project, global);
@@ -20,11 +20,19 @@ function buildSpec(project: Project, kind: PromptKind, ctx: Omit<RenderContext, 
   const userBlocks: PromptBlock[] = effectivePlan(project, kind, global).map(plan => ({
     id: plan.id, label: plan.title, locked: false, text: applyVariables(plan.text.trim(), vars),
   }));
-  const dataBlocks: PromptBlock[] = dataSourcesFor(kind).map(def => ({
-    id: `data.${def.source}`, label: def.title, locked: true, reason: '作品数据，由系统自动附带',
-    text: applyVariables(renderData(def.source, { project, ...ctx, global }), vars),
-  }));
-  return { kind, blocks: [...userBlocks, ...dataBlocks] };
+  // 这一步选中的 Skill：正文由用户在 Skill 库里写，选了就每次自动带上；空正文等于没写。
+  const skill = findSkill(global?.skills, effectiveSkillId(project, kind, global));
+  const skillBlocks: PromptBlock[] = skill?.template.trim()
+    ? [{ id: `skill.${skill.id}`, label: `Skill · ${skill.name}`, locked: true, reason: '本步选定的 Skill，由系统自动附带', text: applyVariables(skill.template.trim(), vars) }]
+    : [];
+  // 选了这一步的 Skill，就不再叠加作品级勾选的内置「附加 Skill」——两套配方同时发过去会互相打架。
+  const dataBlocks: PromptBlock[] = dataSourcesFor(kind)
+    .filter(def => !(skill && def.source.endsWith('.skills')))
+    .map(def => ({
+      id: `data.${def.source}`, label: def.title, locked: true, reason: '作品数据，由系统自动附带',
+      text: applyVariables(renderData(def.source, { project, ...ctx, global }), vars),
+    }));
+  return { kind, blocks: [...userBlocks, ...skillBlocks, ...dataBlocks] };
 }
 
 export function scriptSpec(project: Project, global?: PromptTemplateSet): PromptSpec {

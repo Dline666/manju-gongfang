@@ -99,6 +99,7 @@ export function migrateSettings(saved: {
   if (!saved) return base;
   const endpoints = Array.isArray(saved.endpoints) && saved.endpoints.length ? saved.endpoints : builtinEndpoints();
   const models = migrateModels(saved.models, endpoints);
+  const templates = withFactoryDefaults(migrateTemplateSet(saved.promptTemplates) ?? base.promptTemplates);
   const settings: Settings = {
     ...base,
     ...saved,
@@ -107,7 +108,9 @@ export function migrateSettings(saved: {
     // 全局模板里可能还留着旧的共用设定图模板，一并按人物/场景/道具拆开。
     // 存档里没有全局模板时用出厂那份（用户自己写的三类资产提取规则 + 设定图出图约定）；
     // 存档里有但缺某一步时，这一步也用出厂的补上。
-    promptTemplates: withFactoryDefaults(migrateTemplateSet(saved.promptTemplates) ?? base.promptTemplates),
+    // Skill 库：老存档没有就补一份出厂的（每个步骤一个空槽位，正文留给用户写）；
+    // 用户自己清空过（skills 是空数组）就保持为空，不再补。
+    promptTemplates: { ...templates, skills: templates?.skills ?? base.promptTemplates?.skills ?? [] },
     scriptProvider: pickEndpoint(endpoints, saved.scriptProvider, 'script') ?? base.scriptProvider,
     imageProvider: pickEndpoint(endpoints, saved.imageProvider, 'image') ?? base.imageProvider,
     videoProvider: pickEndpoint(endpoints, saved.videoProvider, 'video') ?? base.videoProvider,
