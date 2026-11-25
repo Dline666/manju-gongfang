@@ -418,7 +418,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
           </div>
           {library.length === 0 && <p className="muted">库里还没有 Skill。点「新增 Skill」建一份，再勾它适用哪几步。</p>}
           {library.map((skill, index) => <section className="panel stack" key={skill.id}>
-            <div className="section-title">
+            <div className="section-title skill-head">
               <input aria-label={`Skill 名称 ${index + 1}`} value={skill.name} disabled={scope !== 'global'} onChange={event => updateSkill(skill.id, { name: event.target.value })} />
               <span className="small muted">{skill.template.length} 字</span>
               {!skill.kinds.length && <span className="tag">适用所有步骤</span>}
@@ -440,7 +440,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
               const current = override ?? builtinSkillText(skill.id);
               const changed = override !== undefined && override !== builtinSkillText(skill.id);
               return <section className="panel stack" key={skill.id}>
-                <div className="section-title">
+                <div className="section-title skill-head">
                   <strong>{skill.name}</strong>
                   <span className="small muted">{skill.description}</span>
                   {changed && <span className="tag">已修改</span>}

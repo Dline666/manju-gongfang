@@ -242,6 +242,11 @@ details.alert.fold ul{margin-top:2px}
 .compact-page .provider-tab{padding:6px 11px;font-size:12px}
 .compact-page .provider-group-note{margin:0;font-size:12px}
 .compact-page .template-editor{grid-template-columns:168px minmax(0,1fr);gap:14px}
+/* Skill 库模式没有左侧步选择列，必须回到单列；否则内容会被挤进 168px 那一列。 */
+.compact-page .template-editor.is-single{grid-template-columns:minmax(0,1fr)}
+.compact-page .skill-head{flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.compact-page .skill-head>input{flex:1 1 240px;width:auto;min-width:0;max-width:520px;padding:7px 10px;font-size:15px;font-weight:550}
+.compact-page .skill-head>[data-slot=button]{margin-left:auto}
 .compact-page .template-tabs{gap:4px;top:0}
 .compact-page .template-tabs button{padding:7px 10px}
 .compact-page .template-tabs button strong{font-size:12px}
