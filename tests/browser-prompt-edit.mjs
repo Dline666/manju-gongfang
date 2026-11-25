@@ -55,14 +55,15 @@ try {
       else if (action === 'extract-characters' || action === 'extract-scenes' || action === 'extract-props') {
         const key = action === 'extract-characters' ? 'characters' : action === 'extract-scenes' ? 'scenes' : 'props';
         const names = key === 'characters' ? ['阿青'] : key === 'scenes' ? ['山门'] : ['断剑'];
-        await route.fulfill({ json: { ok: true, data: { [key]: [{ name: names[0], description: '固定描述' }], shots: [{ number: 1, [key]: names }, { number: 2, [key]: [] }] } } });
+        await route.fulfill({ json: { ok: true, data: { [key]: [{ name: names[0], description: '固定描述' }], shots: [{ number: 1, [key]: names }, { number: 2, [key]: [] }, { number: 3, [key]: names }] } } });
       }
       else if (action === 'director') {
-        const shots = await page.evaluate(async () => {
-          const entry = performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'));
-          const store = await import(entry);
-          return store.getStudio().projects[0].shots.map(shot => ({ number: shot.number, shotSize: '中景', movement: '固定', angle: '平视', start: shot.start || '石阶前', action: shot.action || '抬手', end: shot.end || '站定' }));
-        });
+        // 镜数由模型自己决定：剧本里只有两处【镜头：】，这里返回三镜。
+        const shots = [
+          { number: 1, title: '雨夜拾剑', scene: '外景 · 山门 — 清晨', visual: '少年在雨夜山门拾起一把断剑。', duration: 3, shotSize: '远景', movement: '固定', angle: '平视', start: '石阶下', action: '抠开泥', end: '断剑露出一截', dialogues: [] },
+          { number: 2, title: '剑脊流水', scene: '外景 · 山门 — 清晨', visual: '雨水顺着断剑的剑脊流下。', duration: 2, shotSize: '特写', movement: '推', angle: '平视', start: '断剑在手里', action: '捧起', end: '剑身发亮', dialogues: [] },
+          { number: 3, title: '回身', scene: '外景 · 山门 — 清晨', visual: '少年抬头望向山门。', duration: 2.5, shotSize: '中景', movement: '固定', angle: '平视', start: '低头', action: '抬头', end: '望向山门', dialogues: [{ speaker: '阿青', text: '我来拿回我的剑。' }] },
+        ];
         await route.fulfill({ json: { ok: true, data: { shots } } });
       } else if (action === 'contracts') {
         // 模板编辑器展示后端固定契约时读的接口；这里给一份假的就够了
@@ -94,9 +95,32 @@ try {
     assert.equal(scriptCall.body.prompt, scriptEdited, '必须发送改写后的剧本提示词');
     assert.notEqual(scriptCall.body.prompt, scriptDefault);
 
-    // 2. 资产提取提示词：三类各自独立、各自可改写，并按改写内容发送。
+    // 2. 导演分镜提示词：同样可改写并按改写内容发送。
+    await page.goto('http://127.0.0.1:5173/#/director');
+    await page.getByRole('button', { name: 'AI 生成分镜（先确认）', exact: true }).click();
+    const directorBox = page.getByLabel('即将发送的导演提示词');
+    await expect(directorBox).toBeEditable();
+    const directorDefault = await directorBox.inputValue();
+    const directorEdited = `${directorDefault}\n手动补充：只影响本次导演请求`;
+    await directorBox.fill(directorEdited);
+    await page.getByRole('button', { name: '确认发送并生成分镜', exact: true }).click();
+    await dialog().waitFor({ state: 'hidden' });
+    const directorCall = calls.find(call => call.action === 'director');
+    assert.ok(directorCall, '必须真实发出导演分镜请求');
+    assert.equal(directorCall.body.prompt, directorEdited, '必须发送改写后的导演提示词');
+    assert.ok(directorCall.body.prompt.includes('# 第四部分｜标准漫剧剧本'), '导演提示词必须带上剧本正文');
+
+    // 2.1 导演产出：镜数由模型决定，对白逐字取自剧本。
+    const directed = await saved();
+    assert.equal(directed.shots.length, 3, '镜数由模型决定，不与剧本里的标记数绑定');
+    assert.equal(directed.shots[2].camera, '中景·固定·平视');
+    assert.equal(directed.shots[2].dialogues.length, 1);
+    assert.equal(directed.shots[2].dialogues[0].speaker, '阿青');
+    assert.equal(directed.shots[2].dialogues[0].text, '我来拿回我的剑。', '对白必须逐字取自剧本');
+
+    // 3. 资产提取提示词：三类各自独立、各自可改写，并按改写内容发送。
     await page.goto('http://127.0.0.1:5173/#/assets');
-    await page.locator('details.fold').filter({ hasText: '从剧本提取资产' }).locator('summary').click();
+    await page.locator('details.fold').filter({ hasText: '从分镜提取资产' }).locator('summary').click();
     const defaults = {};
     for (const category of [{ label: '人物', action: 'extract-characters' }, { label: '场景', action: 'extract-scenes' }, { label: '道具', action: 'extract-props' }]) {
       await page.getByRole('button', { name: `AI 提取${category.label}（先确认）`, exact: true }).click();
@@ -118,20 +142,6 @@ try {
     assert.notEqual(defaults['人物'], defaults['场景'], '人物与场景必须用不同的提示词');
     assert.notEqual(defaults['场景'], defaults['道具'], '场景与道具必须用不同的提示词');
     assert.notEqual(defaults['人物'], defaults['道具'], '人物与道具必须用不同的提示词');
-
-    // 3. 导演分镜提示词：同样可改写并按改写内容发送。
-    await page.goto('http://127.0.0.1:5173/#/director');
-    await page.getByRole('button', { name: 'AI 生成分镜（先确认）', exact: true }).click();
-    const directorBox = page.getByLabel('即将发送的导演提示词');
-    await expect(directorBox).toBeEditable();
-    const directorDefault = await directorBox.inputValue();
-    const directorEdited = `${directorDefault}\n手动补充：只影响本次导演请求`;
-    await directorBox.fill(directorEdited);
-    await page.getByRole('button', { name: '确认发送并生成分镜', exact: true }).click();
-    await dialog().waitFor({ state: 'hidden' });
-    const directorCall = calls.find(call => call.action === 'director');
-    assert.ok(directorCall, '必须真实发出导演分镜请求');
-    assert.equal(directorCall.body.prompt, directorEdited, '必须发送改写后的导演提示词');
 
     // 4. 手动改写不回写模板。
     const after = await saved();

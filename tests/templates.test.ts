@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { directorPrompt, directorSpec, extractCharactersPrompt, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
 import { promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
 import { findUnknownVariables } from '../src/lib/promptTemplates';
-import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, migrateTemplateSet } from '../src/lib/promptBlocks';
+import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, migrateTemplateSet, withFactoryDefaults } from '../src/lib/promptBlocks';
+import { migrateSettings } from '../src/lib/endpoints';
 import { effectivePlan, effectiveStyle, ownsKind, ownsStyle } from '../src/lib/promptScope';
 import { savedStudioSchema } from '../src/store/schema';
-import { defaultSettings, defaultStyle, makeShot, type Asset, type Project, type PromptTemplateSet } from '../src/domain/types';
+import { defaultPromptTemplates, defaultSettings, defaultStyle, makeShot, type Asset, type Project, type PromptTemplateSet } from '../src/domain/types';
 
 const hero: Asset = { id: 'hero', kind: 'character', name: '沈砚', description: '灰白布衣', lock: '十七岁少年，灰白旧布衣，背空剑鞘', imageId: 'image-hero' };
 const scene: Asset = { id: 'scene', kind: 'scene', name: '山门', description: '石阶', lock: '青灰石阶九十九级，晨雾低垂', imageId: 'image-scene' };
@@ -24,8 +25,8 @@ function makeProject(promptConfig?: Project['promptConfig']): Project {
 
 const blocks = (...texts: string[]) => texts.map((text, index) => ({ id: `b${index}`, title: `块${index}`, text }));
 
-test('内置块目录齐全：43 条，只有标题没有默认文案', () => {
-  assert.equal(builtinBlocks.length, 43);
+test('内置块目录齐全：46 条，只有标题没有默认文案', () => {
+  assert.equal(builtinBlocks.length, 46);
   for (const block of builtinBlocks) {
     assert.equal(typeof block.id, 'string');
     assert.ok(block.title.length > 0, `${block.id} 必须有标题`);
@@ -69,7 +70,7 @@ test('数据源清单按 kind 覆盖三类提取与四个步骤，且不属于�
   assert.deepEqual(dataSourcesFor('extract-characters').map(item => item.source), ['extract.characters.shots', 'extract.characters.existing']);
   assert.deepEqual(dataSourcesFor('extract-scenes').map(item => item.source), ['extract.scenes.shots', 'extract.scenes.existing']);
   assert.deepEqual(dataSourcesFor('extract-props').map(item => item.source), ['extract.props.shots', 'extract.props.existing']);
-  assert.ok(dataSourcesFor('director').some(item => item.source === 'director.shots'));
+  assert.ok(dataSourcesFor('director').some(item => item.source === 'director.screenplay'));
   for (const kind of ['image-character', 'image-scene', 'image-prop'] as const) {
     assert.deepEqual(dataSourcesFor(kind).map(item => item.source), ['image.task', 'image.subject', 'image.style', 'image.skills'], `${kind} 的数据源`);
   }
@@ -81,8 +82,8 @@ test('数据源清单按 kind 覆盖三类提取与四个步骤，且不属于�
 
 test('模板默认是空的：没有用户计划就没有块，数据由系统固定注入', () => {
   const project = makeProject();
-  for (const kind of ['script', 'extract-characters', 'director', 'image', 'video'] as const) {
-    assert.deepEqual(effectivePlan(project, kind), [], `${kind} 的模板默认应为空`);
+  for (const kind of ['script', 'extract-characters', 'director', 'image-character', 'video'] as const) {
+    assert.deepEqual(effectivePlan(project, kind as never), [], `${kind} 的模板默认应为空`);
   }
   const script = scriptSpec(project);
   assert.ok(script.blocks.length > 0, '数据仍要注入，提示词不能空');
@@ -330,6 +331,52 @@ test('剧本层与导演层互不串块', () => {
   const script = scriptSpec(project);
   assert.ok(!script.blocks.some(block => block.id.startsWith('director.')));
   const director = directorSpec(project);
-  assert.ok(director.blocks.some(block => block.id === 'data.director.shots'));
-  assert.ok(promptBlock(director, 'data.director.shots'));
+  assert.ok(director.blocks.some(block => block.id === 'data.director.screenplay'));
+  assert.ok(promptBlock(director, 'data.director.screenplay'));
+});
+test('出厂全局模板带三类资产提取规则与设定图出图约定', () => {
+  const templates = defaultPromptTemplates.templates!;
+  assert.ok(templates.script!.blocks.some(block => block.id === 'script.characters.extract'), '剧本栏要有人物提取规则');
+  assert.ok(templates.script!.blocks.some(block => block.id === 'script.scenes.extract'), '剧本栏要有场景提取规则');
+  assert.ok(templates.script!.blocks.some(block => block.id === 'script.props.extract'), '剧本栏要有道具提取规则');
+  assert.ok(templates['image-character']!.blocks.some(block => block.id === 'image.character.three-view'), '图片栏要有人物出图约定');
+  assert.ok(templates['image-scene']!.blocks.some(block => block.id === 'image.scene.composition'), '图片栏要有场景出图约定');
+  assert.ok(templates['image-prop']!.blocks.some(block => block.id === 'image.prop.composition'), '图片栏要有道具出图约定');
+  // 出图约定只管设定图：不能混进资产固定短语，否则会污染视频提示词。
+  const characterRule = templates.script!.blocks.find(block => block.id === 'script.characters.extract')!.text;
+  assert.ok(!characterRule.includes('3D风格'), '出图约定不进资产提取规则');
+  assert.ok(!characterRule.includes('纯白'), '出图约定不进资产提取规则');
+  assert.ok(characterRule.includes('代称'), '提取规则要约束代称');
+  assert.ok(characterRule.includes('鞋子款式'), '提取规则要约束鞋子款式');
+});
+
+test('出厂模板能通过存档 schema，旧作品不受影响', () => {
+  const saved = savedStudioSchema.parse({ version: 1, projects: [], activeId: null, settings: defaultSettings });
+  assert.ok(saved.settings.promptTemplates, '出厂模板要能存进本机存档');
+  assert.equal(saved.settings.promptTemplates!.templates!.script!.blocks.length, 3);
+});
+
+test('存档里缺某一步时，用出厂模板把这一步补上', () => {
+  const filled = withFactoryDefaults({ templates: {} });
+  assert.equal(filled.templates!.script!.blocks.length, 3, '空存档要拿到剧本栏的三条提取规则');
+  assert.equal(filled.templates!['image-character']!.blocks.length, 1, '图片栏也要有出厂的出图约定');
+});
+
+test('存档里已有的步骤不被出厂模板覆盖，主动清空的步骤保持为空', () => {
+  const mine = { id: 'mine', title: '我的剧本规则', text: '只写雨夜。' };
+  const filled = withFactoryDefaults({ templates: { script: { blocks: [mine] } } });
+  assert.deepEqual(filled.templates!.script!.blocks, [mine], '我自己写的那一步原样保留');
+  assert.equal(filled.templates!['image-scene']!.blocks.length, 1, '缺的步骤用出厂的补上');
+  const emptied = withFactoryDefaults({ templates: { script: { blocks: [] } } });
+  assert.equal(emptied.templates!.script!.blocks.length, 0, '主动清空的步骤保持为空');
+});
+
+test('老存档（早期版本留下的空全局模板）也能拿到出厂模板', () => {
+  const settings = migrateSettings({
+    scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance',
+    speechModel: 'speech-2.8-hd', styles: [],
+    promptTemplates: { templates: {} },
+  });
+  assert.equal(settings.promptTemplates!.templates!.script!.blocks.length, 3, '老存档要补上出厂的提取规则');
+  assert.equal(settings.promptTemplates!.templates!['image-prop']!.blocks.length, 1);
 });

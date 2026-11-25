@@ -21,6 +21,12 @@ export interface Asset {
   imageId?: string; voiceId?: string; voiceAssetId?: string; speed?: number; locked?: boolean;
   /** 挂载的参考图来源：生成时把这个资产当前的设定图作为图生图参考；为空表示纯文本生成。 */
   referenceAssetId?: string;
+  /** 代称：同一个人在原文里的其它叫法（小青、青儿）。 */
+  aliases?: string[];
+}
+/** 剧本步骤顺带产出的资产：模型给的形状，落地时转成 Asset。 */
+export interface ScriptAsset {
+  id: string; name: string; aliases: string[]; description: string; lock: string;
 }
 /** 一句台词。speaker 是剧本里写下的说话人名字；speakerId 是它关联到的人物资产（提取或手动建人物后才有）。 */
 export interface Dialogue { id: string; speakerId: string; speaker?: string; text: string }
@@ -38,6 +44,8 @@ export interface Shot {
   assetIds: string[]; references: Reference[]; video?: VideoSource; audio?: AudioSource;
   audioMode: 'original' | 'dubbing' | 'silent'; task?: VideoTask; stale?: boolean; staleReason?: string;
   title?: string; scene?: string;
+  /** 本镜的画面主体资产 id（其余在场的放在 assetIds 里）。视频提示词据此区分主体与背景。 */
+  subjects?: string[];
   /** 剧本里为这一镜指定的画面类型（如「远景→摇镜」）；导演步骤必须落实。 */
   cameraHint?: string;
 }
@@ -56,9 +64,9 @@ export type PromptDataSource =
   | 'extract.characters.shots' | 'extract.characters.existing'
   | 'extract.scenes.shots' | 'extract.scenes.existing'
   | 'extract.props.shots' | 'extract.props.existing'
-  | 'director.shots' | 'director.skills'
+  | 'director.screenplay' | 'director.skills' | 'director.assets'
   | 'image.task' | 'image.subject' | 'image.style' | 'image.skills'
-  | 'video.heading' | 'video.continuity' | 'video.references' | 'video.action'
+  | 'video.heading' | 'video.visual' | 'video.continuity' | 'video.references' | 'video.action'
   | 'video.dialogue' | 'video.audio' | 'video.assets' | 'video.style' | 'video.skills';
 /** 用户在模板编辑器里排好的一块。text 是用户写的正文；source 是数据来源（数据块）。 */
 export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string; shared?: boolean }
@@ -158,12 +166,57 @@ export function defaultModels(): Settings['models'] {
     minimax: { video: 'MiniMax-H3' },
   };
 }
+/**
+ * 出厂全局模板。
+ *
+ * 这里的每一句都是用户自己写的（资产提取规则 + 设定图出图约定），系统不替用户编造规则。
+ * 出图约定故意不放进资产提取规则里：固定短语会逐字进视频提示词，
+ * 「纯白背景」「3D风格」这类只属于设定图的话进了视频提示词会误导视频模型。
+ * 用户可以在模板编辑器里随时改或删。
+ */
+export const defaultPromptTemplates: PromptTemplateSet = {
+  templates: {
+    script: { blocks: [
+      { id: 'script.characters.extract', title: '人物 · 提取规则', builtin: 'script.characters.extract', text: [
+        '1.1 根据我发给你的这篇文章，帮我整理出所有角色形象，需要包含人物性别、穿着、脸部特征、年龄、身高以及人物性格等。',
+        '1.2 根据提供的小说原文，推导出文中出现过的人物。人物可能有多种代称，要囊括文中提到的所有人物，包括「我」。每个人物包含名字、代称（多个代称用逗号分割）、形象描述三个字段。',
+        '1.3 人物形象必须包含具体年龄、性别、发色、发型、脸部特征、上身服装、下身服装、鞋子款式、身高；每个输出结果必须有不一样的着装，需要更好分辨。',
+        '1.4 不要用表格输出。',
+      ].join('\n') },
+      { id: 'script.scenes.extract', title: '场景 · 提取规则', builtin: 'script.scenes.extract', text: [
+        '请根据以下剧本内容提取场景，并为每个场景生成一个场景名和场景描述。',
+        '要求：场景描述只写环境、建筑、器物、光线、氛围等空间要素，不出现任何人物、人物动作或人物对白。',
+        '若多个镜头标注为同一「所属空间」，请归并为一个场景输出；若分属不同空间，则按空间分别输出。',
+      ].join('\n') },
+      { id: 'script.props.extract', title: '道具 · 提取规则', builtin: 'script.props.extract', text: [
+        '请根据以下剧本内容提取关键道具，并为每个道具生成道具名和道具描述。',
+        '要求：道具描述只写道具的形制、材质、尺寸比例、颜色、纹理、磨损或特殊标记、使用痕迹等可视特征，不出现人物、人物动作或人物对白。',
+        '若同一道具在多个镜头中出现，请合并为一个道具条目；若道具仅被提及但无可见形制，可标注「需设计」并给出合理造型建议。',
+      ].join('\n') },
+    ] },
+    'image-character': { blocks: [
+      { id: 'image.character.three-view', title: '人物三视图条款', builtin: 'image.character.three-view', text: [
+        '全部为正面站立全身形象图。',
+        '图片风格为「3D风格」，并在提示词中加入「3D风格」这句话。',
+        '图片人物背景为纯白，手中不拿武器等道具。',
+      ].join('\n') },
+    ] },
+    'image-scene': { blocks: [
+      { id: 'image.scene.composition', title: '场景构图说明', builtin: 'image.scene.composition', text: '画面为干净的空镜场景图，不出现任何人物。' },
+    ] },
+    'image-prop': { blocks: [
+      { id: 'image.prop.composition', title: '道具构图说明', builtin: 'image.prop.composition', text: '画面为干净的单一道具展示图，背景简洁中性。' },
+    ] },
+  },
+};
+
 export const defaultSettings: Settings = {
   scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance',
   endpoints: builtinEndpoints(),
   models: defaultModels(),
   speechModel: 'speech-2.8-hd',
   styles: [],
+  promptTemplates: defaultPromptTemplates,
 };
 export function makeShot(number: number): Shot {
   return { id: uid(), number, duration: 9, visual: '', camera: '缓慢推进', start: '', action: '', end: '', dialogues: [], assetIds: [], references: [], audioMode: 'original' };

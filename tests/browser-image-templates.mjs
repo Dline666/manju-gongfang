@@ -36,17 +36,17 @@ try {
     assert.ok(characterPreview.includes('示例人物'), '人物段预览人物资产');
     assert.ok(!characterPreview.includes('示例场景'), '人物段不应出现场景资产');
 
-    // 3. 内置块目录按品类分开：人物段没有场景构图说明，场景段没有人物三视图条款。
+    // 3. 内置块目录按品类分开：人物段没有场景/道具的内置块，场景段没有人物/道具的。
     const builtinOptions = async () => await editor.locator('select[aria-label="选择内置块"] option').allTextContents();
     const characterBuiltins = await builtinOptions();
-    assert.ok(characterBuiltins.includes('人物三视图条款'), '人物段提供人物内置块');
-    assert.ok(!characterBuiltins.includes('场景构图说明'), '人物段不提供场景内置块');
-    assert.ok(!characterBuiltins.includes('道具构图说明'), '人物段不提供道具内置块');
+    assert.ok(characterBuiltins.some(item => item.includes('人物')), '人物段提供人物内置块');
+    assert.ok(!characterBuiltins.some(item => item.includes('场景') || item.includes('道具')), '人物段不提供场景或道具的内置块');
 
-    // 4. 给人物段写一块，保存。
+    // 4. 给人物段写一块，保存。（出厂模板里已有一块，新块追加在最后）
+    const blockTitles = async (scope) => await scope.locator('input[aria-label^="块标题"]').evaluateAll(nodes => nodes.map(node => node.value));
     await editor.getByRole('button', { name: '新增块' }).click();
-    await editor.locator('input[aria-label="块标题 1"]').fill('人物专用条款');
-    await editor.locator('textarea:not([readonly])').first().fill('只输出一张角色设定卡：正面、侧面、背面三视图。');
+    await editor.locator('input[aria-label^="块标题"]').last().fill('人物专用条款');
+    await editor.locator('textarea:not([readonly])').last().fill('只输出一张角色设定卡：正面、侧面、背面三视图。');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await page.waitForTimeout(300);
     const characterSaved = await editor.locator('textarea[aria-label="模板预览 · 人物"]').inputValue();
@@ -55,19 +55,19 @@ try {
     // 5. 场景段是独立的：没有人物段的块，预览也换成场景资产。
     await cats.getByRole('tab', { name: '场景', exact: true }).click();
     await page.waitForTimeout(300);
-    assert.equal(await editor.locator('input[aria-label^="块标题"]').count(), 0, '场景段不能带人物段的块');
+    assert.ok(!(await blockTitles(editor)).includes('人物专用条款'), '场景段不能带人物段的块');
     await expect(editor.locator('textarea[aria-label="模板预览 · 场景"]')).toHaveCount(1);
     const scenePreview = await editor.locator('textarea[aria-label="模板预览 · 场景"]').inputValue();
     assert.ok(scenePreview.includes('示例场景'), '场景段预览场景资产');
     assert.ok(!scenePreview.includes('三视图'), '场景段不能出现人物段的块');
     const sceneBuiltins = await builtinOptions();
-    assert.ok(sceneBuiltins.includes('场景构图说明'), '场景段提供场景内置块');
-    assert.ok(!sceneBuiltins.includes('人物三视图条款'), '场景段不提供人物内置块');
+    assert.ok(sceneBuiltins.some(item => item.includes('场景')), '场景段提供场景内置块');
+    assert.ok(!sceneBuiltins.some(item => item.includes('人物') || item.includes('道具')), '场景段不提供人物或道具的内置块');
 
     // 6. 道具段同样独立。
     await cats.getByRole('tab', { name: '道具', exact: true }).click();
     await page.waitForTimeout(300);
-    assert.equal(await editor.locator('input[aria-label^="块标题"]').count(), 0, '道具段不能带人物段的块');
+    assert.ok(!(await blockTitles(editor)).includes('人物专用条款'), '道具段不能带人物段的块');
     await expect(editor.locator('textarea[aria-label="模板预览 · 道具"]')).toHaveCount(1);
     const propPreview = await editor.locator('textarea[aria-label="模板预览 · 道具"]').inputValue();
     assert.ok(propPreview.includes('示例道具'), '道具段预览道具资产');
@@ -76,20 +76,20 @@ try {
     // 7. 切回人物段，块还在，且三段预览互不相同。
     await cats.getByRole('tab', { name: '人物', exact: true }).click();
     await page.waitForTimeout(300);
-    assert.equal(await editor.locator('input[aria-label="块标题 1"]').inputValue(), '人物专用条款', '切回人物段块还在');
+    assert.ok((await blockTitles(editor)).includes('人物专用条款'), '切回人物段块还在');
     const previews = new Set([characterSaved, scenePreview, propPreview]);
     assert.equal(previews.size, 3, '三段预览必须各不相同');
 
-    // 8. 保存后重新打开：人物段的块还在，场景段仍然是空的。
+    // 8. 保存后重新打开：人物段的块还在，场景段仍然没有它。
     await page.reload();
     await page.locator('.template-editor').waitFor();
     const editor2 = page.locator('.template-editor');
     await editor2.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '人物', exact: true }).click();
     await page.waitForTimeout(300);
-    assert.equal(await editor2.locator('input[aria-label="块标题 1"]').inputValue(), '人物专用条款', '重开后人物段的块要还在');
+    assert.ok((await blockTitles(editor2)).includes('人物专用条款'), '重开后人物段的块要还在');
     await editor2.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '场景', exact: true }).click();
     await page.waitForTimeout(300);
-    assert.equal(await editor2.locator('input[aria-label^="块标题"]').count(), 0, '重开后场景段仍然为空');
+    assert.ok(!(await blockTitles(editor2)).includes('人物专用条款'), '重开后场景段仍然没有人物那段');
 
     // 9. 资产页的「编辑模板」直接落到对应品类那一段。
     await page.goto('http://127.0.0.1:5173/#/assets');

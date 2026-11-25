@@ -21,6 +21,7 @@ try {
     const page = await context.newPage();
     const errors = []; const calls = [];
     page.on('pageerror', e => errors.push(e.message));
+    page.on('dialog', dialog => { void dialog.accept(); });
     await page.route('**/functions/v1/app?*', async route => {
       const action = new URL(route.request().url()).searchParams.get('action');
       const body = route.request().postDataJSON(); calls.push({ action, body });
@@ -61,10 +62,12 @@ try {
     await page.getByRole('tab', { name: '全局模板（默认）' }).click();
     await expect(editor.getByRole('button', { name: /^剧本/ }).first()).toBeVisible();
 
-    // 2. 全局模板写一条规则并保存。
+    // 2. 全局模板写一条规则并保存。（出厂模板带内容，先清空再写，测的是作用域本身）
+    await editor.getByRole('button', { name: '清空模板' }).click();
+    await page.waitForTimeout(300);
     await editor.getByRole('button', { name: '新增块' }).click();
     await editor.locator('input[aria-label="块标题 1"]').fill('全局规则');
-    await editor.locator('textarea').filter({ hasNot: editor.locator('[readonly]') }).first().fill('全局剧本规则：只写雨夜。');
+    await editor.locator('textarea:not([readonly])').last().fill('全局剧本规则：只写雨夜。');
     await editor.getByRole('button', { name: '保存', exact: true }).click();
     await page.waitForTimeout(300);
     const afterGlobal = await saved();
@@ -90,8 +93,11 @@ try {
     await projectEditor.waitFor();
     await projectEditor.getByRole('button', { name: '改为独立编辑' }).click();
     await page.waitForTimeout(300);
+    await projectEditor.getByRole('button', { name: '清空模板' }).click();
+    await page.waitForTimeout(300);
+    await projectEditor.getByRole('button', { name: '新增块' }).click();
     await projectEditor.locator('input[aria-label="块标题 1"]').fill('本作品规则');
-    await projectEditor.locator('textarea').filter({ hasNot: projectEditor.locator('[readonly]') }).first().fill('本作品剧本规则：只写雪天。');
+    await projectEditor.locator('textarea:not([readonly])').last().fill('本作品剧本规则：只写雪天。');
     await projectEditor.getByRole('button', { name: '保存', exact: true }).click();
     await page.waitForTimeout(300);
     const afterOverride = await saved();

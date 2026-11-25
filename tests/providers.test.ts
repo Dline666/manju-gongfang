@@ -69,10 +69,19 @@ const screenplayText = [
   "【镜头：中景】",
   "沈砚（低声）：“我回来了。”（时长9s）",
 ].join("\n");
-const screenplay = () => ({ title: "测试剧本", logline: "少年在雨夜拾起断剑", screenplay: screenplayText });
+const screenplay = () => ({
+  title: "测试剧本", logline: "少年在雨夜拾起断剑", screenplay: screenplayText,
+  assets: {
+    characters: [{ id: "c1", name: "沈砚", aliases: "小砚", description: "沉默的少年", lock: "十七岁少年，灰白旧布衣" }],
+    scenes: [{ id: "s1", name: "山门", lock: "青灰石阶九十九级，晨雾低垂" }],
+    props: [{ id: "p1", name: "断剑", lock: "红绳缠绕的剑柄，断口有微弱金色灵光" }],
+  },
+});
 const director = () => ({ shots: Array.from({ length: 10 }, (_, i) => ({
-  number: i + 1, shotSize: "中景", movement: i === 9 ? "拉" : "推", angle: "平视",
-  start: "石阶前", action: "抬手", end: "站定",
+  number: i + 1, title: `第${i + 1}镜`, scene: "外景 · 山门石阶 — 清晨", sceneId: "s1", visual: `第${i + 1}镜画面`,
+  duration: 9, shotSize: "中景", movement: i === 9 ? "拉" : "推", angle: "平视",
+  start: "石阶前", action: "抬手", end: "站定", dialogues: [],
+  assets: [{ assetId: "c1", role: "subject" }],
 })) });
 const gemini = (value: unknown = script()) => ({ status: "completed", steps: [
   { type: "thought", content: [{ type: "text", text: "This is not the final JSON" }] },
@@ -281,8 +290,10 @@ test("screenplay and per-category extraction schemas are pure shapes without bus
       const instruction = provider === "gemini" ? body.system_instruction as string : (body.messages as { content: string }[])[0].content;
       const schema = JSON.parse(instruction.split(" Schema: ")[1]);
       if (provider === "gemini") assert.deepEqual((body.response_format as { schema: unknown }).schema, schema);
-      assert.deepEqual(Object.keys(schema.properties).sort(), ["logline", "screenplay", "title"]);
+      assert.deepEqual(Object.keys(schema.properties).sort(), ["assets", "logline", "screenplay", "title"]);
       assert.deepEqual(schema.required, ["title", "screenplay"]);
+      // 资产清单是机器契约的一部分：只规定形状，不规定提取成什么样。
+      assert.deepEqual(Object.keys(schema.properties.assets.properties).sort(), ["characters", "props", "scenes"]);
       // 后端只留机器契约：不含任何业务规则文案。
       assert.match(instruction, /^Return only a json object matching the schema below\./);
       assert.ok(!instruction.includes("【镜头"), "契约里不得残留剧本规则");

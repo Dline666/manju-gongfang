@@ -36,6 +36,12 @@ try {
     await page.getByRole('button', { name: '解析并预览', exact: true }).click();
     await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    // 导入只存剧本正文，不建资产；这里手动建一个人物用于生图。
+    await page.evaluate(async () => {
+      const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
+      const p = s.getStudio().projects[0];
+      s.updateProject(p.id, { assets: [{ id: 'ep-hero', kind: 'character', name: '阿青', description: '黑短发，青色布衣', lock: '黑短发，青色布衣' }] });
+    });
 
     // 设置页：加一个自定义端点
     await page.goto('http://127.0.0.1:5173/#/settings');

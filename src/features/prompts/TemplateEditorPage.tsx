@@ -8,7 +8,7 @@ import { PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, type ExtractCategory } 
 import { directorSpec, extractCharactersSpec, extractPropsSpec, extractScenesSpec, imageSpec, scriptSpec, videoSpec } from '../../lib/prompts';
 import { overridesOf } from '../../lib/promptScope';
 import { setSettings, updateProject, useStudio } from '../../store/studio';
-import { makeShot, uid, type Asset, type Project, type PromptBlockPlan, type PromptKindId, type PromptTemplatePlan, type PromptTemplateSet, type StyleSpec } from '../../domain/types';
+import { makeShot, uid, defaultPromptTemplates, type Asset, type Project, type PromptBlockPlan, type PromptKindId, type PromptTemplatePlan, type PromptTemplateSet, type StyleSpec } from '../../domain/types';
 
 const styleLabels: Record<'medium' | 'line' | 'palette' | 'face' | 'light', string> = {
   medium: '介质', line: '线条', palette: '配色', face: '面部渲染', light: '光线',
@@ -210,6 +210,24 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     if (!window.confirm(`清空「${TEMPLATE_TABS.find(item => item.id === tab)?.title}」模板的全部块？清空后该步骤就没有任何提示词了。`)) return;
     setKindBlocks([]);
   };
+  /**
+   * 出厂默认块：存档里缺这一步、或者这一步的出厂块被清掉时，一键补回来。
+   * 已经有正文的老块不动，只补缺失的块、把空着的同名块填上出厂正文。
+   */
+  const factoryBlocks = defaultPromptTemplates.templates?.[kind]?.blocks ?? [];
+  const insertFactory = () => {
+    if (!factoryBlocks.length) return;
+    const next = [...blocks];
+    let added = 0; let filled = 0;
+    for (const item of factoryBlocks) {
+      const index = next.findIndex(block => block.id === item.id);
+      if (index < 0) { next.push({ ...item }); added += 1; continue; }
+      if (!next[index].text.trim()) { next[index] = { ...next[index], text: item.text }; filled += 1; }
+    }
+    if (!added && !filled) { toast.info('这一步的出厂默认块都在，没有要补的。'); return; }
+    setKindBlocks(next);
+    toast.success(added ? `已补入 ${added} 条出厂默认块。` : `已填好 ${filled} 条出厂默认块的正文。`);
+  };
 
   /** 作品这一步改为独立编辑：以全局模板当前内容为起点。 */
   const makeIndependent = () => {
@@ -301,6 +319,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
               {builtinOptions.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
             <Button variant="outline" size="sm" onClick={insertBuiltin} disabled={!builtinChoice || !editable}>插入</Button>
+            {scope === 'global' && factoryBlocks.length > 0 && <Button variant="ghost" size="sm" onClick={insertFactory}>补入出厂默认块</Button>}
             <Button variant="ghost" size="sm" onClick={clearKind} disabled={!editable}>清空模板</Button>
           </div>
           {blocks.length === 0 && <p className="muted">这个模板还没有块。用「新增块」写自己的提示词，或「插入内置块」取一个空标题再填。</p>}

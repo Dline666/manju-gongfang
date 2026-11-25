@@ -54,7 +54,25 @@ try {
     await page.getByRole('button', { name: 'AI 生成剧本', exact: true }).click();
     await page.getByRole('heading', { name: '连接你的创作能力' }).waitFor();
     await checkOverflow('settings');
-    await page.goto('http://127.0.0.1:5173/#/assets');
+    // 剧本步骤只写剧本：存档里一个镜头都没有。
+    const afterScript = await page.evaluate(() => JSON.parse(localStorage.getItem('manju-studio-v1')).projects[0]);
+    assert.equal(afterScript.shots.length, 0, '剧本步骤不拆镜，镜头由导演步骤产出');
+    await page.goto('http://127.0.0.1:5173/#/script');
+    await page.getByRole('button', { name: '确认并进入下一步', exact: true }).click();
+    await page.getByRole('heading', { name: '把剧本，拆成可拍的镜头' }).waitFor();
+    // 没有 Key 也能走通：模板演练按剧本自己的结构排镜，不调模型。
+    await page.getByRole('button', { name: '模板演练（本地）', exact: true }).click();
+    await page.locator('.shot-card').nth(13).waitFor();
+    assert.equal(await page.locator('.shot-card').count(), 14, '演练排出的镜头数与剧本里的镜头标记一致');
+    const rehearsed = await page.evaluate(() => JSON.parse(localStorage.getItem('manju-studio-v1')).projects[0]);
+    assert.equal(rehearsed.shots.length, 14);
+    assert.equal(rehearsed.shots.reduce((n, s) => n + s.duration, 0), 28, '时长照抄剧本里的标记');
+    assert.equal(rehearsed.shots[0].camera, '远景·固定·平视', '景别由剧本里的【镜头：】落实');
+    assert.equal(rehearsed.shots[0].scene, '外景 · 故事发生地 — 清晨');
+    await checkOverflow('director');
+    await page.screenshot({ path: `dev/director-${width}.png` });
+    await page.getByRole('button', { name: '确认并进入下一步', exact: true }).click();
+    await page.getByRole('heading', { name: '让故事，有自己的面孔' }).waitFor();
     await page.getByRole('tab', { name: /人物/ }).click();
     await page.getByRole('button', { name: '新增角色', exact: true }).click();
     await page.getByLabel('名称', { exact: true }).fill('沈砚');
@@ -80,9 +98,7 @@ try {
     await page.getByLabel('音色ID', { exact: false }).fill('test-only-not-a-real-voice');
     await page.getByRole('button', { name: '保存资产', exact: true }).click();
     await page.getByRole('button', { name: '确认并进入下一步', exact: true }).click();
-    await page.getByRole('heading', { name: '把剧本，拆成可拍的镜头' }).waitFor();
-    await page.getByRole('button', { name: '本地补全', exact: true }).click();
-    await page.getByRole('button', { name: '确认并进入下一步', exact: true }).click();
+    await page.getByRole('heading', { name: '把文字，放进镜头里' }).waitFor();
     await page.getByRole('button', { name: '预览并确认对应关系' }).click();
     await page.getByRole('button', { name: '确认对应并保存补全' }).click();
     await checkOverflow('storyboard');

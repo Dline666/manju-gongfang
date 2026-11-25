@@ -17,9 +17,11 @@ try {
   await page.getByRole('heading', { name: '我的作品' }).waitFor();
   await page.evaluate(async () => {
     const store = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')) || '/src/store/studio.ts');
-    const { templateScript } = await import('/src/features/script/creation.ts');
+    const { templateScript, rehearseShots } = await import('/src/features/script/creation.ts');
     const p = store.createProject('隔离恢复测试', '山门断剑');
-    store.updateProject(p.id, { ...templateScript(p.theme), source: 'template', storyboardReady: true });
+    const draft = templateScript(p.theme);
+    // 剧本步骤不拆镜：镜头由导演步骤产出，这里用本地演练排出镜头。
+    store.updateProject(p.id, { ...draft, shots: rehearseShots(draft.screenplay || ''), source: 'template', storyboardReady: true });
     store.setKey('seedance', 'fixture-key-never-transmitted');
     store.setKey('minimax', 'fixture-key-never-transmitted');
     location.hash = '/generation';

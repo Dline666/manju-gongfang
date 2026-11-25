@@ -4,7 +4,7 @@ import {
   builtinEndpoints, defaultModels, defaultSettings, uid,
   type Capability, type Endpoint, type PromptTemplateSet, type ProviderProtocol, type Settings,
 } from '../domain/types';
-import { migrateTemplateSet } from './promptBlocks';
+import { migrateTemplateSet, withFactoryDefaults } from './promptBlocks';
 
 /** 每个内置端点默认承担的环节；决定旧存档的扁平 models 怎么映射到能力上。 */
 const BUILTIN_CAPABILITY: Record<string, Capability> = {
@@ -105,7 +105,9 @@ export function migrateSettings(saved: {
     endpoints,
     models,
     // 全局模板里可能还留着旧的共用设定图模板，一并按人物/场景/道具拆开。
-    promptTemplates: migrateTemplateSet(saved.promptTemplates),
+    // 存档里没有全局模板时用出厂那份（用户自己写的三类资产提取规则 + 设定图出图约定）；
+    // 存档里有但缺某一步时，这一步也用出厂的补上。
+    promptTemplates: withFactoryDefaults(migrateTemplateSet(saved.promptTemplates) ?? base.promptTemplates),
     scriptProvider: pickEndpoint(endpoints, saved.scriptProvider, 'script') ?? base.scriptProvider,
     imageProvider: pickEndpoint(endpoints, saved.imageProvider, 'image') ?? base.imageProvider,
     videoProvider: pickEndpoint(endpoints, saved.videoProvider, 'video') ?? base.videoProvider,

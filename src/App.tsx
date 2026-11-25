@@ -19,7 +19,7 @@ const pages = {
   generation: lazy(() => import('./features/generation/GenerationPage')),
   export: lazy(() => import('./features/export/ExportPage')),
 };
-const navigation = [{ id: 'script', title: '写剧本', icon: BookOpen }, { id:'assets', title:'建资产',icon:Boxes },{id:'director',title:'导演分镜',icon:Video},{id:'storyboard',title:'做分镜',icon:Clapperboard},{id:'generation',title:'生成视频',icon:Sparkles},{id:'export',title:'成片与导出',icon:Film}] as const;
+const navigation = [{ id: 'script', title: '写剧本', icon: BookOpen }, { id:'director',title:'导演分镜',icon:Video},{id:'assets',title:'建资产',icon:Boxes},{id:'storyboard',title:'做分镜',icon:Clapperboard},{id:'generation',title:'生成视频',icon:Sparkles},{id:'export',title:'成片与导出',icon:Film}] as const;
 const flowOf: Partial<Record<Stage, FlowStage>> = { script: 'script', assets: 'assets', director: 'director', storyboard: 'storyboard', generation: 'video', export: 'video' };
 const stageOf: Record<FlowStage, Stage> = { script: 'script', assets: 'assets', director: 'director', storyboard: 'storyboard', video: 'generation' };
 // 路由是 hash 制的。设置页有子路由（settings 与 settings/templates 是两个页面状态），

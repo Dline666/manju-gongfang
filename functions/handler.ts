@@ -277,11 +277,35 @@ function normalizeShotSize(value: unknown): string | undefined {
   if (resolved.some(size => !size)) return undefined;
   return resolved.join("→");
 }
+/**
+ * 剧本步骤顺带产出的资产：人物 / 场景 / 道具各一份。
+ * 这是机器契约的一部分（要什么形状），不含任何业务规则——
+ * 「提取成什么样」由用户自己的模板提示词决定。
+ */
+const SCREENPLAY_ASSET_SCHEMA = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "资产 id；分镜步骤按它引用" },
+    name: { type: "string", description: "资产名" },
+    aliases: { type: "string", description: "代称；多个用逗号分隔" },
+    description: { type: "string", description: "补充描述" },
+    lock: { type: "string", description: "固定短语：逐字复用的形象 / 场景 / 道具描述" },
+  },
+  required: ["name", "lock"],
+};
 const SCREENPLAY_SCHEMA = {
   type: "object",
   properties: {
     title: STRING_SCHEMA, logline: STRING_SCHEMA,
     screenplay: STRING_SCHEMA,
+    assets: {
+      type: "object",
+      properties: {
+        characters: { type: "array", items: SCREENPLAY_ASSET_SCHEMA },
+        scenes: { type: "array", items: SCREENPLAY_ASSET_SCHEMA },
+        props: { type: "array", items: SCREENPLAY_ASSET_SCHEMA },
+      },
+    },
   },
   required: ["title", "screenplay"],
 };
@@ -292,12 +316,28 @@ const DIRECTOR_SCHEMA = {
       type: "object",
       properties: {
         number: { type: "integer", minimum: 1, maximum: 100 },
-        shotSize: { type: "string", description: "远景/全景/中景/近景/特写" },
+        title: { type: "string", description: "这一镜的短标题" },
+        scene: { type: "string", description: "场景头；同一场景的镜头用同一段文字" },
+        sceneId: { type: "string", description: "场景资产 id；剧本步骤给的场景清单里有就用它" },
+        visual: { type: "string", description: "这一镜看得见的东西" },
+        duration: { type: "number", minimum: 0.5, maximum: 30, description: "本镜时长（秒）" },
+        shotSize: { type: "string", description: "景别：远景/全景/中景/近景/特写" },
         movement: { type: "string", enum: MOVEMENTS },
         angle: { type: "string", enum: ANGLES },
-        start: STRING_SCHEMA, action: STRING_SCHEMA, end: STRING_SCHEMA,
+        start: { type: "string", description: "开场状态" },
+        action: { type: "string", description: "镜头里的动作" },
+        end: { type: "string", description: "终点状态" },
+        assets: { type: "array", items: { type: "object", properties: {
+          assetId: { type: "string", description: "本片资产清单里的 id" },
+          role: { type: "string", enum: ["subject", "background", "prop"], description: "subject=画面主体，background=背景，prop=道具" },
+        }, required: ["assetId"] } },
+        dialogues: { type: "array", items: { type: "object", properties: {
+          speaker: { type: "string", description: "说话人名字" },
+          text: { type: "string", description: "台词原文" },
+          emotion: { type: "string", description: "情绪提示" },
+        }, required: ["speaker", "text"] } },
       },
-      required: ["number", "shotSize", "movement", "angle", "start", "action", "end"],
+      required: ["number", "scene", "visual", "duration", "shotSize", "movement", "angle", "start", "action", "end"],
     } },
   },
   required: ["shots"],
@@ -315,12 +355,41 @@ function validateScreenplay(raw: string): ObjectValue {
   const result: ObjectValue = { screenplay };
   if (source.title !== undefined) result.title = text(source.title, 200, "invalid_screenplay", 502);
   if (source.logline !== undefined) result.logline = text(source.logline, 2000, "invalid_screenplay", 502);
+  const assets = validateScreenplayAssets(source.assets);
+  if (assets) result.assets = assets;
   return result;
+}
+/**
+ * 剧本顺带带出来的三类资产。坏条目跳过、不让整份剧本作废——
+ * 剧本本身才是这一步的主产出，资产是附带的。
+ */
+function validateScreenplayAssets(value: unknown): ObjectValue | undefined {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return undefined;
+  const result: ObjectValue = {};
+  for (const key of ["characters", "scenes", "props"]) {
+    const list = value[key];
+    if (!Array.isArray(list)) continue;
+    const items = list.flatMap((entry) => {
+      if (!isObject(entry)) return [];
+      const name = typeof entry.name === "string" ? entry.name.trim() : "";
+      const lock = typeof entry.lock === "string" ? entry.lock.trim() : "";
+      if (!name || !lock || name.length > 200 || lock.length > 4000) return [];
+      const item: ObjectValue = { name, lock };
+      if (typeof entry.id === "string" && entry.id.trim()) item.id = entry.id.trim().slice(0, 100);
+      if (typeof entry.aliases === "string" && entry.aliases.trim()) item.aliases = entry.aliases.trim().slice(0, 400);
+      if (typeof entry.description === "string" && entry.description.trim()) item.description = entry.description.trim().slice(0, 2000);
+      return [item];
+    });
+    if (items.length) result[key] = items;
+  }
+  return Object.keys(result).length ? result : undefined;
 }
 function validateDirector(raw: string): ObjectValue {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); } catch { throw new Fault("invalid_director", 502); }
   const source = object(parsed, "invalid_director", 502);
+  // 镜数由模型按剧本内容决定：这里只管上下限，不要求和既有镜头一致。
   requireValue(Array.isArray(source.shots) && source.shots.length >= 1 && source.shots.length <= 100, "invalid_director", 502);
   const numbers = new Set<number>();
   const shots = source.shots.map((item) => {
@@ -331,14 +400,37 @@ function validateDirector(raw: string): ObjectValue {
     requireValue(shotSize !== undefined, "invalid_director", 502);
     requireValue(MOVEMENTS.includes(shot.movement as typeof MOVEMENTS[number]), "invalid_director", 502);
     requireValue(ANGLES.includes(shot.angle as typeof ANGLES[number]), "invalid_director", 502);
+    const dialogues = Array.isArray(shot.dialogues) ? shot.dialogues.map((entry) => {
+      const line = object(entry, "invalid_director", 502);
+      return {
+        speaker: text(line.speaker, 200, "invalid_director", 502),
+        text: text(line.text, 4000, "invalid_director", 502),
+        emotion: line.emotion === undefined ? "" : text(line.emotion, 200, "invalid_director", 502),
+      };
+    }) : [];
+    // 本镜在场的资产：引用本片资产清单里的 id。坏条目跳过，不让整次导演请求失败。
+    const assets = Array.isArray(shot.assets) ? shot.assets.flatMap((entry) => {
+      if (!isObject(entry)) return [];
+      const assetId = typeof entry.assetId === "string" ? entry.assetId.trim() : "";
+      if (!assetId) return [];
+      const role = entry.role === "subject" || entry.role === "background" || entry.role === "prop" ? entry.role : "prop";
+      return [{ assetId, role }];
+    }) : [];
     return {
       number: shot.number,
+      title: shot.title === undefined ? "" : text(shot.title, 200, "invalid_director", 502),
+      scene: text(shot.scene, 400, "invalid_director", 502),
+      sceneId: shot.sceneId === undefined ? "" : text(shot.sceneId, 200, "invalid_director", 502),
+      visual: text(shot.visual, 8000, "invalid_director", 502),
+      duration: typeof shot.duration === "number" && shot.duration >= 0.5 && shot.duration <= 30 ? shot.duration : 3,
       shotSize,
       movement: shot.movement as typeof MOVEMENTS[number],
       angle: shot.angle as typeof ANGLES[number],
       start: text(shot.start, 8000, "invalid_director", 502),
       action: text(shot.action, 8000, "invalid_director", 502),
       end: text(shot.end, 8000, "invalid_director", 502),
+      dialogues,
+      assets,
     };
   });
   return { shots };

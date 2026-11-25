@@ -5,7 +5,7 @@
 import type {
   Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplateMap, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, StyleSpec,
 } from '../domain/types';
-import { speakerName } from '../domain/types';
+import { defaultPromptTemplates, speakerName } from '../domain/types';
 import { skills } from './skills';
 import { styleBlockText } from './promptTemplates';
 import { effectiveStyle, visibleBlocks } from './promptScope';
@@ -34,6 +34,10 @@ export const builtinBlocks: BuiltinBlock[] = [
   { id: 'script.output-shape', title: '输出结构', kinds: ['script'] },
   { id: 'script.priority', title: '优先级', kinds: ['script'] },
   { id: 'script.extra', title: '自由补充', kinds: ['script'] },
+  // 剧本：顺带提取三类资产的规则（与剧本正文规则同属一次调用，但写的是资产清单）
+  { id: 'script.characters.extract', title: '人物 · 提取规则', group: '人物', kinds: ['script'] },
+  { id: 'script.scenes.extract', title: '场景 · 提取规则', group: '场景', kinds: ['script'] },
+  { id: 'script.props.extract', title: '道具 · 提取规则', group: '道具', kinds: ['script'] },
   // 资产：人物 / 场景 / 道具各一组
   { id: 'extract.characters.instruction', title: '人物 · 识别规则', group: '人物', kinds: ['extract-characters'] },
   { id: 'extract.characters.phrase-style', title: '人物 · 固定短语写法', group: '人物', kinds: ['extract-characters'] },
@@ -102,7 +106,8 @@ const DATA_SOURCES: Record<PromptKindId, DataBlockDef[]> = {
     { source: 'extract.props.existing', title: '已有本类固定资产' },
   ],
   director: [
-    { source: 'director.shots', title: '逐镜剧本' },
+    { source: 'director.screenplay', title: '剧本正文' },
+    { source: 'director.assets', title: '本片资产清单' },
     { source: 'director.skills', title: '附加 Skill' },
   ],
   // 设定图三类共用同一份作品数据，但各自的模板互不混用。
@@ -126,6 +131,7 @@ const DATA_SOURCES: Record<PromptKindId, DataBlockDef[]> = {
   ],
   video: [
     { source: 'video.heading', title: '镜头开头' },
+    { source: 'video.visual', title: '画面与开场' },
     { source: 'video.continuity', title: '承接上一镜' },
     { source: 'video.references', title: '附件顺序' },
     { source: 'video.action', title: '动作与运镜' },
@@ -274,13 +280,8 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     case 'extract.scenes.existing': return existingAssets(project, 'scene');
     case 'extract.props.shots': return extractPropsInput(project);
     case 'extract.props.existing': return existingAssets(project, 'prop');
-    case 'director.shots': return JSON.stringify(project.shots.map(item => ({
-      number: item.number, title: item.title || '', scene: item.scene || '', cameraHint: item.cameraHint || '', duration: item.duration, visual: item.visual,
-      characters: project.assets.filter(a => item.assetIds.includes(a.id) && a.kind === 'character').map(a => a.name),
-      scenes: project.assets.filter(a => item.assetIds.includes(a.id) && a.kind === 'scene').map(a => a.name),
-      props: project.assets.filter(a => item.assetIds.includes(a.id) && a.kind === 'prop').map(a => a.name),
-      dialogues: item.dialogues.map(line => ({ speaker: speakerName(project, line), text: line.text })),
-    })));
+    case 'director.screenplay': return project.screenplay?.trim() ? project.screenplay.trim() : '（还没有剧本正文，先在剧本步骤生成或导入一份剧本。）';
+    case 'director.assets': return assetListText(project);
     case 'director.skills': return selectedSkills(project, ['storyboard']);
     case 'image.task': {
       const lines = [
@@ -294,6 +295,11 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     case 'image.style': return styleBlockText(effectiveStyle(project, ctx.global));
     case 'image.skills': return selectedSkills(project, ['image']);
     case 'video.heading': return shot ? `第${shot.number}镜，${shot.duration}秒。\n风格：${project.style}` : '';
+    case 'video.visual': {
+      if (!shot) return '';
+      const lines = [shot.visual.trim() ? `画面：${shot.visual.trim()}` : '', shot.start.trim() ? `开场：${shot.start.trim()}` : ''];
+      return lines.filter(Boolean).join('\n');
+    }
     case 'video.continuity': {
       if (!shot) return '';
       const index = project.shots.findIndex(s => s.id === shot.id);
@@ -330,6 +336,13 @@ function existingAssets(project: Project, kind: 'character' | 'scene' | 'prop'):
   return list.map(asset => `${kindNames[kind]}「${asset.name}」：${fixedDescription(asset)}`).join('\n');
 }
 
+/** 本片资产清单：id + 品类 + 名称 + 固定短语。分镜步骤按 id 引用这些资产。 */
+function assetListText(project: Project): string {
+  const list = project.assets.filter(asset => asset.kind !== 'voice');
+  if (!list.length) return '';
+  return list.map(asset => `${asset.id} · ${kindNames[asset.kind]} · ${asset.name} —— ${fixedDescription(asset)}`).join('\n');
+}
+
 /** 本镜的固定资产短语（只列事实，不加规则）。 */
 function shotAssetText(project: Project, shot: Shot): string {
   const ids = new Set([...shot.assetIds, ...shot.references.map(r => r.assetId), ...shot.dialogues.map(d => d.speakerId)]);
@@ -337,7 +350,7 @@ function shotAssetText(project: Project, shot: Shot): string {
   for (const kind of visualKinds) {
     const assets = project.assets.filter(a => a.kind === kind && ids.has(a.id));
     if (!assets.length) { parts.push(`${kindNames[kind]}：未关联`); continue; }
-    parts.push(assets.map(a => `${kindNames[kind]}「${a.name}」：${fixedDescription(a)}`).join('\n'));
+    parts.push(assets.map(a => `${kindNames[kind]}「${a.name}」${shot.subjects?.includes(a.id) ? '（主体）' : ''}：${fixedDescription(a)}`).join('\n'));
   }
   return parts.join('\n');
 }
@@ -417,6 +430,23 @@ export function migrateTemplateSet(set: PromptTemplateSet | undefined): PromptTe
     }
   }
   return { ...set, templates: dropSharedImageCopies(templates) };
+}
+
+/**
+ * 出厂模板按「步骤」补齐。
+ *
+ * 存档里没有的步骤用出厂那份；存档里有的步骤保持用户自己写的（哪怕是空的）。
+ * 老存档（早期版本在模板编辑器点过「保存」，留下的 `templates` 是空的）能拿到新出厂的默认块，
+ * 又不会覆盖用户已经写好的内容；用户主动清空某一步（该步骤存在但块为空）依旧按用户的意思保持为空。
+ */
+export function withFactoryDefaults(set: PromptTemplateSet | undefined): PromptTemplateSet {
+  const templates: PromptTemplateMap = { ...(set?.templates ?? {}) };
+  for (const kind of PROMPT_KINDS) {
+    if (templates[kind]) continue;
+    const factory = defaultPromptTemplates.templates?.[kind];
+    if (factory) templates[kind] = { blocks: factory.blocks.map(block => ({ ...block })) };
+  }
+  return { ...(set ?? {}), templates };
 }
 
 /**

@@ -176,7 +176,7 @@ export default function GenerationPage({project,navigate}:PageProps) {
     }if(stop.current){finishJob(jobId,'canceled');toast('已停止后续任务，先前已受理的任务仍可查询。');}else{finishJob(jobId,'done');toast.success(batch.kind==='video'?'已提交本批任务，正在查询生成状态':'本批配音已生成，请试听并检查时长');}}
     catch(e){finishJob(jobId,'failed',e instanceof ApiError?e.code:undefined);toast.error(errorMessage(e));}finally{setBusy(false);setBusyText('');}
   }
-  if(!project.shots.length)return <Empty title="先准备好你的分镜" text="剧本和分镜完成后，就可以在这里生成或导入视频。"><Button onClick={()=>navigate('script')}>去写剧本 <ArrowRight size={16}/></Button></Empty>;
+  if(!project.shots.length)return <Empty title="先准备好你的分镜" text="剧本和分镜完成后，就可以在这里生成或导入视频。"><Button onClick={()=>navigate('director')}>去拆镜头 <ArrowRight size={16}/></Button></Empty>;
   const ready=project.shots.filter(s=>s.video&&!s.stale).length;const pending=project.shots.filter(s=>!s.video&&!['queued','running','submitting','unknown'].includes(s.task?.status||''));const spoken=project.shots.filter(s=>s.dialogues.some(d=>d.text.trim())&&!s.audio);
   const videoDone=project.shots.filter(s=>!!s.video).length;const videoRunning=project.shots.filter(s=>['submitting','queued','running'].includes(s.task?.status||'')).length;const videoFailed=project.shots.filter(s=>s.task?.status==='failed'||s.task?.status==='unknown').length;
   const failed=project.shots.filter(s=>(s.task?.status==='failed'||s.task?.status==='unknown')&&!s.video);
