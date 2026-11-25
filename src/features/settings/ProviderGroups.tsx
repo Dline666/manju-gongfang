@@ -68,12 +68,12 @@ function EndpointRow({ endpoint, capability, modelText, state, visible, onToggle
         {shown && <span className="provider-row-model">{shown}</span>}
       </div>
       <div className="row wrap">
-        <span className={isFree(endpoint) ? 'badge-free' : 'badge-paid'}>{isFree(endpoint) ? '免费' : '按量付费'}</span>
         <Button variant="ghost" size="sm" onClick={() => onToggleOpen(endpoint.id)}>{open ? '收起' : '设置'}</Button>
         <Button variant="ghost" size="sm" onClick={() => onDelete(endpoint)}><Trash2 size={14} />删除</Button>
       </div>
     </div>
     {open && <div className="provider-row-body">
+      <p className="small muted"><span className={isFree(endpoint) ? 'badge-free' : 'badge-paid'}>{isFree(endpoint) ? '免费额度' : '按量付费'}</span>{isFree(endpoint) ? ' 免费渠道有速率限制，失败可换付费端点。' : ' 费用由平台按量计收。'}</p>
       {state.keys[endpoint.id] && info && (info.status === 'failed'
         ? <ErrorNote message={`最近调用：${info.model || info.action} · ${info.error || '操作未完成，请重试。'}`} hint={info.hint} />
         : <p className="small muted">最近调用：{info.model || info.action} · {info.error || '请求成功，不代表其他模型均已开通。'}</p>)}
@@ -182,9 +182,7 @@ export default function ProviderGroups({ state }: { state: StudioState }) {
     </div>
 
     <section className="provider-group" role="tabpanel" aria-label={active.title}>
-      <header className="provider-group-head">
-        <div><h2>{active.title}</h2><p className="muted">{active.description}</p></div>
-      </header>
+      <p className="small muted provider-group-note">{active.description}</p>
 
       {tab === 'script' && <>
         <EndpointSelect settings={settings} capability="script" value={settings.scriptProvider} onChange={id => update({ scriptProvider: id })} label="剧本默认模型平台" />

@@ -117,8 +117,9 @@ details.alert.fold[open]>summary{margin-bottom:8px}
 details.alert.fold ul{margin-top:2px}
 .page-heading-title{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:nowrap}
 .page-heading-title h1{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.page-heading-nav{margin-left:0;display:flex;align-items:center;min-width:0}
-.page-heading-title + .page-heading-nav{margin-left:auto}
+/* 步骤条：所有制作页固定在内容区顶部这一行，随内容滚动，不吸顶；总高度不超过 36px。 */
+.stage-strip{display:flex;align-items:center;margin:0 0 8px;min-width:0}
+.stage-strip .step-inline{flex:0 1 auto;min-width:0}
 .page-heading-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0;margin-left:auto}
 @media(max-width:1024px){.step-chip-label{display:none}.step-chip.current .step-chip-label{display:inline}}
 .compact-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#181a1d;border:1px solid #2d3036;border-radius:12px;padding:10px 14px}
@@ -220,7 +221,28 @@ details.alert.fold ul{margin-top:2px}
   .form-desc{min-width:0;max-width:none}
   .asset-table-thumb{width:56px;height:66px}
 }
-@media(max-width:767px){.page-heading{gap:10px;flex-wrap:wrap}.page-heading-title{flex:1 1 auto}.page-heading-title h1{white-space:normal}.page-heading-nav{order:3;flex:1 1 100%;margin-left:0;justify-content:flex-end}.page-heading-actions{margin-left:auto}.topbar .source-tag{display:none}}
+@media(max-width:767px){.stage-strip{margin:0 0 6px}.page-heading{gap:10px;flex-wrap:wrap}.page-heading-title{flex:1 1 auto}.page-heading-title h1{white-space:normal}.page-heading-actions{margin-left:auto}.topbar .source-tag{display:none}}
 
 /* 新形态确认弹窗里的参考图预览：只读展示即将随请求发送的基础形态设定图。 */
 .reference-preview{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;padding:10px;border:1px solid var(--site-border);border-radius:10px;background:var(--site-surface)}.reference-preview img{display:block;width:132px;height:132px;object-fit:contain;border:1px solid var(--site-border);border-radius:8px;background:var(--site-bg)}.reference-preview p{flex:1 1 200px;min-width:0;margin:0}
+
+/* 设置区两页（模型配置 / 提示词模板）：收紧留白，首屏直接看到重点内容，次要信息默认折叠。 */
+.compact-page,.compact-page .stack{gap:12px}
+.compact-page .page-heading{min-height:0}
+.compact-page .page-heading h1{font-size:22px}
+.compact-page .panel{padding:14px 16px}
+.compact-page .tabs-row{padding:3px;gap:4px}
+.compact-page .tabs-row button{padding:5px 12px;font-size:11px}
+.compact-page .provider-groups{gap:12px}
+.compact-page .provider-group{padding:14px 16px;gap:10px}
+.compact-page .provider-group-head p{font-size:12px}
+.compact-page .provider-group .provider-panel{padding:12px 14px}
+.compact-page .provider-group .provider-row{padding:10px 12px}
+.compact-page .provider-tabs{padding:5px;gap:4px;border-radius:11px}
+.compact-page .provider-tab{padding:6px 11px;font-size:12px}
+.compact-page .provider-group-note{margin:0;font-size:12px}
+.compact-page .template-editor{grid-template-columns:168px minmax(0,1fr);gap:14px}
+.compact-page .template-tabs{gap:4px;top:0}
+.compact-page .template-tabs button{padding:7px 10px}
+.compact-page .template-tabs button strong{font-size:12px}
+@media(max-width:767px){.compact-page .template-editor{grid-template-columns:1fr}}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Button, ErrorNote, Field } from '../../components/Ui';
+import { Button, ErrorNote, Field, Fold } from '../../components/Ui';
 import { PROMPT_LIMITS, renderPrompt, validatePromptSpec } from '../../lib/promptSpec';
 import { findUnknownVariables } from '../../lib/promptTemplates';
 import { KIND_LABELS, PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, factoryBlockText, findSkill, skillsForKind, type ExtractCategory } from '../../lib/promptBlocks';
@@ -341,16 +341,12 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   const scopeLabel = scope === 'global' ? '全局模板（默认）' : `当前作品 · ${project?.name ?? '未选择作品'}`;
 
   return <div className="stack">
-    <p className="small muted">模板里只有你写的块，可改、可增、可删、可调序。作品数据不在模板里，由系统每次自动附带。</p>
     <div className="tabs-row" role="tablist" aria-label="模板作用域">
       <button type="button" role="tab" aria-selected={scope === 'global'} className={scope === 'global' ? 'active' : ''} onClick={() => setScope('global')}>全局模板（默认）</button>
       <button type="button" role="tab" aria-selected={scope === 'project'} className={scope === 'project' ? 'active' : ''} onClick={() => setScope('project')} disabled={!project}>当前作品 · {project?.name ?? '未选择作品'}</button>
     </div>
-    <p className="small muted">{scope === 'global'
-      ? '全局模板是所有作品的默认。改动立刻影响所有跟随全局的作品；某部作品自己管的步骤不受影响。'
-      : '这里只改这部作品。没单独管的步骤仍跟随全局模板，改全局时它们一起变。'}</p>
     <div className={`template-editor ${mode === 'skills' ? 'is-single' : ''}`}>
-      {mode !== 'skills' && <nav className="template-tabs" aria-label="模板选择">{TEMPLATE_TABS.map(item => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}><strong>{item.title}</strong><small>{item.description}</small></button>)}</nav>}
+      {mode !== 'skills' && <nav className="template-tabs" aria-label="模板选择">{TEMPLATE_TABS.map(item => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}><strong>{item.title}</strong></button>)}</nav>}
       <div className="template-body stack">
         <div className="toolbar"><div className="tabs-row"><button className={mode === 'blocks' ? 'active' : ''} onClick={() => setMode('blocks')}>模板块</button><button className={mode === 'style' ? 'active' : ''} onClick={() => setMode('style')}>风格设定</button><button className={mode === 'skills' ? 'active' : ''} onClick={() => setMode('skills')}>Skill 库</button></div></div>
         {mode === 'style' && <section className="panel stack">
@@ -367,18 +363,14 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
           {scope === 'project' && (kindIsOwned
             ? <div className="toolbar"><span className="tag">本作品独立</span><Button variant="ghost" size="sm" onClick={followGlobal}>恢复跟随全局</Button></div>
             : <div className="alert" role="alert">这一步正在跟随全局模板，下面显示的是全局的内容。<Button variant="secondary" size="sm" onClick={makeIndependent}>改为独立编辑</Button></div>)}
-          <div className="panel stack">
-            <div className="section-title"><h4>这一步的 Skill</h4><span className="small muted">选中的 Skill 每次都自动带进这一类的提示词，不用自己再写一遍</span></div>
-            <div className="row wrap">
-              <select aria-label={`选择 Skill · ${KIND_LABELS[kind]}`} style={{ maxWidth: 280 }} value={selectedSkillId} disabled={!editable} onChange={event => setKindSkill(event.target.value)}>
-                <option value="">不启用 Skill</option>
-                {missingSkill && <option value={selectedSkillId}>（这份 Skill 已从库里删除）</option>}
-                {skillOptions.map(skill => <option key={skill.id} value={skill.id}>{skill.name}{skill.template.trim() ? '' : '（还没有正文）'}</option>)}
-              </select>
-              <Button variant="ghost" size="sm" onClick={() => setMode('skills')}>去 Skill 库</Button>
-            </div>
-            {selectedSkill && !selectedSkill.template.trim() && <p className="small muted">「{selectedSkill.name}」还没有正文——去 Skill 库里贴上内容；空正文不会进提示词。</p>}
-            {selectedSkill?.template.trim() && <p className="small muted">「{selectedSkill.name}」的正文会原样带进这一类的提示词，不需要再插成模板块；选了这一步的 Skill，就不再叠加作品页勾选的内置附加 Skill。</p>}
+          <div className="row wrap skill-row">
+            <select aria-label={`选择 Skill · ${KIND_LABELS[kind]}`} style={{ maxWidth: 280 }} value={selectedSkillId} disabled={!editable} onChange={event => setKindSkill(event.target.value)}>
+              <option value="">不启用 Skill</option>
+              {missingSkill && <option value={selectedSkillId}>（这份 Skill 已从库里删除）</option>}
+              {skillOptions.map(skill => <option key={skill.id} value={skill.id}>{skill.name}{skill.template.trim() ? '' : '（还没有正文）'}</option>)}
+            </select>
+            <span className="small muted">{selectedSkill ? (selectedSkill.template.trim() ? `「${selectedSkill.name}」正文随提示词发送` : `「${selectedSkill.name}」还没有正文`) : '未启用 Skill'}</span>
+            <Button variant="ghost" size="sm" onClick={() => setMode('skills')}>Skill 库</Button>
           </div>
           <div className="toolbar">
             <Button variant="secondary" size="sm" onClick={addBlock} disabled={!editable}><Plus size={14} />新增块</Button>
@@ -469,11 +461,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
           {item.over && <ErrorNote message={`提示词 ${item.text.length} 字，超过上限 ${item.limit} 字，请精简后可保存。`} />}
           {!item.over && blockingIssues.length > 0 && <ErrorNote message={`${blockingIssues.join('；')}。请修正未知变量后再保存。`} />}
         </section>)}
-        {mode !== 'skills' && contract && <section className="panel stack">
-          <div className="section-title"><h3>接口固定契约</h3><span className="small muted">由后端固定，不可编辑；模型会连同上面的预览一起收到</span></div>
-          <pre>{contract.instruction}</pre>
-          <pre>{JSON.stringify(contract.schema, null, 2)}</pre>
-        </section>}
+        {mode !== 'skills' && contract && <Fold title="接口固定契约" meta="后端固定 · 不可编辑"><pre>{contract.instruction}</pre><pre>{JSON.stringify(contract.schema, null, 2)}</pre></Fold>}
         <div className="toolbar sticky-actions">
           <Button onClick={save} disabled={blockingIssues.length > 0 || overLimit || (scope === 'project' && !project)}>保存</Button>
           {scope === 'project' && <Button variant="outline" onClick={promoteToGlobal}>把本作品的模板复制为全局默认</Button>}
