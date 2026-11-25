@@ -1,14 +1,16 @@
-// 提示词块：内置块目录、数据块清单与数据渲染、块计划读取、存档迁移。
-// 设计约束：系统不提供任何默认提示词文案——这里只有「标题目录」与「作品数据」。
+// 提示词块：内置块目录、固定注入的数据源、块计划读取与存档迁移。
+// 设计约束：系统不提供任何默认提示词文案——模板里只有用户自己写的块；
+// 作品数据不属于模板块，渲染时由系统固定附带。
 // 模型的固定契约由后端持有，编辑器通过 contracts 接口原样展示。
 import type {
-  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplatePlan, Shot, SkillId,
+  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplateMap, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, StyleSpec,
 } from '../domain/types';
-import { speakerName } from '../domain/types';
+import { defaultPromptTemplates, speakerName } from '../domain/types';
 import { skills } from './skills';
-import { styleBlockText, styleSpecFor } from './promptTemplates';
+import { styleBlockText } from './promptTemplates';
+import { effectiveStyle, visibleBlocks } from './promptScope';
 
-export const PROMPT_KINDS: readonly PromptKindId[] = ['script', 'extract-characters', 'extract-scenes', 'extract-props', 'director', 'image', 'video'];
+export const PROMPT_KINDS: readonly PromptKindId[] = ['script', 'extract-characters', 'extract-scenes', 'extract-props', 'director', 'image-character', 'image-scene', 'image-prop', 'video'];
 
 /** 资产提取的品类：人物 / 场景 / 道具，各自独立识别、各用各的提示词。 */
 export type ExtractCategory = 'character' | 'scene' | 'prop';
@@ -32,6 +34,10 @@ export const builtinBlocks: BuiltinBlock[] = [
   { id: 'script.output-shape', title: '输出结构', kinds: ['script'] },
   { id: 'script.priority', title: '优先级', kinds: ['script'] },
   { id: 'script.extra', title: '自由补充', kinds: ['script'] },
+  // 剧本：顺带提取三类资产的规则（与剧本正文规则同属一次调用，但写的是资产清单）
+  { id: 'script.characters.extract', title: '人物 · 提取规则', group: '人物', kinds: ['script'] },
+  { id: 'script.scenes.extract', title: '场景 · 提取规则', group: '场景', kinds: ['script'] },
+  { id: 'script.props.extract', title: '道具 · 提取规则', group: '道具', kinds: ['script'] },
   // 资产：人物 / 场景 / 道具各一组
   { id: 'extract.characters.instruction', title: '人物 · 识别规则', group: '人物', kinds: ['extract-characters'] },
   { id: 'extract.characters.phrase-style', title: '人物 · 固定短语写法', group: '人物', kinds: ['extract-characters'] },
@@ -51,12 +57,16 @@ export const builtinBlocks: BuiltinBlock[] = [
   { id: 'director.transition', title: '衔接与转场', kinds: ['director'] },
   { id: 'director.forbidden', title: '禁写清单', kinds: ['director'] },
   { id: 'director.priority', title: '优先级', kinds: ['director'] },
-  // 图片
-  { id: 'image.three-view', title: '人物三视图条款', kinds: ['image'] },
-  { id: 'image.scene-composition', title: '场景构图说明', kinds: ['image'] },
-  { id: 'image.prop-composition', title: '道具构图说明', kinds: ['image'] },
-  { id: 'image.forbidden', title: '禁写清单', kinds: ['image'] },
-  { id: 'image.priority', title: '优先级', kinds: ['image'] },
+  // 图片：人物 / 场景 / 道具各一份，互不混用
+  { id: 'image.character.three-view', title: '人物三视图条款', kinds: ['image-character'] },
+  { id: 'image.character.forbidden', title: '人物禁写清单', kinds: ['image-character'] },
+  { id: 'image.character.priority', title: '人物优先级', kinds: ['image-character'] },
+  { id: 'image.scene.composition', title: '场景构图说明', kinds: ['image-scene'] },
+  { id: 'image.scene.forbidden', title: '场景禁写清单', kinds: ['image-scene'] },
+  { id: 'image.scene.priority', title: '场景优先级', kinds: ['image-scene'] },
+  { id: 'image.prop.composition', title: '道具构图说明', kinds: ['image-prop'] },
+  { id: 'image.prop.forbidden', title: '道具禁写清单', kinds: ['image-prop'] },
+  { id: 'image.prop.priority', title: '道具优先级', kinds: ['image-prop'] },
   // 视频
   { id: 'video.motion', title: '运动规范', kinds: ['video'] },
   { id: 'video.forbidden', title: '禁写清单', kinds: ['video'] },
@@ -70,10 +80,13 @@ export function builtinBlocksFor(kind: PromptKindId): BuiltinBlock[] {
   return builtinBlocks.filter(block => block.kinds.includes(kind));
 }
 
-/** 数据块：内容来自作品数据，本身不是文案。用户可改标题、追加说明、删除、调序。 */
+/**
+ * 固定注入的数据源：不属于模板，用户不能增删调序。
+ * 每次渲染时由系统按 kind 带上，排在用户写的块之后。
+ */
 export interface DataBlockDef { source: PromptDataSource; title: string }
 
-const DATA_BLOCKS: Record<PromptKindId, DataBlockDef[]> = {
+const DATA_SOURCES: Record<PromptKindId, DataBlockDef[]> = {
   script: [
     { source: 'script.theme', title: '主题与风格' },
     { source: 'script.source', title: '原文' },
@@ -93,10 +106,24 @@ const DATA_BLOCKS: Record<PromptKindId, DataBlockDef[]> = {
     { source: 'extract.props.existing', title: '已有本类固定资产' },
   ],
   director: [
-    { source: 'director.shots', title: '逐镜剧本' },
+    { source: 'director.screenplay', title: '剧本正文' },
+    { source: 'director.assets', title: '本片资产清单' },
     { source: 'director.skills', title: '附加 Skill' },
   ],
-  image: [
+  // 设定图三类共用同一份作品数据，但各自的模板互不混用。
+  'image-character': [
+    { source: 'image.task', title: '任务与风格' },
+    { source: 'image.subject', title: '固定短语' },
+    { source: 'image.style', title: '风格块' },
+    { source: 'image.skills', title: '附加 Skill' },
+  ],
+  'image-scene': [
+    { source: 'image.task', title: '任务与风格' },
+    { source: 'image.subject', title: '固定短语' },
+    { source: 'image.style', title: '风格块' },
+    { source: 'image.skills', title: '附加 Skill' },
+  ],
+  'image-prop': [
     { source: 'image.task', title: '任务与风格' },
     { source: 'image.subject', title: '固定短语' },
     { source: 'image.style', title: '风格块' },
@@ -104,6 +131,7 @@ const DATA_BLOCKS: Record<PromptKindId, DataBlockDef[]> = {
   ],
   video: [
     { source: 'video.heading', title: '镜头开头' },
+    { source: 'video.visual', title: '画面与开场' },
     { source: 'video.continuity', title: '承接上一镜' },
     { source: 'video.references', title: '附件顺序' },
     { source: 'video.action', title: '动作与运镜' },
@@ -115,19 +143,19 @@ const DATA_BLOCKS: Record<PromptKindId, DataBlockDef[]> = {
   ],
 };
 
-export function dataBlocksFor(kind: PromptKindId): DataBlockDef[] {
-  return DATA_BLOCKS[kind] ?? [];
+export function dataSourcesFor(kind: PromptKindId): DataBlockDef[] {
+  return DATA_SOURCES[kind] ?? [];
 }
 
-/** 没有用户计划时的兜底：只有数据块，没有任何文案。 */
-export function defaultBlocksFor(kind: PromptKindId): PromptBlockPlan[] {
-  return dataBlocksFor(kind).map(def => ({ id: `data.${def.source}`, title: def.title, text: '', source: def.source }));
-}
-
-/** 取该 kind 的块计划：用户保存过就用用户的（可能是空数组＝用户清空了模板）。 */
-export function planFor(project: Project, kind: PromptKindId): PromptBlockPlan[] {
-  const plan = project.promptConfig?.templates?.[kind];
-  return plan ? plan.blocks : defaultBlocksFor(kind);
+/**
+ * 模板默认是空的：模板里只有用户自己写的块。
+ * 旧存档里保存过的数据块会被剔除（数据改由系统固定注入），
+ * 但用户当年写在数据块里的补充说明保留成普通块，一个字都不丢。
+ */
+export function legacyPlanFor(config: Project['promptConfig'], kind: PromptKindId): PromptBlockPlan[] {
+  const plan = config?.v === 2 ? config.templates?.[kind] : undefined;
+  if (!plan) return [];
+  return visibleBlocks(plan.blocks ?? []);
 }
 
 // ── 作品数据渲染 ──────────────────────────────────────────────
@@ -219,7 +247,7 @@ function extractPropsInput(project: Project): string {
 
 const selectedSkills = (project: Project, ids: SkillId[]) => skills.filter(s => project.skills.includes(s.id) && ids.includes(s.id)).map(s => `【${s.name}】${s.template}`).join('\n');
 
-export interface RenderContext { project: Project; asset?: Asset; shot?: Shot }
+export interface RenderContext { project: Project; asset?: Asset; shot?: Shot; global?: PromptTemplateSet }
 
 const AUDIO_MODES = { original: '原声', dubbing: '后期配音', silent: '静音' } as const;
 
@@ -252,13 +280,8 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     case 'extract.scenes.existing': return existingAssets(project, 'scene');
     case 'extract.props.shots': return extractPropsInput(project);
     case 'extract.props.existing': return existingAssets(project, 'prop');
-    case 'director.shots': return JSON.stringify(project.shots.map(item => ({
-      number: item.number, title: item.title || '', scene: item.scene || '', cameraHint: item.cameraHint || '', duration: item.duration, visual: item.visual,
-      characters: project.assets.filter(a => item.assetIds.includes(a.id) && a.kind === 'character').map(a => a.name),
-      scenes: project.assets.filter(a => item.assetIds.includes(a.id) && a.kind === 'scene').map(a => a.name),
-      props: project.assets.filter(a => item.assetIds.includes(a.id) && a.kind === 'prop').map(a => a.name),
-      dialogues: item.dialogues.map(line => ({ speaker: speakerName(project, line), text: line.text })),
-    })));
+    case 'director.screenplay': return project.screenplay?.trim() ? project.screenplay.trim() : '（还没有剧本正文，先在剧本步骤生成或导入一份剧本。）';
+    case 'director.assets': return assetListText(project);
     case 'director.skills': return selectedSkills(project, ['storyboard']);
     case 'image.task': {
       const lines = [
@@ -269,9 +292,14 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
       return lines.filter(Boolean).join('\n');
     }
     case 'image.subject': return asset ? `主体：${asset.name}\n${fixedDescription(asset)}` : '';
-    case 'image.style': return styleBlockText(styleSpecFor(project));
+    case 'image.style': return styleBlockText(effectiveStyle(project, ctx.global));
     case 'image.skills': return selectedSkills(project, ['image']);
     case 'video.heading': return shot ? `第${shot.number}镜，${shot.duration}秒。\n风格：${project.style}` : '';
+    case 'video.visual': {
+      if (!shot) return '';
+      const lines = [shot.visual.trim() ? `画面：${shot.visual.trim()}` : '', shot.start.trim() ? `开场：${shot.start.trim()}` : ''];
+      return lines.filter(Boolean).join('\n');
+    }
     case 'video.continuity': {
       if (!shot) return '';
       const index = project.shots.findIndex(s => s.id === shot.id);
@@ -294,7 +322,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     }
     case 'video.audio': return shot ? `音频模式：${AUDIO_MODES[shot.audioMode] ?? shot.audioMode}` : '';
     case 'video.assets': return shot ? shotAssetText(project, shot) : '';
-    case 'video.style': return styleBlockText(styleSpecFor(project), 'concise');
+    case 'video.style': return styleBlockText(effectiveStyle(project, ctx.global), 'concise');
     case 'video.skills': return selectedSkills(project, ['video']);
     default: return '';
   }
@@ -308,6 +336,13 @@ function existingAssets(project: Project, kind: 'character' | 'scene' | 'prop'):
   return list.map(asset => `${kindNames[kind]}「${asset.name}」：${fixedDescription(asset)}`).join('\n');
 }
 
+/** 本片资产清单：id + 品类 + 名称 + 固定短语。分镜步骤按 id 引用这些资产。 */
+function assetListText(project: Project): string {
+  const list = project.assets.filter(asset => asset.kind !== 'voice');
+  if (!list.length) return '';
+  return list.map(asset => `${asset.id} · ${kindNames[asset.kind]} · ${asset.name} —— ${fixedDescription(asset)}`).join('\n');
+}
+
 /** 本镜的固定资产短语（只列事实，不加规则）。 */
 function shotAssetText(project: Project, shot: Shot): string {
   const ids = new Set([...shot.assetIds, ...shot.references.map(r => r.assetId), ...shot.dialogues.map(d => d.speakerId)]);
@@ -315,7 +350,7 @@ function shotAssetText(project: Project, shot: Shot): string {
   for (const kind of visualKinds) {
     const assets = project.assets.filter(a => a.kind === kind && ids.has(a.id));
     if (!assets.length) { parts.push(`${kindNames[kind]}：未关联`); continue; }
-    parts.push(assets.map(a => `${kindNames[kind]}「${a.name}」：${fixedDescription(a)}`).join('\n'));
+    parts.push(assets.map(a => `${kindNames[kind]}「${a.name}」${shot.subjects?.includes(a.id) ? '（主体）' : ''}：${fixedDescription(a)}`).join('\n'));
   }
   return parts.join('\n');
 }
@@ -323,15 +358,129 @@ function shotAssetText(project: Project, shot: Shot): string {
 // ── 存档迁移 ──────────────────────────────────────────────────
 
 /**
- * v1（块 id → 覆盖文本）迁移成 v2（每个 kind 一份块计划）。
- * 旧值只可能是用户自己改过的内容，迁移不会带回任何默认文案；
- * 认不出的旧键（如早期合并版的 extract.instruction）直接丢弃。
+ * 旧结构里人物 / 场景 / 道具共用一份设定图模板，拆成三份时的归类规则。
+ * 带内置 id 的块按它的品类走（人物三视图条款 → 人物，场景构图 → 场景，道具构图 → 道具）。
+ * 用户自己写的块过去对三类都生效，但「三类共用」正是这次要拆掉的东西：
+ * 复制到三份会让角色条款继续出现在场景图和道具图的提示词里。
+ * 所以它只落人物那一份，并标成 shared，编辑器里会说明这段来自旧模板。
+ */
+const IMAGE_BLOCK_ROUTES: Record<string, { kind: PromptKindId; id: string; title: string }[]> = {
+  'image.three-view': [{ kind: 'image-character', id: 'image.character.three-view', title: '人物三视图条款' }],
+  'image.scene-composition': [{ kind: 'image-scene', id: 'image.scene.composition', title: '场景构图说明' }],
+  'image.prop-composition': [{ kind: 'image-prop', id: 'image.prop.composition', title: '道具构图说明' }],
+  'image.forbidden': [
+    { kind: 'image-character', id: 'image.character.forbidden', title: '人物禁写清单' },
+    { kind: 'image-scene', id: 'image.scene.forbidden', title: '场景禁写清单' },
+    { kind: 'image-prop', id: 'image.prop.forbidden', title: '道具禁写清单' },
+  ],
+  'image.priority': [
+    { kind: 'image-character', id: 'image.character.priority', title: '人物优先级' },
+    { kind: 'image-scene', id: 'image.scene.priority', title: '场景优先级' },
+    { kind: 'image-prop', id: 'image.prop.priority', title: '道具优先级' },
+  ],
+};
+
+const IMAGE_KINDS: PromptKindId[] = ['image-character', 'image-scene', 'image-prop'];
+
+/**
+ * 已经被旧规则拆过的存档：三份里留着同一个块 id 的副本（编辑器里新建的块 id 各不相同，
+ * 只有复制才会撞 id）。这种副本是旧模板的遗留，把场景、道具两份里的清掉，只留人物那份。
+ */
+function dropSharedImageCopies(templates: Partial<Record<PromptKindId, PromptTemplatePlan>>): Partial<Record<PromptKindId, PromptTemplatePlan>> {
+  const character = templates['image-character']?.blocks;
+  if (!character?.length) return templates;
+  const duplicated = new Set<string>();
+  for (const kind of IMAGE_KINDS) {
+    if (kind === 'image-character') continue;
+    for (const block of templates[kind]?.blocks ?? []) {
+      if (character.some(item => item.id === block.id)) duplicated.add(block.id);
+    }
+  }
+  if (!duplicated.size) return templates;
+  const next: Partial<Record<PromptKindId, PromptTemplatePlan>> = { ...templates };
+  for (const kind of IMAGE_KINDS) {
+    if (kind === 'image-character') continue;
+    const plan = next[kind];
+    if (plan) next[kind] = { blocks: plan.blocks.filter(block => !duplicated.has(block.id)) };
+  }
+  next['image-character'] = { blocks: character.map(block => (duplicated.has(block.id) ? { ...block, shared: true } : block)) };
+  return next;
+}
+
+/** 把一份模板集合里的旧设定图模板拆成三份；没有旧的就原样返回。 */
+export function migrateTemplateSet(set: PromptTemplateSet | undefined): PromptTemplateSet | undefined {
+  if (!set?.templates) return set;
+  // templates 里可能还留着旧的 `image` 键，拆完要删掉。
+  const templates: PromptTemplateMap = { ...set.templates };
+  const legacy = templates.image;
+  if (legacy) {
+    delete templates.image;
+    const append = (kind: PromptKindId, block: PromptBlockPlan) => {
+      const plan = templates[kind] ?? { blocks: [] };
+      templates[kind] = { blocks: [...plan.blocks, block] };
+    };
+    for (const block of legacy.blocks ?? []) {
+      const routes = IMAGE_BLOCK_ROUTES[block.builtin ?? block.id];
+      if (routes) {
+        for (const route of routes) append(route.kind, { ...block, id: route.id, title: route.title, builtin: route.id });
+        continue;
+      }
+      // 用户自己写的块：过去三类共用，现在只落人物那一份并标出来。
+      append('image-character', { ...block, shared: true });
+    }
+  }
+  return { ...set, templates: dropSharedImageCopies(templates) };
+}
+
+/**
+ * 出厂模板按「步骤」补齐。
+ *
+ * 存档里没有的步骤用出厂那份；存档里有的步骤保持用户自己写的（哪怕是空的）。
+ * 老存档（早期版本在模板编辑器点过「保存」，留下的 `templates` 是空的）能拿到新出厂的默认块，
+ * 又不会覆盖用户已经写好的内容；用户主动清空某一步（该步骤存在但块为空）依旧按用户的意思保持为空。
+ */
+export function withFactoryDefaults(set: PromptTemplateSet | undefined): PromptTemplateSet {
+  const templates: PromptTemplateMap = { ...(set?.templates ?? {}) };
+  for (const kind of PROMPT_KINDS) {
+    if (templates[kind]) continue;
+    const factory = defaultPromptTemplates.templates?.[kind];
+    if (factory) templates[kind] = { blocks: factory.blocks.map(block => ({ ...block })) };
+  }
+  return { ...(set ?? {}), templates };
+}
+
+/**
+ * 模板存档的迁移：v1（块 id → 覆盖文本）→ v2（每个 kind 一份块计划）→ v3（作品覆盖层）。
+ *
+ * v3 之后模板分两层：全局模板是默认，作品只存「覆盖层」。
+ * 旧作品里写过的步骤变成它自己的覆盖（内容一个字不丢），
+ * 没写过的步骤不进覆盖层，跟着全局走。
+ * 迁移不会带回任何默认文案——旧值只可能是用户自己改过的内容。
  */
 export function migratePromptConfig(config: Project['promptConfig']): Project['promptConfig'] {
   if (!config) return undefined;
-  if (config.v === 2) return config;
+  if (config.v === 3) {
+    // v3 的覆盖层里可能还留着旧的共用设定图模板，也可能有旧规则复制出来的副本，一并收拾干净。
+    return { ...config, overrides: migrateTemplateSet(config.overrides) };
+  }
+  const v2 = config.v === 1 ? migrateV1ToV2(config) : config;
+  return migrateV2ToV3(v2);
+}
+
+/** v1（块 id → 覆盖文本）迁移成 v2（每个 kind 一份块计划）。 */
+function migrateV1ToV2(config: Extract<NonNullable<Project['promptConfig']>, { v: 1 }>): Extract<NonNullable<Project['promptConfig']>, { v: 2 }> {
   const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = {};
   for (const [id, text] of Object.entries(config.blocks ?? {})) {
+    // 旧的设定图内置块 id 已改名，按归类规则落到三个品类里。
+    const routes = IMAGE_BLOCK_ROUTES[id];
+    if (routes) {
+      for (const route of routes) {
+        const plan = templates[route.kind] ?? { blocks: [] };
+        plan.blocks.push({ id: route.id, title: route.title, text, builtin: route.id });
+        templates[route.kind] = plan;
+      }
+      continue;
+    }
     const builtin = builtinById(id);
     if (!builtin) continue;
     const kind = builtin.kinds[0];
@@ -346,4 +495,33 @@ export function migratePromptConfig(config: Project['promptConfig']): Project['p
     plan.blocks.sort((a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999));
   }
   return { v: 2, style: config.style, templates };
+}
+
+/**
+ * v2 → v3：把作品自己的模板搬进覆盖层。
+ * 块为空的步骤不进覆盖层——它本来就没有内容，让它跟随全局；
+ * 块非空的步骤进覆盖层，从此这一步归这部作品管。
+ */
+function migrateV2ToV3(config: Extract<NonNullable<Project['promptConfig']>, { v: 2 }>): Project['promptConfig'] {
+  const templates: Partial<Record<PromptKindId, PromptTemplatePlan>> = {};
+  for (const kind of PROMPT_KINDS) {
+    const plan = config.templates?.[kind];
+    if (!plan) continue;
+    const blocks = visibleBlocks(plan.blocks ?? []);
+    if (blocks.length) templates[kind] = { blocks };
+  }
+  // 旧结构里设定图是一份（'image'），要按人物/场景/道具拆开。
+  const legacyImage = config.templates?.image;
+  if (legacyImage) (templates as Partial<Record<'image', PromptTemplatePlan>>).image = { blocks: visibleBlocks(legacyImage.blocks ?? []) };
+  const overrides: PromptTemplateSet = { templates };
+  if (hasStyleContent(config.style)) overrides.style = config.style;
+  return { v: 3, overrides: migrateTemplateSet(overrides) };
+}
+
+/** 风格里有没有真东西（空对象不算「这部作品自己管风格」）。 */
+function hasStyleContent(style: StyleSpec | undefined): boolean {
+  if (!style) return false;
+  if (style.forbidden?.length) return true;
+  const fields: (keyof StyleSpec)[] = ['medium', 'line', 'palette', 'face', 'light'];
+  return fields.some(key => !!(style[key] as string | undefined)?.trim());
 }

@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
-const source = '人物：阿青：黑短发，青色布衣\n场景：山门：黑石阶，薄雾\n道具：断剑：红绳剑柄，斜断口\n' + Array.from({ length: 10 }, (_, i) => `第${i + 1}镜（9秒）\n画面：阿青在山门举起断剑\n开场：石阶前\n动作：抬手\n终点：站定\n运镜：推进\n台词：阿青：我回来了。`).join('\n\n');
+const source = '人物：阿青：黑短发，青色布衣\n场景：山门：黑石阶，薄雾\n道具：断剑：红绳剑柄，斜断口\n' + Array.from({ length: 10 }, (_, i) => `第${i + 1}镜（9秒）\n画面：阿青在山门举起断剑\n开场：石阶前\n动作：抬手\n终点：站定\n运镜：推进\n阿青：我回来了。`).join('\n\n');
+// 导演步骤产出的镜头：镜数由模型决定，这里给 10 镜。
+const directorShots = Array.from({ length: 10 }, (_, i) => ({
+  number: i + 1,
+  scene: '外景 · 山门',
+  visual: (i === 0 ? '人物：阿青：黑短发，青色布衣\n场景：山门：黑石阶，薄雾\n道具：断剑：红绳剑柄，斜断口\n' : '') + `第${i + 1}镜（9秒）\n画面：阿青在山门举起断剑\n开场：石阶前\n动作：抬手\n终点：站定\n运镜：推进\n阿青：我回来了。`,
+  duration: 9,
+  shotSize: '中景', movement: '推进', angle: '平视',
+  start: '石阶前', action: '抬手', end: '站定',
+  dialogues: [{ speaker: '阿青', text: '我回来了。' }],
+}));
 const video = await readFile('dev/test-film.mp4');
 const results = [];
 try {
@@ -18,6 +28,8 @@ try {
       if (action === 'image') {
         const base64 = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 300; c.height = 100; const x = c.getContext('2d'); x.fillStyle = '#cccccc'; x.fillRect(0, 0, 300, 100); return c.toDataURL('image/png').split(',')[1]; });
         await route.fulfill({ json: { ok: true, data: { base64, mime: 'image/png' } } });
+      } else if (action === 'director') {
+        await route.fulfill({ json: { ok: true, data: { shots: directorShots } } });
       } else if (action === 'extract-characters' || action === 'extract-scenes' || action === 'extract-props') {
         if (staleExtraction) await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); const p = s.getStudio().projects[0]; s.updateProject(p.id, { theme: '并发编辑保留' }, true); });
         const key = action === 'extract-characters' ? 'characters' : action === 'extract-scenes' ? 'scenes' : 'props';
@@ -32,13 +44,33 @@ try {
     await page.goto('http://127.0.0.1:5173/');
     await page.getByLabel('一句话故事主题').fill('断剑归门');
     await page.getByRole('button', { name: '开始创作', exact: true }).click();
+    await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); s.setKey('openai', 'fixture-not-transmitted'); s.setKey('gemini', 'fixture-not-transmitted'); });
     await page.getByRole('button', { name: '导入剧本', exact: true }).click();
     await page.getByLabel('或粘贴原文').fill(source);
     await page.getByRole('button', { name: '解析并预览', exact: true }).click();
     await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    assert.equal((await saved()).assets.length, 3);
+    const imported = await saved();
+    assert.equal(imported.screenplay, source, '原文逐字保留');
+    assert.equal(imported.shots.length, 0, '导入不拆镜，镜头由导演步骤产出');
+    assert.equal(imported.assets.length, 0, '导入不建资产，资产由资产步骤负责');
+    // 导演步骤：模型按剧本结构化出镜头，镜数由模型决定。
+    await page.goto('http://127.0.0.1:5173/#/director');
+    await page.getByRole('button', { name: 'AI 生成分镜（先确认）', exact: true }).click();
+    await page.getByRole('button', { name: '确认发送并生成分镜', exact: true }).click();
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    assert.equal((await saved()).shots.length, 10, '导演步骤产出的镜头数由模型决定');
+    // 资产步骤：先手动建三项，后面提取只补全、不覆盖固定短语。
     await page.goto('http://127.0.0.1:5173/#/assets');
+    for (const [tab, button, name, description] of [[/人物/, '新增角色', '阿青', '黑短发，青色布衣'], [/场景/, '新增场景', '山门', '黑石阶，薄雾'], [/道具/, '新增道具', '断剑', '红绳剑柄，斜断口']]) {
+      await page.getByRole('tab', { name: tab }).click();
+      await page.getByRole('button', { name: button, exact: true }).click();
+      await page.getByLabel('名称', { exact: true }).fill(name);
+      await page.getByLabel('描述', { exact: true }).fill(description);
+      await page.getByRole('button', { name: '保存资产', exact: true }).click();
+    }
+    assert.equal((await saved()).assets.length, 3);
+    await page.getByRole('tab', { name: /人物/ }).click();
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
     const fullImagePrompt = await page.getByLabel('完整图片提示词').inputValue();
     assert.ok(fullImagePrompt.includes('主体：阿青'), '图片提示词应包含数据块给出的主体');
@@ -51,29 +83,28 @@ try {
     assert.deepEqual(await page.locator('.asset-table thead th').allTextContents(), ['形态', '角色 / 形态', '形态描述', '音色', '参考图', '图片', '操作']);
     assert.equal(await page.locator('.asset-table tbody tr').count(), 1, '资产表默认只显示基础形态');
     await page.screenshot({ path: `dev/asset-cards-${width}.png` });
-    await page.evaluate(async () => { const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts'))); s.setKey('openai', 'fixture-not-transmitted'); s.setKey('gemini', 'fixture-not-transmitted'); });
     await page.getByRole('button', { name: /批量生成角色图片/ }).click();
     const batchBox = page.getByLabel('「阿青」· 即将发送的图片提示词');
     const batchDefault = await batchBox.inputValue();
     await batchBox.fill(`${batchDefault}\n批量补充：只影响本次`);
     await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 1, '取消后不能多发请求');
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
     await page.getByRole('button', { name: '生成设定图', exact: true }).click();
     const confirmed = await page.getByLabel('即将发送的完整图片提示词').inputValue();
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 1);
     const editedPrompt = `${confirmed}\n本次补充：测试编辑只影响这一张`;
     await page.getByLabel('即将发送的完整图片提示词').fill(editedPrompt);
     await page.getByRole('button', { name: '恢复默认提示词', exact: true }).waitFor();
     await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    assert.equal(calls[0].body.prompt, editedPrompt);
+    assert.equal(calls[1].body.prompt, editedPrompt);
     assert.ok(confirmed.includes('主体：阿青'), '实际发送的图片提示词应带数据块内容');
     assert.ok(!confirmed.includes('统一纯色'), '系统不再自带设图默认文案');
     await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
     await page.getByRole('dialog').locator('img').waitFor(); await overflow(); await close();
-    assert.equal(calls[0].body.reference, undefined, '基础形态仍是纯文本请求');
+    assert.equal(calls[1].body.reference, undefined, '基础形态仍是纯文本请求');
     // 新形态：默认挂载基础形态的当前设定图，参考图格显示为图片；可清除，也可从别的资产图片拖回来。
     await page.getByRole('button', { name: '为阿青新增形态', exact: true }).click();
     await page.getByLabel('名称').fill('阿青 · 战损');
@@ -98,9 +129,9 @@ try {
     await page.getByRole('dialog').locator('img[alt*="参考图来源「阿青」的当前设定图"]').waitFor();
     await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    assert.equal(calls.length, 2);
-    assert.equal(calls[1].body.prompt.includes('战损'), true, '形态提示词照常发送');
-    assert.match(calls[1].body.reference, /^data:image\/png;base64,/, '新形态必须带基础形态的设定图');
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].body.prompt.includes('战损'), true, '形态提示词照常发送');
+    assert.match(calls[2].body.reference, /^data:image\/png;base64,/, '新形态必须带基础形态的设定图');
     assert.ok(!(await page.evaluate(() => localStorage.getItem('manju-studio-v1'))).includes('data:image/png;base64,'), '参考图不能写进本地存档');
     // 删除临时形态，后面的提取断言仍按 3 项资产计算。
     await page.getByRole('button', { name: '删除阿青 · 战损', exact: true }).click();
@@ -118,20 +149,10 @@ try {
     await page.getByRole('button', { name: '查看断剑详情', exact: true }).click();
     await page.getByLabel('上传设定图（PNG / JPEG / WebP，≤5MB）').setInputFiles({ name: 'prop.webp', mimeType: imageFiles[1].mime, buffer: Buffer.from(imageFiles[1].base64, 'base64') });
     await page.getByRole('dialog').locator('img').waitFor(); await close();
-    await page.goto('http://127.0.0.1:5173/#/storyboard');
-    await page.getByRole('button', { name: '全部展开', exact: true }).click();
-    await page.getByRole('button', { name: '复制人物提示词', exact: true }).nth(9).waitFor();
-    for (const label of ['人物', '场景', '道具']) {
-      assert.equal(await page.getByRole('button', { name: `复制${label}提示词`, exact: true }).count(), 10);
-      await page.getByRole('button', { name: `复制${label}提示词`, exact: true }).first().click();
-      const copied = await page.evaluate(() => navigator.clipboard.readText());
-      assert.ok(copied.includes(`${label}提示词`));
-      assert.equal((copied.match(/提示词/g) || []).length, 1);
-    }
     await page.goto('http://127.0.0.1:5173/#/assets');
-    await page.locator('details.fold').filter({ hasText: '从剧本提取资产' }).locator('summary').click();
+    await page.locator('details.fold').filter({ hasText: '从分镜提取资产' }).locator('summary').click();
     await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     await page.getByRole('button', { name: '确认发送并提取人物资产', exact: true }).click();
     await page.getByRole('heading', { name: '提取结果预览 · 人物', exact: true }).waitFor();
     assert.equal((await saved()).assets.length, 3, 'preview must not save');
@@ -150,8 +171,6 @@ try {
     await page.getByRole('button', { name: '确认写入资产库', exact: true }).click();
     const p = await saved(); assert.equal(p.assets.length, 4);
     assert.equal(p.assets.find(a => a.kind === 'scene').lock, '黑石阶，薄雾');
-    assert.equal(p.shots[0].assetIds.length, 4);
-    assert.equal(p.shots[1].assetIds.length, 3);
     const originalShots = p.shots.map(s => ({ id: s.id, visual: s.visual, duration: s.duration, dialogues: s.dialogues }));
     staleExtraction = true;
     await page.getByRole('button', { name: 'AI 提取人物（先确认）', exact: true }).click();
@@ -159,6 +178,22 @@ try {
     await page.getByText('项目已修改或删除，提取结果未覆盖现有内容。', { exact: true }).waitFor();
     await close();
     assert.deepEqual((await saved()).shots.map(s => ({ id: s.id, visual: s.visual, duration: s.duration, dialogues: s.dialogues })), originalShots);
+    // 分镜步骤：逐镜确认对应关系，资产挂到镜头上。
+    await page.goto('http://127.0.0.1:5173/#/storyboard');
+    await page.getByRole('button', { name: '全部展开', exact: true }).click();
+    await page.getByRole('button', { name: '复制人物提示词', exact: true }).nth(9).waitFor();
+    for (const label of ['人物', '场景', '道具']) {
+      assert.equal(await page.getByRole('button', { name: `复制${label}提示词`, exact: true }).count(), 10);
+      await page.getByRole('button', { name: `复制${label}提示词`, exact: true }).first().click();
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      assert.ok(copied.includes(`${label}提示词`));
+      assert.equal((copied.match(/提示词/g) || []).length, 1);
+    }
+    await page.getByRole('button', { name: '预览并确认对应关系' }).click();
+    await page.getByRole('button', { name: '确认对应并保存补全' }).click();
+    const confirmedShots = await saved();
+    assert.equal(confirmedShots.shots[0].assetIds.length, 4, '第1镜挂上人物、场景、道具与新增道具');
+    assert.equal(confirmedShots.shots[1].assetIds.length, 3, '其它镜只挂三类资产');
     await page.goto('http://127.0.0.1:5173/#/generation');
     await page.locator('.generation-card').nth(9).waitFor();
     assert.equal(await page.locator('video[controls]').count(), 0);
@@ -260,7 +295,7 @@ try {
     await close();
     await page.reload();
     await page.getByText('本地视频未加载，请重新选择文件', { exact: true }).waitFor();
-    assert.equal(calls.length, 6); assert.deepEqual(errors, []);
+    assert.equal(calls.length, 7); assert.deepEqual(errors, []);
     results.push({ width, passed: true, interceptedRequests: calls.length, checks: ['data-block prompt exact request', 'compact details and copy', 'reference image mounts, clears and drag-fills', 'per-category asset extraction preview and locks', 'stale result rejected', 'PNG/JPEG/WebP copied as real PNG pixels', 'original image downloads', 'only this shot images and matching manual prompt', 'clipboard denied/unsupported download fallback', 'reference order and frame roles preserved', 'missing local images block false handoff', 'video click playback and refresh'] });
     await context.close();
   }

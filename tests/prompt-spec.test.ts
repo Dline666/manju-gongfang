@@ -25,7 +25,7 @@ const project: Project = {
 
 const withPlan = (kind: 'script' | 'video' | 'extract-characters', blocks: { id: string; title: string; text: string }[]): Project => ({
   ...project,
-  promptConfig: { v: 2, templates: { [kind]: { blocks } } },
+  promptConfig: { v: 3, overrides: { templates: { [kind]: { blocks } } } },
 });
 
 test('没有模板计划时只输出作品数据，没有任何默认提示词文案', async () => {
@@ -82,12 +82,15 @@ test('三类资产提示词各带本类专属线索，互不混入', async () =>
   assert.equal(promptBlock(scenes, 'data.extract.scenes.existing')?.text.includes('沈砚'), false, '场景提示词不列人物资产');
 });
 
-test('没有任何锁定块：spec 里的块全部可编辑', async () => {
+test('用户写的块都可编辑，只有系统注入的作品数据是锁定块', async () => {
   const { scriptSpec, imageSpec, videoSpec, extractCharactersSpec, extractScenesSpec, extractPropsSpec, directorSpec } = await import('../src/lib/prompts');
   const specs = [scriptSpec(project), directorSpec(project), imageSpec(project, hero), videoSpec(project, project.shots[0]), extractCharactersSpec(project), extractScenesSpec(project), extractPropsSpec(project)];
   for (const spec of specs) {
     assert.equal(new Set(spec.blocks.map(item => item.id)).size, spec.blocks.length, '块 id 必须唯一');
-    for (const block of spec.blocks) assert.notEqual(block.locked, true, `${spec.kind} / ${block.id} 不应是锁定块`);
+    for (const block of spec.blocks) {
+      const injected = block.id.startsWith('data.');
+      assert.equal(block.locked === true, injected, `${spec.kind} / ${block.id} 的锁定状态不对`);
+    }
   }
   assert.equal(assetPromptGroups(project, project.shots[0]).length, 3);
 });

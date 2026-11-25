@@ -47,10 +47,12 @@ try {
     await page.getByRole('heading', { name: '我的作品' }).waitFor();
     await page.evaluate(async () => {
       const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
-      const { templateScript } = await import('/src/features/script/creation.ts');
+      const { templateScript, rehearseShots } = await import('/src/features/script/creation.ts');
       const p = s.createProject('隔离模型测试', '山门断剑'); const draft = templateScript(p.theme);
       // 剧本步骤不再预置人物资产，这里手动建一个用于生图测试。
       draft.assets = [{ id: 'model-hero', kind: 'character', name: '模型测试人物', description: '十七岁少年，灰白旧布衣', lock: '十七岁少年，灰白旧布衣' }];
+      // 剧本步骤不拆镜：镜头由导演步骤产出，这里用本地演练排出镜头。
+      draft.shots = rehearseShots(draft.screenplay || '');
       s.updateProject(p.id, { ...draft, source: 'template', storyboardReady: true });
       location.hash = '/assets';
     });

@@ -8,6 +8,7 @@ import PreflightDialog from './PreflightDialog';
 import { errorMessage } from '../../lib/api';
 import { inspectProject, type MediaReport } from '../../lib/media/inputs';
 import { buildMaterialZip } from '../../lib/media/archive';
+import { useStudio } from '../../store/studio';
 import { formatTime, safeFilename } from '../../lib/media/timeline';
 import type { RenderProgress } from '../../lib/media/encoder';
 import TimelinePreview from './TimelinePreview';
@@ -16,6 +17,7 @@ const audioNames = { original: '保留视频原声', dubbing: '配音完全替�
 type Job = 'mp4' | 'zip';
 
 export default function ExportPage({ project, navigate }: PageProps) {
+  const { settings } = useStudio();
   const [report, setReport] = useState<MediaReport>();
   const [checking, setChecking] = useState(false);
   const [checkMessage, setCheckMessage] = useState('');
@@ -61,7 +63,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
         const blob = await renderProject(project, value => { if (!control.signal.aborted) setProgress(value); }, control.signal);
         if (!control.signal.aborted && alive.current) { setMp4(blob); toast.success('真实 MP4 已生成，请预览后下载。'); }
       } else {
-        const blob = await buildMaterialZip(project, value => { if (!control.signal.aborted) setProgress(value); }, control.signal);
+        const blob = await buildMaterialZip(project, value => { if (!control.signal.aborted) setProgress(value); }, control.signal, settings.promptTemplates);
         if (!control.signal.aborted && alive.current) { setZip(blob); toast.success('完整素材 ZIP 已生成。'); }
       }
     } catch (caught) {
@@ -83,7 +85,7 @@ export default function ExportPage({ project, navigate }: PageProps) {
     {item.issues.map(issue => <p key={issue} className="alert">{issue}</p>)}
   </article>)}</div>;
   const hasShotIssues = !!report?.shots.some(item => item.issues.length);
-  if (!project.shots.length) return <Empty title="还没有可导出的分镜" text="先完成十镜分镜，再到生成页导入或生成视频与配音。"><Button onClick={() => navigate('storyboard')}>前往分镜</Button></Empty>;
+  if (!project.shots.length) return <Empty title="还没有可导出的分镜" text="先在「导演分镜」步骤用大模型把剧本结构化成镜头，再到生成页导入或生成视频与配音。"><Button onClick={() => navigate('director')}>前往导演分镜</Button></Empty>;
 
   return <div className="stack">
     <PageHeader title="预览与导出" help={<HelpPopover label="导出说明" title="预览与导出"><p>全部分镜同一时间轴 · 720 × 1280 · 24 fps · H.264 / AAC。</p><p className="mt-2">视频仅在内存中保留，刷新后本地视频需重新导入。空文件、缺失配音、过期素材不能算就绪。</p></HelpPopover>} actions={<Button variant="outline" disabled={!!job} onClick={() => navigate('generation')}>返回生成 / 重新导入</Button>} />

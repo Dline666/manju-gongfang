@@ -1,5 +1,6 @@
-import { makeShot, uid, type Asset, type Project, type Shot } from '../../domain/types';
-import { blocksToShots, parseScreenplay, readScreenplayMeta } from './screenplay';
+import { uid, type Asset, type Dialogue, type Project, type Shot } from '../../domain/types';
+import { cleanScreenplayLine, estimateDialogueSeconds, normalizeDialogue, parseDialogueLine, readScreenplayMeta, screenplayDialoguePool, screenplaySceneName, type ScreenplayLine } from './screenplay';
+import { ACTION_LINE, CAMERA_MARK, SHOT_SIZES } from './screenplay';
 
 const shotHeading = /^\s*(?:#{1,6}\s*)?(?:第\s*[\d一二三四五六七八九十百零〇]+\s*镜(?:头)?|(?:镜头|分镜|SHOT)\s*[\d一二三四五六七八九十百零〇]+)(?=$|[\s:：、.．（(\-—])/i;
 
@@ -16,7 +17,7 @@ export interface GeneratedScreenplay {
   /** 完整剧本正文（Markdown）；镜头由它解析得到，模型不再另报一份镜头清单。 */
   screenplay: string;
 }
-export interface ScriptDraft { title?: string; logline?: string; screenplay?: string; assets: Asset[]; shots: Shot[]; notes?: string[] }
+export interface ScriptDraft { title?: string; logline?: string; screenplay?: string; assets: Asset[]; shots: Shot[] }
 const text = (value: unknown) => typeof value === 'string' ? value : '';
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -25,8 +26,12 @@ export function mergeDraftAssets(existing: Asset[], draft: ScriptDraft): ScriptD
   const assets = [...existing]; const ids = new Map<string, string>();
   for (const asset of draft.assets) {
     const found = assets.find(a => a.kind === asset.kind && a.name === asset.name);
-    if (found) ids.set(asset.id, found.id);
-    else assets.push(asset);
+    if (found) {
+      ids.set(asset.id, found.id);
+      // 同名资产保留它自己的固定短语（用户手改过的不被模型覆盖），只有空白占位才补上。
+      const blank = !found.description.trim() && !found.lock.trim();
+      if (blank) assets[assets.indexOf(found)] = { ...found, description: asset.description, lock: asset.lock, ...(asset.aliases?.length ? { aliases: asset.aliases } : {}) };
+    } else assets.push(asset);
   }
   // 台词按名字认领人物资产：重新生成剧本后，说话人仍能挂回已建的人物。
   const byName = new Map(assets.filter(a => a.kind === 'character').map(a => [a.name, a.id]));
@@ -72,23 +77,58 @@ export function extractLocalAssets(shots: Shot[], existing: Asset[]): ScriptDraf
 
 
 /**
- * 把模型返回的剧本解析成剧本层镜头：剧本是唯一事实来源，镜头由剧本拆出来，
- * 不再让模型另外报一份镜头清单。camera/start/action/end 留给导演步骤。
- * 这一步不产出任何资产：台词只记下说话人名字，人物资产等提取或手动创建后再关联。
+ * 剧本步骤顺带产出的资产：人物 / 场景 / 道具各一份。
+ *
+ * 模型给的 id 直接沿用 —— 分镜步骤要按 id 引用资产，id 必须跨调用稳定。
+ * id 缺失或组内重复时用「品类前缀 + 序号」兜底。
+ * 同名同类的已有资产保留它自己的 id 与固定短语（用户手改过的固定短语不被模型覆盖），
+ * 只有仍是空白占位的才补上。
+ */
+const screenplayAssetKinds = { characters: 'character', scenes: 'scene', props: 'prop' } as const;
+type ScreenplayAssetKind = keyof typeof screenplayAssetKinds;
+
+export function screenplayAssets(input: unknown): { assets: Asset[]; warnings: string[] } {
+  const data = record(input);
+  const group = record(data.assets);
+  const assets: Asset[] = [];
+  const warnings: string[] = [];
+  const usedIds = new Set<string>();
+  for (const [key, kind] of Object.entries(screenplayAssetKinds) as [ScreenplayAssetKind, Asset['kind']][]) {
+    const list = group[key];
+    if (!Array.isArray(list)) continue;
+    const prefix = kind === 'character' ? 'c' : kind === 'scene' ? 's' : 'p';
+    let seq = 0;
+    for (const value of list) {
+      const item = record(value);
+      const name = text(item.name).trim();
+      const lock = text(item.lock).trim();
+      if (!name || !lock) { warnings.push(`${kind === 'character' ? '人物' : kind === 'scene' ? '场景' : '道具'}资产缺名称或固定短语，已跳过。`); continue; }
+      let id = text(item.id).trim();
+      if (!id || usedIds.has(id)) { seq++; id = `${prefix}${seq}`; }
+      while (usedIds.has(id)) { seq++; id = `${prefix}${seq}`; }
+      usedIds.add(id);
+      const aliases = text(item.aliases).split(/[，,、;；]/).map(item => item.trim()).filter(Boolean);
+      const description = text(item.description).trim();
+      assets.push({ id, kind, name, description: description || lock, lock, ...(aliases.length ? { aliases } : {}) });
+    }
+  }
+  return { assets, warnings };
+}
+
+/**
+ * 剧本步骤的产出：一份剧本正文 + 顺带带出的三类资产。
+ * 镜头由导演步骤调大模型结构化产出，这里不拆镜。
  */
 export function normalizeScreenplay(input: unknown): ScriptDraft {
   const data = record(input);
   const screenplay = text(data.screenplay).trim();
   if (!screenplay) throw new Error('生成结果没有剧本正文，未覆盖现有剧本。');
-  const parsed = parseScreenplay(screenplay);
-  if (!parsed.blocks.length) throw new Error('剧本里没有找到可拆镜的内容（既没有【镜头：…】标记，也没有带动作或台词的段落）；现有剧本未被覆盖。');
-  const shots = blocksToShots(parsed, name => name.trim() || '未知人物', () => uid());
   const meta = readScreenplayMeta(screenplay);
-  const notes = parsed.degraded ? [`未检测到【镜头：类型】标记，已按段落降级拆镜（${shots.length} 镜）。`] : [];
+  const { assets } = screenplayAssets(data);
   return {
     title: text(data.title).trim() || meta.title || undefined,
     logline: text(data.logline).trim() || meta.logline || undefined,
-    screenplay, assets: [], shots, ...(notes.length ? { notes } : {}),
+    screenplay, assets, shots: [],
   };
 }
 
@@ -176,28 +216,200 @@ export function applyCategoryExtraction(project: Project, input: unknown, catego
 }
 
 export interface GeneratedDirector {
-  shots: { number: number; shotSize: string; movement: string; angle: string; start: string; action: string; end: string }[];
+  shots: {
+    number: number; title?: string; scene: string; sceneId?: string; visual: string; duration: number;
+    shotSize: string; movement: string; angle: string; start: string; action: string; end: string;
+    dialogues?: { speaker: string; text: string; emotion?: string }[];
+    assets?: { assetId: string; role?: 'subject' | 'background' | 'prop' }[];
+  }[];
 }
 
-/** 把导演输出合并回现有镜头：只改运镜与开场/动作/终点，剧情和时长不动。 */
-export function normalizeDirector(input: unknown, project: Project): Shot[] {
+export interface DirectorResult { shots: Shot[]; mismatches: number; unknownAssets: number }
+
+/** 在剧本对白池里找同一句话：先按说话人找，再退回只按文本找。 */
+function matchDialogue(pool: ScreenplayLine[], used: Set<number>, speaker: string, body: string): { index: number; speaker: string; text: string } | undefined {
+  const target = normalizeDialogue(body);
+  if (!target) return undefined;
+  const sameSpeaker = pool.findIndex((line, index) => !used.has(index) && normalizeDialogue(line.speaker) === normalizeDialogue(speaker) && normalizeDialogue(line.text) === target);
+  if (sameSpeaker >= 0) return { index: sameSpeaker, ...pool[sameSpeaker] };
+  const anySpeaker = pool.findIndex((line, index) => !used.has(index) && normalizeDialogue(line.text) === target);
+  if (anySpeaker >= 0) return { index: anySpeaker, ...pool[anySpeaker] };
+  return undefined;
+}
+
+/**
+ * 导演步骤的产出：按模型返回的分镜脚本重建镜头列表。
+ *
+ * 镜数由模型按剧本内容决定，与既有镜头无关——重跑就是整体替换。
+ * 对白必须逐字来自剧本：拿剧本对白池核对，命中就用剧本原文（哪怕模型改了标点），
+ * 没命中的保留模型文本并计数，交给用户核对。
+ * 资产由剧本步骤建好，模型按 id 引用：引用不存在的 id 丢掉并计数；
+ * 说话人按名字挂到人物资产上（代称也算）。
+ */
+export function normalizeDirector(input: unknown, project: Project): DirectorResult {
   const data = record(input);
-  if (!Array.isArray(data.shots) || data.shots.length !== project.shots.length) throw new Error('导演分镜数量与剧本镜头数不一致，未覆盖现有内容。');
-  const byNumber = new Map(project.shots.map(shot => [shot.number, shot]));
-  const seen = new Set<number>();
-  const rows = data.shots.map(value => {
+  const rows = data.shots;
+  if (!Array.isArray(rows) || !rows.length) throw new Error('导演分镜没有返回任何镜头，未覆盖现有内容。');
+  const pool = screenplayDialoguePool(project.screenplay || '');
+  const used = new Set<number>();
+  const knownAssets = new Map(project.assets.map(asset => [asset.id, asset]));
+  // 人物按名字与代称认领：说话人挂到人物资产上，视频提示词才写得出人名。
+  const characterByName = new Map<string, string>();
+  for (const asset of project.assets.filter(item => item.kind === 'character')) {
+    characterByName.set(asset.name, asset.id);
+    for (const alias of asset.aliases ?? []) if (alias.trim()) characterByName.set(alias.trim(), asset.id);
+  }
+  let mismatches = 0;
+  let unknownAssets = 0;
+  const shots = rows.map((value, index) => {
     const raw = record(value);
-    const number = raw.number;
-    if (typeof number !== 'number' || !Number.isInteger(number) || !byNumber.has(number) || seen.has(number)) throw new Error('导演分镜镜号无效或重复，未覆盖现有内容。');
-    seen.add(number);
-    const shotSize = text(raw.shotSize).trim(); const movement = text(raw.movement).trim(); const angle = text(raw.angle).trim();
-    const start = text(raw.start).trim(); const action = text(raw.action).trim(); const end = text(raw.end).trim();
-    if (!shotSize || !movement || !angle) throw new Error(`第${number}镜缺少景别、运镜或机位。`);
-    if (!start || !action || !end) throw new Error(`第${number}镜缺少开场、动作或终点。`);
-    return { ...byNumber.get(number)!, camera: `${shotSize}·${movement}·${angle}`, start, action, end };
+    const scene = text(raw.scene).trim();
+    const visual = text(raw.visual).trim();
+    const start = text(raw.start).trim();
+    const action = text(raw.action).trim();
+    const end = text(raw.end).trim();
+    const shotSize = text(raw.shotSize).trim();
+    const movement = text(raw.movement).trim();
+    const angle = text(raw.angle).trim();
+    if (!scene || !visual) throw new Error(`第${index + 1}镜缺少场景或画面。`);
+    if (!shotSize || !movement || !angle) throw new Error(`第${index + 1}镜缺少景别、运镜或机位。`);
+    if (!start || !action || !end) throw new Error(`第${index + 1}镜缺少开场、动作或终点。`);
+    const duration = typeof raw.duration === 'number' && Number.isFinite(raw.duration) && raw.duration > 0
+      ? Math.min(30, Math.round(raw.duration * 2) / 2) : 3;
+    // 本镜在场的资产：模型按资产清单里的 id 引用。引用不存在的 id 丢掉并计数，不整单拒绝。
+    const assetIds: string[] = [];
+    const subjects: string[] = [];
+    for (const entry of Array.isArray(raw.assets) ? raw.assets : []) {
+      const item = record(entry);
+      const assetId = text(item.assetId).trim();
+      if (!assetId || !knownAssets.has(assetId)) { unknownAssets++; continue; }
+      if (!assetIds.includes(assetId)) assetIds.push(assetId);
+      if (text(item.role).trim() === 'subject' && !subjects.includes(assetId)) subjects.push(assetId);
+    }
+    // 场景引用：给了有效的场景资产 id 就把它算进本镜在场，场景描述才和资产库对得上。
+    const sceneId = text(raw.sceneId).trim();
+    if (sceneId && knownAssets.has(sceneId) && !assetIds.includes(sceneId)) assetIds.push(sceneId);
+    const dialogues = (Array.isArray(raw.dialogues) ? raw.dialogues : []).map(entry => {
+      const line = record(entry);
+      const speaker = text(line.speaker).trim() || '未指定人物';
+      const body = text(line.text).trim();
+      const hit = matchDialogue(pool, used, speaker, body);
+      const name = hit ? hit.speaker : speaker;
+      const speakerId = characterByName.get(name) ?? characterByName.get(name.trim()) ?? '';
+      if (hit) { used.add(hit.index); return { id: uid(), speakerId, speaker: hit.speaker, text: hit.text }; }
+      mismatches++;
+      return { id: uid(), speakerId, speaker, text: body };
+    });
+    return {
+      id: uid(), number: index + 1, duration,
+      visual, camera: `${shotSize}·${movement}·${angle}`,
+      start, action, end,
+      dialogues, assetIds, references: [], audioMode: 'original' as const,
+      ...(subjects.length ? { subjects } : {}),
+      title: text(raw.title).trim() || undefined,
+      scene, cameraHint: '',
+    };
   });
-  const updated = new Map(rows.map(row => [row.number, row]));
-  return project.shots.map(shot => updated.get(shot.number) ?? shot);
+  return { shots, mismatches, unknownAssets };
+}
+
+/**
+ * 模板演练：不用模型，按剧本自己的结构排出一版镜头。
+ *
+ * 这不是「自动拆镜」——剧本生成后什么都不做，只有人主动点这一下才会排。
+ * 排法很死：剧本里写了【镜头：类型】就一段一镜，没写就一段（空行分段）一镜；
+ * 场景名取最近的一个「### 场景N」；时长取剧本里的「（时长Ns）」，没有就按台词长度估。
+ * 排出来的每一镜照样能在页面上手改，改完就是正式分镜。
+ */
+export function rehearseShots(source: string): Shot[] {
+  const raw = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const paragraphs = raw.split(/\n[ \t]*\n+/);
+  const hasScene = paragraphs.some(paragraph => paragraph.split('\n').some(line => screenplaySceneName(line) !== undefined));
+  const beats: { scene: string; mark: string; lines: string[] }[] = [];
+  let scene = '';
+  let seenScene = false;
+  for (const paragraph of paragraphs) {
+    const content: string[] = [];
+    let mark = '';
+    for (const line of paragraph.split('\n').map(item => item.trim()).filter(Boolean)) {
+      const name = screenplaySceneName(line);
+      if (name !== undefined) { scene = name; seenScene = true; continue; }
+      // 场景之前是「核心前提 / 节拍表」这类结构说明，不是戏，排不进镜头。
+      if (hasScene && !seenScene) continue;
+      if (/^\s*(?:#{1,6}\s|\*\*|---+\s*$|>\s)/.test(line)) continue;
+      const marked = line.match(CAMERA_MARK);
+      if (marked) { mark = marked[1].trim(); continue; }
+      content.push(line);
+    }
+    if (!content.length) continue;
+    beats.push({ scene: scene || '未标注场景', mark, lines: content });
+  }
+  return beats.map((beat, index) => buildRehearsedShot(beat, index));
+}
+
+/** 把「【镜头：远景】」这类标记翻译成景别 / 运镜 / 机位。 */
+function cameraFromMark(mark: string): { size: string; movement: string; angle: string } {
+  const text = mark.trim();
+  let size = '';
+  for (const candidate of SHOT_SIZES) if (text.includes(candidate)) { size = candidate; break; }
+  let movement = '';
+  if (text.includes('跟')) movement = '跟';
+  else if (text.includes('环')) movement = '环绕';
+  else if (text.includes('升') || text.includes('降')) movement = '升降';
+  else if (text.includes('推')) movement = '推';
+  else if (text.includes('拉')) movement = '拉';
+  else if (text.includes('摇')) movement = '摇';
+  else if (text.includes('移')) movement = '移';
+  let angle = '';
+  if (text.includes('俯')) angle = '俯视';
+  else if (text.includes('仰')) angle = '仰视';
+  return { size: size || '中景', movement: movement || '固定', angle: angle || '平视' };
+}
+
+const clampDuration = (value: number) => Math.max(0.5, Math.min(30, Math.round(value * 2) / 2));
+
+/** 时长：剧本写了「（时长3s）」就照抄，段落里多个就加起来；没写就按台词长度估一个。 */
+function rehearseDuration(lines: string[], dialogues: Dialogue[]): number {
+  let total = 0;
+  for (const match of lines.join('\n').match(/（\s*时长\s*([\d.]+)\s*s?\s*）/g) || []) {
+    const value = Number(match.replace(/[^\d.]/g, ''));
+    if (Number.isFinite(value)) total += value;
+  }
+  if (total > 0) return clampDuration(total);
+  const spoken = dialogues.reduce((sum, line) => sum + estimateDialogueSeconds(line.text), 0);
+  return clampDuration(Math.max(3, spoken + 1));
+}
+
+function buildRehearsedShot(beat: { scene: string; mark: string; lines: string[] }, index: number): Shot {
+  const actionLines: string[] = [];
+  const proseLines: string[] = [];
+  const dialogueLines: string[] = [];
+  const body: string[] = [];
+  const dialogues: Dialogue[] = [];
+  for (const line of beat.lines) {
+    const action = line.match(ACTION_LINE);
+    const spoken = parseDialogueLine(line);
+    const cleaned = cleanScreenplayLine(line);
+    if (action) actionLines.push(cleaned);
+    else if (spoken) {
+      dialogues.push({ id: uid(), speakerId: '', speaker: spoken.speaker, text: spoken.text });
+      dialogueLines.push(cleaned);
+    } else proseLines.push(cleaned);
+    body.push(cleaned);
+  }
+  const visual = (actionLines.length ? actionLines : proseLines.length ? proseLines : dialogueLines).join('\n');
+  const camera = cameraFromMark(beat.mark);
+  return {
+    id: uid(), number: index + 1,
+    duration: rehearseDuration(beat.lines, dialogues),
+    visual,
+    camera: `${camera.size}·${camera.movement}·${camera.angle}`,
+    start: body[0] || visual,
+    action: (actionLines.length ? actionLines : proseLines.length ? proseLines : body).join('\n'),
+    end: body[body.length - 1] || visual,
+    dialogues, assetIds: [], references: [], audioMode: 'original' as const,
+    scene: beat.scene, cameraHint: beat.mark,
+  };
 }
 
 export function templateScript(theme: string): ScriptDraft {
@@ -299,56 +511,17 @@ export function templateScript(theme: string): ScriptDraft {
 
 **卡点。**
 `;
-  // 模板演练只产出剧本与镜头：不预置人物资产，资产由提取或手动创建产生。
+  // 模板演练只产出剧本：不预置人物资产，镜头由导演步骤结构化，资产由资产步骤提取。
   return normalizeScreenplay({ title: `${subject.slice(0, 24)} · 模板演练`, logline: subject, screenplay });
 }
 
+/**
+ * 导入剧本：原文就是剧本正文，镜头留给导演步骤结构化。
+ * 不在这里建资产——资产由资产步骤从镜头里提取，避免同一批资产出现两份。
+ */
 export function parseScriptText(input: string): ScriptDraft {
   const source = input.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   if (!source.trim()) throw new Error('请输入或上传剧本文本。');
-  if (/【镜头\s*[：:]/.test(source)) {
-    const parsed = parseScreenplay(source);
-    if (!parsed.blocks.length) throw new Error('剧本里没有找到【镜头：…】标记，拆不出镜头。');
-    const shots = blocksToShots(parsed, name => name.trim() || '未知人物', () => uid());
-    const meta = readScreenplayMeta(source);
-    // 剧本里显式写出的资产清单行（人物：X：描述）才建资产；说话人只留名字。
-    const assets = extractLocalAssets(shots, []).assets;
-    return { title: meta.title || undefined, logline: meta.logline || undefined, screenplay: source, assets, shots };
-  }
-  const lines = source.split('\n');
-  const heading = shotHeading;
-  const starts = lines.flatMap((line, i) => heading.test(line) ? [i] : []);
-  const blocks = starts.length
-    ? starts.map((start, i) => lines.slice(i === 0 ? 0 : start, starts[i + 1] ?? lines.length).join('\n'))
-    : source.split(/\n\s*\n+/).filter(block => block.trim());
-  const assets = extractLocalAssets([{ ...makeShot(1), visual: source }], []).assets;
-  const getSpeaker = (name: string) => name.trim() || '旁白';
-  const shots = blocks.map((block, index) => {
-    const shot = makeShot(index + 1);
-    // Keep every source line in visual, even unrecognised metadata and preambles.
-    shot.visual = block;
-    const headingLine = block.split('\n').find(line => heading.test(line));
-    const duration = block.match(/^\s*(?:[-*]\s*)?(?:时长|duration)\s*[:：]\s*(-?\d+(?:\.\d+)?)/mi)
-      || headingLine?.match(/(-?\d+(?:\.\d+)?)\s*(?:秒|s)(?=$|[\s）)·|])/i);
-    if (duration) shot.duration = Number(duration[1]);
-    const field = (labels: string) => block.match(new RegExp(`^\\s*(?:[-*]\\s*)?(?:${labels})\\s*[:：]\\s*(.*)$`, 'mi'))?.[1] ?? '';
-    shot.start = field('开场|起点|开始|start'); shot.end = field('终点|结尾|结束|end');
-    shot.action = field('动作|action'); shot.camera = field('运镜|镜头运动|camera') || shot.camera;
-    let dialogueSection = false;
-    for (const line of block.split('\n')) {
-      const label = line.match(/^\s*(?:[-*]\s*)?(?:台词|对白|dialogue)\s*[:：]\s*(.*)$/i);
-      if (label) dialogueSection = !label[1].trim();
-      const explicit = label?.[1] || (dialogueSection ? line : '');
-      const dialogue = explicit.match(/^\s*(?:[-*]\s*)?([^:：\n]{1,40})\s*[:：]\s*(.+)$/);
-      const quoted = line.match(/^\s*([^:：\n]{1,30})\s*[:：]\s*[“「"](.+)[”」"]\s*$/);
-      const match = dialogue || quoted;
-      if (match && !/^(?:画面|开场|起点|终点|动作|运镜|时长|风格|镜头|备注|visual|start|end|action|camera|duration)$/i.test(match[1].trim())) {
-        shot.dialogues.push({ id: uid(), speakerId: '', speaker: getSpeaker(match[1]), text: match[2] });
-      } else if (label?.[1]?.trim() && !/^(?:无|无对白|无台词)$/.test(label[1].trim())) {
-        shot.dialogues.push({ id: uid(), speakerId: '', speaker: getSpeaker('旁白'), text: label[1] });
-      } else if (line.trim() && !label) dialogueSection = false;
-    }
-    return shot;
-  });
-  return extractLocalAssets(shots, assets);
+  const meta = readScreenplayMeta(source);
+  return { title: meta.title || undefined, logline: meta.logline || undefined, screenplay: source, assets: [], shots: [] };
 }
