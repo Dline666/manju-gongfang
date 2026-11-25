@@ -68,8 +68,11 @@ export type PromptDataSource =
   | 'image.task' | 'image.subject' | 'image.style' | 'image.skills'
   | 'video.heading' | 'video.visual' | 'video.continuity' | 'video.references' | 'video.action'
   | 'video.dialogue' | 'video.audio' | 'video.assets' | 'video.style' | 'video.skills';
-/** 用户在模板编辑器里排好的一块。text 是用户写的正文；source 是数据来源（数据块）。 */
-export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string; shared?: boolean }
+/**
+ * 用户在模板编辑器里排好的一块。text 是用户写的正文；source 是数据来源（数据块）。
+ * enabled=false 表示这一块暂时不用（内容留着，只是不进提示词）；note 是这一块的说明（新增/变更）。
+ */
+export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string; shared?: boolean; enabled?: boolean; note?: string }
 /**
  * 一份 Skill：可复用的提示词配方，正文由用户自己写。
  * 库里一份写一次，可以被多个步骤引用；正文留空等于没写（不会进提示词）。
@@ -95,6 +98,12 @@ export interface PromptTemplateSet {
   templates?: PromptTemplateMap;
   /** Skill 库：全局唯一，所有作品共用。 */
   skills?: SkillSpec[];
+  /**
+   * 内置 Skill 的可改副本：内置 Skill id → 正文。
+   * 用户可以在模板编辑器里改内置 Skill 的正文，改坏了能一键恢复出厂文案；
+   * 没改过的内置 Skill 仍用出厂文案。
+   */
+  builtinSkills?: Record<string, string>;
 }
 /** v1 旧结构：块 id → 覆盖文本。载入时迁移成 v2 的 templates。 */
 export interface PromptConfigV1 { v: 1; style?: StyleSpec; blocks?: Record<string, string> }
@@ -123,6 +132,11 @@ export interface Project {
   sourceText?: string;
   /** 完整剧本正文（Markdown）；镜头由它解析得到。 */
   screenplay?: string;
+  /**
+   * 这份剧本按哪个镜数/时长规格校验过。
+   * 有值 = 新规格（校验不通过会被拦住）；没值 = 新规格之前存下来的旧作品，只提示不阻断。
+   */
+  specVersion?: string;
 }
 export interface Settings {
   /** 各步骤当前选中的端点 id。 */
@@ -210,6 +224,15 @@ export const defaultPromptTemplates: PromptTemplateSet = {
   skills: defaultSkillLibrary,
   templates: {
     script: { blocks: [
+      { id: 'script.shot-spec', title: '镜数与时长（硬性）', builtin: 'script.shot-spec', note: '2026-11-25 新增：镜数与时长的硬性要求。生成后会按它校验，不合格的会被拦住并自动重试一次。', text: [
+        '镜数与时长是硬性要求，先定镜数再写内容：',
+        '1. 全片只输出 4、5 或 6 镜；镜号从 1 连续到末镜，不跳号也不重号。',
+        '2. 每镜第一行写镜头标记与显式时长，格式：【镜头1：远景】（时长12s）。时长必须是 10–15 秒的整数；没写时长标记视为不合格。',
+        '3. 每镜的内容要写够这个时长：正常对白按 5–6 字/秒，10 秒一镜至少约 50 字台词；或写 6–7 个动作点（每点约 1.5 秒）。不能一句台词加一个动作就标 12 秒。',
+        '4. 台词要在本镜结束前至少 0.3 秒说完，不要把台词压到镜头末尾。',
+        '5. 剧本末尾加一行时长自检，写明各镜时长与合计；合计必须等于各镜时长之和，总时长落在 40–90 秒。',
+        '6. 只输出剧本本身，不解释、不写多余段落。',
+      ].join('\n') },
       { id: 'script.characters.extract', title: '人物 · 提取规则', builtin: 'script.characters.extract', text: [
         '1.1 根据我发给你的这篇文章，帮我整理出所有角色形象，需要包含人物性别、穿着、脸部特征、年龄、身高以及人物性格等。',
         '1.2 根据提供的小说原文，推导出文中出现过的人物。人物可能有多种代称，要囊括文中提到的所有人物，包括「我」。每个人物包含名字、代称（多个代称用逗号分割）、形象描述三个字段。',

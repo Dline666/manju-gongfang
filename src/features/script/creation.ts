@@ -1,5 +1,5 @@
 import { uid, type Asset, type Dialogue, type Project, type Shot } from '../../domain/types';
-import { cleanScreenplayLine, estimateDialogueSeconds, normalizeDialogue, parseDialogueLine, readScreenplayMeta, screenplayDialoguePool, screenplaySceneName, type ScreenplayLine } from './screenplay';
+import { cleanScreenplayLine, estimateDialogueSeconds, normalizeDialogue, parseDialogueLine, readDeclaredDuration, readScreenplayMeta, screenplayDialoguePool, screenplaySceneName, type ScreenplayLine } from './screenplay';
 import { ACTION_LINE, CAMERA_MARK, SHOT_SIZES } from './screenplay';
 
 const shotHeading = /^\s*(?:#{1,6}\s*)?(?:第\s*[\d一二三四五六七八九十百零〇]+\s*镜(?:头)?|(?:镜头|分镜|SHOT)\s*[\d一二三四五六七八九十百零〇]+)(?=$|[\s:：、.．（(\-—])/i;
@@ -325,24 +325,33 @@ export function rehearseShots(source: string): Shot[] {
   const raw = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const paragraphs = raw.split(/\n[ \t]*\n+/);
   const hasScene = paragraphs.some(paragraph => paragraph.split('\n').some(line => screenplaySceneName(line) !== undefined));
-  const beats: { scene: string; mark: string; lines: string[] }[] = [];
+  const beats: { scene: string; mark: string; lines: string[]; duration?: number }[] = [];
   let scene = '';
   let seenScene = false;
   for (const paragraph of paragraphs) {
     const content: string[] = [];
     let mark = '';
+    let declared: number | undefined;
     for (const line of paragraph.split('\n').map(item => item.trim()).filter(Boolean)) {
       const name = screenplaySceneName(line);
       if (name !== undefined) { scene = name; seenScene = true; continue; }
       // 场景之前是「核心前提 / 节拍表」这类结构说明，不是戏，排不进镜头。
       if (hasScene && !seenScene) continue;
       if (/^\s*(?:#{1,6}\s|\*\*|---+\s*$|>\s)/.test(line)) continue;
+      // 「【时长自检】…」是规格自检行，不是戏，不排进镜头。
+      if (/^\s*【\s*时长自检\s*】/.test(line)) continue;
       const marked = line.match(CAMERA_MARK);
-      if (marked) { mark = marked[1].trim(); continue; }
+      if (marked) {
+        mark = (marked[2] || '').trim();
+        // 标记行上的显式时长最算数：「【镜头1：远景】（时长12s）」。
+        const header = readDeclaredDuration(marked[3] || '');
+        if (header !== undefined) declared = header;
+        continue;
+      }
       content.push(line);
     }
     if (!content.length) continue;
-    beats.push({ scene: scene || '未标注场景', mark, lines: content });
+    beats.push({ scene: scene || '未标注场景', mark, lines: content, ...(declared !== undefined ? { duration: declared } : {}) });
   }
   return beats.map((beat, index) => buildRehearsedShot(beat, index));
 }
@@ -368,8 +377,10 @@ function cameraFromMark(mark: string): { size: string; movement: string; angle: 
 
 const clampDuration = (value: number) => Math.max(0.5, Math.min(30, Math.round(value * 2) / 2));
 
-/** 时长：剧本写了「（时长3s）」就照抄，段落里多个就加起来；没写就按台词长度估一个。 */
-function rehearseDuration(lines: string[], dialogues: Dialogue[]): number {
+/** 时长：剧本写了「（时长12s）」就照抄，段落里多个就加起来；没写就按台词长度估一个。 */
+function rehearseDuration(lines: string[], dialogues: Dialogue[], declared?: number): number {
+  // 标记行上写的显式时长最算数。
+  if (declared !== undefined) return clampDuration(declared);
   let total = 0;
   for (const match of lines.join('\n').match(/（\s*时长\s*([\d.]+)\s*s?\s*）/g) || []) {
     const value = Number(match.replace(/[^\d.]/g, ''));
@@ -380,7 +391,7 @@ function rehearseDuration(lines: string[], dialogues: Dialogue[]): number {
   return clampDuration(Math.max(3, spoken + 1));
 }
 
-function buildRehearsedShot(beat: { scene: string; mark: string; lines: string[] }, index: number): Shot {
+function buildRehearsedShot(beat: { scene: string; mark: string; lines: string[]; duration?: number }, index: number): Shot {
   const actionLines: string[] = [];
   const proseLines: string[] = [];
   const dialogueLines: string[] = [];
@@ -401,7 +412,7 @@ function buildRehearsedShot(beat: { scene: string; mark: string; lines: string[]
   const camera = cameraFromMark(beat.mark);
   return {
     id: uid(), number: index + 1,
-    duration: rehearseDuration(beat.lines, dialogues),
+    duration: rehearseDuration(beat.lines, dialogues, beat.duration),
     visual,
     camera: `${camera.size}·${camera.movement}·${camera.angle}`,
     start: body[0] || visual,
@@ -462,54 +473,51 @@ export function templateScript(theme: string): ScriptDraft {
 **剧情：**主角求线索，守门人拿规矩挡回去。
 **人物：**主角、守门人
 
-【镜头：远景】
-△ 晨光斜切过石阶，主角站在门外三步远的地方，没有再往前。（时长3s）
+【镜头1：远景】（时长12s）
+△ 晨光斜切过石阶，主角站在门外三步远的地方，没有再往前。
+△ 守门人立在门侧，手里的钥匙旧得发黑，齿口磨平了一半。
+△ 风穿过门缝，把门楣上的旧幡吹得猎猎作响。
+守门人（冷淡）：“规矩如此，钥匙不能给你。”
+主角（平静）：“那我拿别的换。”
+守门人（迟疑）：“你拿什么换？”
+主角（低声）：“拿我唯一的证物。”
 
-【镜头：中景】
-守门人（冷淡）：“规矩如此，钥匙不能给你。”（时长2s）
+【镜头2：中景】（时长12s）
+△ 主角把胸口的旧牌掏出来，掌心朝上，摊在守门人面前。
+△ 守门人低头看向旧牌，眼神在一瞬间变了。
+△ 他把钥匙换到另一只手，指节绷得发白。
+守门人（压低声音）：“那不是钥匙能抵的东西。”
+主角（不退）：“那就当我没说。”
+守门人（阻拦）：“你走不了这道门。”
 
-【镜头：特写】
-△ 守门人掌心里的钥匙旧得发黑，齿口磨平了一半。（时长1.5s）
-
-【镜头：近景】
-△ 主角的目光落在钥匙上，肩膀松了一寸，又绷回去。（时长1.5s）
-
-【镜头：中景】
-主角（平静）：“那我拿别的换。”（时长1.5s）
-
-【镜头：特写】
-△ 守门人抬起眼，钥匙在指间转了半圈。（时长1s）
-
-【镜头：特写】
-△ 钥匙背面刻着一个字，和主角胸口的旧牌一模一样。（时长2s）
-
-【镜头：近景】
-守门人（迟疑）：“这钥匙……你从哪来的。”（时长2s）
+【镜头3：特写】（时长12s）
+△ 守门人掌心里的钥匙在指间转了半圈，齿口朝向主角。
+△ 主角的拇指按在旧牌边缘，牌面刻痕与钥匙齿口严丝合缝。
+△ 两个人都没有动，石阶上的光一点点挪过去。
+守门人（艰难）：“……你到底是从哪来的。”
+主角（平静）：“从我该在的地方。”
+△ 守门人松开手，钥匙落进主角掌心。
 
 ### 场景2 内景 · 门前石室 — 正午
 
 **剧情：**主角换到钥匙，门后站着另一个自己。
 **人物：**主角、守门人
 
-【镜头：中景】
-△ 主角把旧牌按进门侧的凹槽，石门向内滑开一道缝。（时长3s）
+【镜头4：近景】（时长12s）
+△ 主角侧身挤进门缝，石室里的光比外面暗得多。
+△ 石室正中立着一个人，背对门口，轮廓与主角一模一样。
+△ 那人的影子被门缝里的光拉长，一直铺到主角脚边。
+那人（平静）：“你来晚了。”
+主角（失声）：“……那你是谁。”
 
-【镜头：跟拍】
-△ 主角侧身挤进门缝，石室里的光比外面暗。（时长2s）
+【镜头5：特写】（时长12s）
+△ 那人转过身，手里握着同一把钥匙，齿口磨平了一半。
+△ 主角僵在门口，手里的旧牌掉在地上，磕出一道脆响。
+△ 门楣上的旧幡还在响，屋里的影子却一动不动。
+那人（轻声）：“我等这一天，等了三年。”
+**卡点。** 钥匙背面刻着一个字，和主角胸口的旧牌一模一样。
 
-【镜头：远景】
-△ 石室正中立着一个人，背对门口，轮廓与主角一模一样。（时长3s）
-
-【镜头：特写】
-△ 那人转过身，手里握着同一把钥匙。（时长2s）
-
-【镜头：近景】
-那人（平静）：“你来晚了。”（时长1.5s）
-
-【镜头：俯拍】
-△ 主角僵在门口，手里的旧牌掉在地上。（时长2s）
-
-**卡点。**
+【时长自检】第1镜12秒｜第2镜12秒｜第3镜12秒｜第4镜12秒｜第5镜12秒｜合计60秒
 `;
   // 模板演练只产出剧本：不预置人物资产，镜头由导演步骤结构化，资产由资产步骤提取。
   return normalizeScreenplay({ title: `${subject.slice(0, 24)} · 模板演练`, logline: subject, screenplay });

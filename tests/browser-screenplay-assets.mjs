@@ -3,23 +3,9 @@
 import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 
-const screenplay = `# 第一部分｜核心前提
+import { makeScreenplay } from './screenplay-fixtures.mjs';
+const screenplay = makeScreenplay();
 
-【核心前提】
-少年在雨夜山门拾起一把断剑。
-
-# 第四部分｜标准漫剧剧本
-
-## 第一章  断剑归门
-
-### 场景1 外景 · 山门 — 清晨
-
-**剧情：**沈砚拾剑。
-**人物：**沈砚
-
-【镜头：远景】
-△ 沈砚蹲在石阶下，指尖抠开泥。（时长3s）
-`;
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 

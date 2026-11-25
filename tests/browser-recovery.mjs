@@ -21,7 +21,10 @@ try {
     const p = store.createProject('隔离恢复测试', '山门断剑');
     const draft = templateScript(p.theme);
     // 剧本步骤不拆镜：镜头由导演步骤产出，这里用本地演练排出镜头。
-    store.updateProject(p.id, { ...draft, shots: rehearseShots(draft.screenplay || ''), source: 'template', storyboardReady: true });
+    // 恢复测试要点到第 13 镜，所以把演练排出的镜头扩到 13 镜。
+    const rehearsed = rehearseShots(draft.screenplay || '');
+    const shots = Array.from({ length: 13 }, (_, index) => ({ ...rehearsed[index % rehearsed.length], id: `${rehearsed[0].id}-${index}`, number: index + 1 }));
+    store.updateProject(p.id, { ...draft, shots, source: 'template', storyboardReady: true });
     store.setKey('seedance', 'fixture-key-never-transmitted');
     store.setKey('minimax', 'fixture-key-never-transmitted');
     location.hash = '/generation';

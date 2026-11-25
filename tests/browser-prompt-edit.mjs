@@ -5,41 +5,9 @@ import assert from 'node:assert/strict';
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 
-const screenplay = `# 第一部分｜核心前提
+import { makeScreenplay } from './screenplay-fixtures.mjs';
+const screenplay = makeScreenplay();
 
-【核心前提】
-少年在雨夜山门拾起一把断剑。
-
-【黄金3秒钩子】
-类型：反常细节
-△ 门缝里的光一寸一寸暗下去。
-
-# 第二部分｜场景因果节拍表
-
-| 场次 | 场景目标 | 遭遇阻碍 |
-|---|---|---|
-| 1 | 拾剑 | 山门无人 |
-
-# 第三部分｜世界观与人物关系确认
-
-【世界边界】
-- 时代：架空。
-
-# 第四部分｜标准漫剧剧本
-
-## 第一章  断剑归门
-
-### 场景1 外景 · 山门 — 清晨
-
-**剧情：**少年在雨夜山门拾起一把断剑。
-**人物：**阿青
-
-【镜头：远景】
-△ 少年在雨夜山门拾起一把断剑。（时长3s）
-
-【镜头：中景】
-阿青（平静）：“我来拿回我的剑。”（时长2s）
-`;
 
 const results = [];
 try {

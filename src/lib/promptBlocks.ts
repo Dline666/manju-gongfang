@@ -6,7 +6,7 @@ import type {
   Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplateMap, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, SkillSpec, StyleSpec,
 } from '../domain/types';
 import { defaultPromptTemplates, speakerName } from '../domain/types';
-import { skills } from './skills';
+import { effectiveSkills } from './skills';
 import { styleBlockText } from './promptTemplates';
 import { effectiveStyle, visibleBlocks } from './promptScope';
 
@@ -78,6 +78,15 @@ export function builtinById(id: string): BuiltinBlock | undefined {
 }
 export function builtinBlocksFor(kind: PromptKindId): BuiltinBlock[] {
   return builtinBlocks.filter(block => block.kinds.includes(kind));
+}
+
+/**
+ * 出厂正文：某一步里某个块的出厂文案。
+ * 编辑器的「恢复默认」用它把改坏的块还原——没出厂文案的块就没有恢复默认。
+ */
+export function factoryBlockText(kind: PromptKindId, blockId: string): string | undefined {
+  const block = defaultPromptTemplates.templates?.[kind]?.blocks?.find(item => item.id === blockId);
+  return block?.text;
 }
 
 /**
@@ -271,7 +280,7 @@ function extractPropsInput(project: Project): string {
   return `【逐镜动作摘要】\n${project.shots.map(shot => `第${shot.number}镜：${shotVisual(shot)}`).join('\n')}`;
 }
 
-const selectedSkills = (project: Project, ids: SkillId[]) => skills.filter(s => project.skills.includes(s.id) && ids.includes(s.id)).map(s => `【${s.name}】${s.template}`).join('\n');
+const selectedSkills = (project: Project, ids: SkillId[], overrides?: Record<string, string>) => effectiveSkills(overrides).filter(s => project.skills.includes(s.id) && ids.includes(s.id)).map(s => `【${s.name}】${s.template}`).join('\n');
 
 export interface RenderContext { project: Project; asset?: Asset; shot?: Shot; global?: PromptTemplateSet }
 
@@ -299,7 +308,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
       if (!people.length) return '';
       return people.map(a => `${a.name}：${fixedDescription(a)}`).join('\n');
     }
-    case 'script.skills': return selectedSkills(project, ['script']);
+    case 'script.skills': return selectedSkills(project, ['script'], ctx.global?.builtinSkills);
     case 'extract.characters.shots': return extractCharactersInput(project);
     case 'extract.characters.existing': return existingAssets(project, 'character');
     case 'extract.scenes.shots': return extractScenesInput(project);
@@ -308,7 +317,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     case 'extract.props.existing': return existingAssets(project, 'prop');
     case 'director.screenplay': return project.screenplay?.trim() ? project.screenplay.trim() : '（还没有剧本正文，先在剧本步骤生成或导入一份剧本。）';
     case 'director.assets': return assetListText(project);
-    case 'director.skills': return selectedSkills(project, ['storyboard']);
+    case 'director.skills': return selectedSkills(project, ['storyboard'], ctx.global?.builtinSkills);
     case 'image.task': {
       const lines = [
         asset ? `资产：${asset.name}` : '',
@@ -319,7 +328,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     }
     case 'image.subject': return asset ? `主体：${asset.name}\n${fixedDescription(asset)}` : '';
     case 'image.style': return styleBlockText(effectiveStyle(project, ctx.global));
-    case 'image.skills': return selectedSkills(project, ['image']);
+    case 'image.skills': return selectedSkills(project, ['image'], ctx.global?.builtinSkills);
     case 'video.heading': return shot ? `第${shot.number}镜，${shot.duration}秒。\n风格：${project.style}` : '';
     case 'video.visual': {
       if (!shot) return '';
@@ -349,7 +358,7 @@ export function renderData(source: PromptDataSource, ctx: RenderContext): string
     case 'video.audio': return shot ? `音频模式：${AUDIO_MODES[shot.audioMode] ?? shot.audioMode}` : '';
     case 'video.assets': return shot ? shotAssetText(project, shot) : '';
     case 'video.style': return styleBlockText(effectiveStyle(project, ctx.global), 'concise');
-    case 'video.skills': return selectedSkills(project, ['video']);
+    case 'video.skills': return selectedSkills(project, ['video'], ctx.global?.builtinSkills);
     default: return '';
   }
 }

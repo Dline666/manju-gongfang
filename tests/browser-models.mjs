@@ -52,7 +52,9 @@ try {
       // 剧本步骤不再预置人物资产，这里手动建一个用于生图测试。
       draft.assets = [{ id: 'model-hero', kind: 'character', name: '模型测试人物', description: '十七岁少年，灰白旧布衣', lock: '十七岁少年，灰白旧布衣' }];
       // 剧本步骤不拆镜：镜头由导演步骤产出，这里用本地演练排出镜头。
-      draft.shots = rehearseShots(draft.screenplay || '');
+      // 这条回归要点到第 6 镜，所以把演练排出的镜头扩到 6 镜。
+      const rehearsed = rehearseShots(draft.screenplay || '');
+      draft.shots = Array.from({ length: 6 }, (_, index) => ({ ...rehearsed[index % rehearsed.length], id: `${rehearsed[0].id}-${index}`, number: index + 1 }));
       s.updateProject(p.id, { ...draft, source: 'template', storyboardReady: true });
       location.hash = '/assets';
     });

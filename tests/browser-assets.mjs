@@ -48,7 +48,10 @@ try {
     await page.getByRole('button', { name: '导入剧本', exact: true }).click();
     await page.getByLabel('或粘贴原文').fill(source);
     await page.getByRole('button', { name: '解析并预览', exact: true }).click();
-    await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
+    // 这份旧格式剧本没有镜头标记，过不了新规格的校验：走「仍按旧规格导入」这条显式出口。
+    const legacyImport = page.getByRole('button', { name: '仍按旧规格导入（不锁镜数与时长）' });
+    if (await legacyImport.isVisible()) await legacyImport.click();
+    else await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     const imported = await saved();
     assert.equal(imported.screenplay, source, '原文逐字保留');

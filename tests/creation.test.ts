@@ -119,8 +119,9 @@ test('模板演练：没有场景头也没有镜头标记时按空行分段', ()
 test('模板演练：完整模板剧本排出的镜头能通过导演步骤校验', () => {
   const draft = templateScript('山门外的无名剑');
   const shots = rehearseShots(draft.screenplay || '');
-  assert.equal(shots.length, 14);
+  assert.equal(shots.length, 5, '模板演练按新规格排 5 镜');
   const total = shots.reduce((sum, shot) => sum + shot.duration, 0);
+  assert.equal(total, 60, '每镜 12 秒，合计 60 秒');
   assert.ok(total >= 20 && total <= 400, `总时长要在 20–400 秒之间，当前 ${total}`);
   const p = { ...project(), screenplay: draft.screenplay || '', shots };
   assert.deepEqual(validateDirectorStage(p), [], '演练排出的镜头直接就是可确认的正式分镜');
@@ -504,7 +505,9 @@ test('导出恰好五个中文Markdown文件，模板来源可见，字幕累计
 test('剧本 Skill 写完整剧本，固定节拍数已取消', () => {
   const scriptSkill = skills.find(skill => skill.id === 'script')!;
   assert.ok(!scriptSkill.template.includes('恰好10'), '剧本 Skill 不得再规定固定节拍数');
-  assert.ok(scriptSkill.template.includes('【镜头：类型】'), '剧本 Skill 必须要求标注画面类型');
+  assert.ok(scriptSkill.template.includes('【镜头1：远景】'), '剧本 Skill 必须要求标注镜头标记');
+  assert.ok(scriptSkill.template.includes('显式时长'), '剧本 Skill 必须要求写显式时长');
+  assert.ok(!scriptSkill.template.includes('60–240'), '剧本 Skill 不再自带总时长区间，避免和用户模板里的规格打架');
   const directorSkill = skills.find(skill => skill.id === 'storyboard')!;
   assert.ok(directorSkill.template.includes('景别'));
 });

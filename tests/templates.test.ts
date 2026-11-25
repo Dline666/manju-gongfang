@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { directorPrompt, directorSpec, extractCharactersPrompt, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
 import { promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
 import { findUnknownVariables } from '../src/lib/promptTemplates';
-import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, migrateTemplateSet, skillsForKind, withFactoryDefaults } from '../src/lib/promptBlocks';
+import { builtinBlocks, builtinBlocksFor, dataSourcesFor, factoryBlockText, migratePromptConfig, migrateTemplateSet, skillsForKind, withFactoryDefaults } from '../src/lib/promptBlocks';
 import { migrateSettings } from '../src/lib/endpoints';
 import { effectivePlan, effectiveSkillId, effectiveStyle, ownsKind, ownsStyle } from '../src/lib/promptScope';
 import { savedStudioSchema } from '../src/store/schema';
@@ -353,12 +353,12 @@ test('出厂全局模板带三类资产提取规则与设定图出图约定', ()
 test('出厂模板能通过存档 schema，旧作品不受影响', () => {
   const saved = savedStudioSchema.parse({ version: 1, projects: [], activeId: null, settings: defaultSettings });
   assert.ok(saved.settings.promptTemplates, '出厂模板要能存进本机存档');
-  assert.equal(saved.settings.promptTemplates!.templates!.script!.blocks.length, 3);
+  assert.equal(saved.settings.promptTemplates!.templates!.script!.blocks.length, 4);
 });
 
 test('存档里缺某一步时，用出厂模板把这一步补上', () => {
   const filled = withFactoryDefaults({ templates: {} });
-  assert.equal(filled.templates!.script!.blocks.length, 3, '空存档要拿到剧本栏的三条提取规则');
+  assert.equal(filled.templates!.script!.blocks.length, 4, '空存档要拿到剧本栏的出厂块（镜数与时长 + 三条提取规则）');
   assert.equal(filled.templates!['image-character']!.blocks.length, 1, '图片栏也要有出厂的出图约定');
 });
 
@@ -377,7 +377,7 @@ test('老存档（早期版本留下的空全局模板）也能拿到出厂模�
     speechModel: 'speech-2.8-hd', styles: [],
     promptTemplates: { templates: {} },
   });
-  assert.equal(settings.promptTemplates!.templates!.script!.blocks.length, 3, '老存档要补上出厂的提取规则');
+  assert.equal(settings.promptTemplates!.templates!.script!.blocks.length, 4, '老存档要补上出厂的剧本块');
   assert.equal(settings.promptTemplates!.templates!['image-prop']!.blocks.length, 1);
 });
 
@@ -453,4 +453,63 @@ test('Skill 相关的字段能通过存档 schema', () => {
   });
   assert.equal(saved.settings.promptTemplates!.skills!.length, 1);
   assert.equal(saved.settings.promptTemplates!.templates!.script!.skill, 's');
+});
+
+test('出厂剧本模板带「镜数与时长（硬性）」块，并标了新增说明', () => {
+  const script = defaultPromptTemplates.templates!.script!.blocks;
+  const spec = script.find(block => block.id === 'script.shot-spec');
+  assert.ok(spec, '出厂剧本模板要有镜数与时长的条款块');
+  assert.ok(spec!.text.includes('4、5 或 6 镜'), '条款里要写明镜数范围');
+  assert.ok(spec!.text.includes('10–15 秒'), '条款里要写明单镜时长');
+  assert.ok(spec!.text.includes('40–90 秒'), '条款里要写明总时长');
+  assert.ok(spec!.text.includes('（时长12s）'), '条款里要写明显式时长标记的格式');
+  assert.ok(spec!.note?.includes('新增'), '新增的块要带说明，界面上能看到');
+});
+
+test('停用的块不进提示词，内容还留着；恢复默认能把出厂正文找回来', () => {
+  const global: PromptTemplateSet = {
+    templates: { script: { blocks: [
+      { id: 'b0', title: '开着', text: '开着的内容' },
+      { id: 'b1', title: '停用', text: '停用的内容', enabled: false },
+    ] } },
+  };
+  const prompt = scriptPrompt(makeProject(), global);
+  assert.ok(prompt.includes('开着的内容'));
+  assert.ok(!prompt.includes('停用的内容'), '停用的块不进提示词');
+  assert.equal(global.templates!.script!.blocks![1].text, '停用的内容', '停用不删内容');
+  assert.equal(factoryBlockText('script', 'script.shot-spec'), defaultPromptTemplates.templates!.script!.blocks![0].text, '恢复默认能拿回出厂正文');
+  assert.equal(factoryBlockText('script', '不存在的块'), undefined, '没有出厂文案的块就没有恢复默认');
+});
+
+test('内置 Skill 的正文可改副本：改过的用用户的，没改的用出厂的', () => {
+  const overridden: PromptTemplateSet = { builtinSkills: { script: '我改过的剧本 Skill 正文。' } };
+  const prompt = scriptPrompt(makeProject(), overridden);
+  assert.ok(prompt.includes('我改过的剧本 Skill 正文。'), '改过的内置 Skill 正文要进提示词');
+  assert.ok(!prompt.includes('按四部分结构写出完整剧本'), '改过的内置 Skill 取代出厂文案');
+  const plain = scriptPrompt(makeProject(), {});
+  assert.ok(plain.includes('按四部分结构写出完整剧本'), '没改过的内置 Skill 仍用出厂文案');
+  assert.ok(!plain.includes('我改过的剧本 Skill 正文。'));
+});
+
+test('镜数与时长相关的字段能通过存档 schema', () => {
+  const saved = savedStudioSchema.parse({
+    version: 1,
+    projects: [{
+      id: 'p', name: 'x', theme: '', style: '', createdAt: '', updatedAt: '', revision: 0,
+      skills: ['script'], shots: [], assets: [], source: 'ai', storyboardReady: false,
+      screenplay: 'x', specVersion: 'shot-spec-v1',
+    }],
+    activeId: null,
+    settings: {
+      scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance', speechModel: 'x',
+      promptTemplates: {
+        builtinSkills: { script: '改过的正文' },
+        templates: { script: { blocks: [{ id: 'b', title: 't', text: 'x', enabled: false, note: '新增' }] } },
+      },
+    },
+  });
+  assert.equal(saved.projects![0].specVersion, 'shot-spec-v1');
+  assert.equal(saved.settings.promptTemplates!.builtinSkills!.script, '改过的正文');
+  assert.equal(saved.settings.promptTemplates!.templates!.script!.blocks![0].enabled, false);
+  assert.equal(saved.settings.promptTemplates!.templates!.script!.blocks![0].note, '新增');
 });

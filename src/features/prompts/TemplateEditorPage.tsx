@@ -4,7 +4,8 @@ import { toast } from 'sonner';
 import { Button, ErrorNote, Field } from '../../components/Ui';
 import { PROMPT_LIMITS, renderPrompt, validatePromptSpec } from '../../lib/promptSpec';
 import { findUnknownVariables } from '../../lib/promptTemplates';
-import { KIND_LABELS, PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, findSkill, skillsForKind, type ExtractCategory } from '../../lib/promptBlocks';
+import { KIND_LABELS, PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, factoryBlockText, findSkill, skillsForKind, type ExtractCategory } from '../../lib/promptBlocks';
+import { builtinSkillText, skills as builtinSkillList } from '../../lib/skills';
 import { directorSpec, extractCharactersSpec, extractPropsSpec, extractScenesSpec, imageSpec, scriptSpec, videoSpec } from '../../lib/prompts';
 import { overridesOf } from '../../lib/promptScope';
 import { setSettings, updateProject, useStudio } from '../../store/studio';
@@ -107,7 +108,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
 
   // 全局草稿跟着已保存的全局模板走；作品草稿只装这部作品自己管的那几步。
   useEffect(() => {
-    setGlobalDraft({ style: cleanStyle(savedGlobal?.style), templates: cloneTemplates(savedGlobal?.templates), skills: cloneSkills(savedGlobal?.skills) });
+    setGlobalDraft({ style: cleanStyle(savedGlobal?.style), templates: cloneTemplates(savedGlobal?.templates), skills: cloneSkills(savedGlobal?.skills), builtinSkills: { ...(savedGlobal?.builtinSkills ?? {}) } });
   }, [savedGlobal]);
   useEffect(() => {
     if (!project) { setProjectDraft({ templates: {} }); return; }
@@ -245,6 +246,14 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     const kinds = skill.kinds.includes(target) ? skill.kinds.filter(item => item !== target) : [...skill.kinds, target];
     updateSkill(id, { kinds });
   };
+  // ── 内置 Skill：正文可改副本，改坏了能恢复出厂文案 ──
+  const builtinOverrides = globalDraft.builtinSkills ?? {};
+  const updateBuiltinSkill = (id: string, text: string | undefined) => setGlobalDraft(previous => {
+    const builtinSkills = { ...(previous.builtinSkills ?? {}) };
+    if (text === undefined) delete builtinSkills[id];
+    else builtinSkills[id] = text;
+    return { ...previous, builtinSkills };
+  });
   const insertBuiltin = () => {
     const found = builtinBlocksFor(kind).find(item => item.id === builtinChoice);
     if (!found) return;
@@ -316,8 +325,8 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   const save = () => {
     if (blockingIssues.length || overLimit) return;
     if (scope === 'global') {
-      setSettings({ ...settings, promptTemplates: { style: cleanStyle(draft.style), templates: cloneTemplates(draft.templates), skills: cloneSkills(globalDraft.skills) } });
-      toast.success('全局模板与 Skill 库已保存，所有跟随全局的作品立即生效。');
+      setSettings({ ...settings, promptTemplates: { style: cleanStyle(draft.style), templates: cloneTemplates(draft.templates), skills: cloneSkills(globalDraft.skills), builtinSkills: { ...(globalDraft.builtinSkills ?? {}) } } });
+      toast.success('全局模板、Skill 库与内置 Skill 已保存，所有跟随全局的作品立即生效。');
       return;
     }
     if (!project) return;
@@ -383,18 +392,25 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
           </div>
           {blocks.length === 0 && <p className="muted">这个模板还没有块。用「新增块」写自己的提示词，或「插入内置块」取一个空标题再填。</p>}
           {blocks.map((block, index) => {
-            return <section className="panel stack" key={block.id}>
+            const disabled = block.enabled === false;
+            const factoryText = factoryBlockText(kind, block.id);
+            return <section className="panel stack" key={block.id} style={disabled ? { opacity: 0.62 } : undefined}>
               <div className="section-title">
                 <input aria-label={`块标题 ${index + 1}`} value={block.title} disabled={!editable} onChange={event => updateBlock(block.id, { title: event.target.value })} />
                 <span className="small muted">{block.text.length} 字</span>
                 {block.shared && <span className="tag">旧模板</span>}
+                {block.note && <span className="tag">新增</span>}
+                {disabled && <span className="tag">已停用</span>}
                 <div className="row">
+                  <label className="row small muted" style={{ gap: 4 }}><input type="checkbox" aria-label={`启用 ${block.title}`} checked={!disabled} disabled={!editable} onChange={event => updateBlock(block.id, { enabled: event.target.checked ? undefined : false })} />启用</label>
                   <Button variant="ghost" size="sm" aria-label={`上移 ${block.title}`} onClick={() => moveBlock(index, -1)} disabled={index === 0 || !editable}><ChevronUp size={14} /></Button>
                   <Button variant="ghost" size="sm" aria-label={`下移 ${block.title}`} onClick={() => moveBlock(index, 1)} disabled={index === blocks.length - 1 || !editable}><ChevronDown size={14} /></Button>
+                  {factoryText !== undefined && <Button variant="ghost" size="sm" aria-label={`恢复默认 ${block.title}`} disabled={!editable || block.text === factoryText} onClick={() => updateBlock(block.id, { text: factoryText })}>恢复默认</Button>}
                   <Button variant="ghost" size="sm" aria-label={`删除 ${block.title}`} onClick={() => removeBlock(block.id)} disabled={!editable}><Trash2 size={14} /></Button>
                 </div>
               </div>
-              <Field label="正文" hint="支持变量：{{project.theme}}、{{project.style}}、{{style.medium}} 等；未知变量会阻止保存。">
+              {block.note && <p className="small muted">{block.note}</p>}
+              <Field label="正文" hint="支持变量：{{project.theme}}、{{project.style}}、{{style.medium}} 等；未知变量会阻止保存。停用的块不进提示词，但内容还留着。">
                 <textarea rows={4} value={block.text} disabled={!editable} onChange={event => updateBlock(block.id, { text: event.target.value })} />
               </Field>
               {findUnknownVariables(block.text).length > 0 && <small className="text-[#e88b93]">未知变量：{findUnknownVariables(block.text).map(item => `{{${item}}}`).join('、')}</small>}
@@ -424,6 +440,26 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
             </Field>
             {findUnknownVariables(skill.template).length > 0 && <small className="text-[#e88b93]">未知变量：{findUnknownVariables(skill.template).map(item => `{{${item}}}`).join('、')}</small>}
           </section>)}
+          <section className="panel stack">
+            <div className="section-title"><h3>内置 Skill</h3><span className="small muted">系统自带的 4 份配方，正文可以直接改；改坏了能一键恢复出厂文案</span></div>
+            {scope === 'project' && <p className="small muted">内置 Skill 是全局的，所有作品共用。切到「全局模板（默认）」里管理。</p>}
+            {builtinSkillList.map(skill => {
+              const override = builtinOverrides[skill.id];
+              const current = override ?? builtinSkillText(skill.id);
+              const changed = override !== undefined && override !== builtinSkillText(skill.id);
+              return <section className="panel stack" key={skill.id}>
+                <div className="section-title">
+                  <strong>{skill.name}</strong>
+                  <span className="small muted">{skill.description}</span>
+                  {changed && <span className="tag">已修改</span>}
+                  <Button variant="ghost" size="sm" aria-label={`恢复默认 ${skill.name}`} disabled={scope !== 'global' || !changed} onClick={() => updateBuiltinSkill(skill.id, undefined)}>恢复默认</Button>
+                </div>
+                <Field label="正文" hint="作品页勾选这个 Skill 时，这段正文会一起发给模型。">
+                  <textarea rows={5} value={current} disabled={scope !== 'global'} onChange={event => updateBuiltinSkill(skill.id, event.target.value)} />
+                </Field>
+              </section>;
+            })}
+          </section>
           {blockingIssues.length > 0 && <ErrorNote message={`${blockingIssues.join('；')}。请修正后再保存。`} />}
         </section>}
         {mode !== 'skills' && previews.map(item => <section className="panel stack" key={item.spec.kind}>

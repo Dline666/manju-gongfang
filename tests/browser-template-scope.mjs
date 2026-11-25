@@ -5,14 +5,9 @@ import assert from 'node:assert/strict';
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 
-const screenplay = `# 第一部分｜核心前提
+import { makeScreenplay } from './screenplay-fixtures.mjs';
+const screenplay = makeScreenplay();
 
-【核心前提】
-少年在雨夜山门拾起一把断剑。
-
-【镜头：远景】
-△ 少年在雨夜山门拾起一把断剑。（时长3s）
-`;
 
 const results = [];
 try {

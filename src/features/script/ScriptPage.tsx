@@ -13,11 +13,24 @@ import { screenplayPrompt } from '../../lib/prompts';
 import { modelFor } from '../../lib/endpoints';
 import { buildDocuments } from '../../lib/documents';
 import { mergeDraftAssets, normalizeScreenplay, parseScriptText, templateScript, type GeneratedScreenplay, type ScriptDraft } from './creation';
+import { buildRetryPrompt, SHOT_SPEC_VERSION, validateScreenplayShots, type ShotSpecResult } from '../../lib/screenplay';
+import { ScreenplayDurationTable, SHOT_SPEC_TEXT } from './DurationStrip';
+import { effectivePlan, ownsKind } from '../../lib/promptScope';
 import { screenplaySceneCount } from './screenplay';
 
 const ADD_STYLE = '__add_style__';
 type Confirmation = { kind: 'ai' | 'template'; project: Project; prompt: string; defaultPrompt: string; provider: string; model: string };
-const draftUpdate = (p: Project, draft: ScriptDraft, source: Project['source']): Project => ({ ...p, ...mergeDraftAssets(p.assets, draft), name: draft.title || p.name, logline: draft.logline || p.logline, screenplay: draft.screenplay ?? p.screenplay, source, storyboardReady: false });
+/**
+ * 写入剧本。
+ * spec='new' = 按新规格（4–6 镜 / 每镜 10–15 秒）校验过，之后改坏了会被门禁拦住；
+ * spec='legacy' = 用户明确按旧规格保存，不锁镜数与时长。
+ */
+const draftUpdate = (p: Project, draft: ScriptDraft, source: Project['source'], spec: 'new' | 'legacy' = 'new'): Project => ({
+  ...p, ...mergeDraftAssets(p.assets, draft),
+  name: draft.title || p.name, logline: draft.logline || p.logline,
+  screenplay: draft.screenplay ?? p.screenplay, source, storyboardReady: false,
+  specVersion: spec === 'new' ? SHOT_SPEC_VERSION : undefined,
+});
 
 export default function ScriptPage(props: PageProps) { return <ScriptEditor key={props.project.id} {...props} />; }
 function ScriptEditor({ project, navigate }: PageProps) {
@@ -29,18 +42,27 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const abortRef = useRef<AbortController | undefined>(undefined);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
-  const [preview, setPreview] = useState<{ draft: ScriptDraft; revision: number }>();
+  const [preview, setPreview] = useState<{ draft: ScriptDraft; revision: number; spec: ShotSpecResult }>();
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [documentName, setDocumentName] = useState('剧本文档.md');
   const [styleOpen, setStyleOpen] = useState(false);
   const [styleDraft, setStyleDraft] = useState('');
   const [screenplayDraft, setScreenplayDraft] = useState(project.screenplay || '');
   const [screenplaySaved, setScreenplaySaved] = useState(project.screenplay || '');
+  // 镜数与时长的校验结果：硬违规（拦住并可重试）与软提示。
+  const [specIssues, setSpecIssues] = useState<string[]>([]);
+  const [specWarnings, setSpecWarnings] = useState<string[]>([]);
+  const [retryNote, setRetryNote] = useState('');
   const issues = validateScriptStage(project);
   const tips = scriptWarnings(project);
   const characters = project.assets.filter(a => a.kind === 'character');
   const screenplayText = (project.screenplay || '').trim();
   const sceneCount = screenplaySceneCount(screenplayText);
+  // 剧本正文里声明的镜头：还没进导演步骤时先让用户看见镜数与每镜时长。
+  const screenplayShots = validateScreenplayShots(screenplayText);
+  // 剧本模板里有没有「镜数与时长（硬性）」条款块：没有的话生成出来基本过不了校验。
+  const effectiveScriptBlocks = effectivePlan(project, 'script', settings.promptTemplates);
+  const hasShotSpecBlock = effectiveScriptBlocks.some(block => block.builtin === 'script.shot-spec' || block.id === 'script.shot-spec');
   const sourceMode = project.scriptMode === 'source';
   const sourceLength = (project.sourceText || '').trim().length;
   const sourceTag = project.source === 'template' ? '模板演练 · 非AI生成' : project.source === 'ai' ? (sourceMode ? 'AI生成 · 原文转剧本' : 'AI生成 · 待人工审核') : project.source === 'import' ? '用户导入' : '空白项目';
@@ -99,8 +121,11 @@ function ScriptEditor({ project, navigate }: PageProps) {
     try {
       current(task.project.revision);
       let draft: ScriptDraft;
-      if (task.kind === 'template') draft = templateScript(task.project.theme);
-      else {
+      let spec: ShotSpecResult;
+      if (task.kind === 'template') {
+        draft = templateScript(task.project.theme);
+        spec = validateScreenplayShots(draft.screenplay || '');
+      } else {
         const auth = credentials(task.provider, 'script');
         if (auth.model !== task.model) throw new Error('模型设置已改变，请关闭弹窗并重新确认。');
         if (jobId) updateJob(jobId, { detail: '模型生成中' });
@@ -108,8 +133,34 @@ function ScriptEditor({ project, navigate }: PageProps) {
         const data = await callApi<GeneratedScreenplay>('screenplay', { ...auth, prompt: task.prompt }, controller.signal);
         setProgress(previous => previous && { ...previous, stage: '校验结构' });
         draft = normalizeScreenplay(data);
+        spec = validateScreenplayShots(draft.screenplay || '');
+        if (spec.issues.length) {
+          // 第 3 层：不通过就重试一次，重试提示词只贴违规清单与上一版剧本，不重发整套模板。
+          setProgress(previous => previous && { ...previous, stage: '镜数与时长不合格，按清单重试一次' });
+          setRetryNote(`第一次生成的剧本有 ${spec.issues.length} 项不合规，正在按违规清单自动重试一次。`);
+          const retryPrompt = buildRetryPrompt(spec, draft.screenplay || '');
+          const retryData = await callApi<GeneratedScreenplay>('screenplay', { ...auth, prompt: retryPrompt }, controller.signal);
+          draft = normalizeScreenplay(retryData);
+          spec = validateScreenplayShots(draft.screenplay || '');
+        }
       }
       current(task.project.revision);
+      if (spec.issues.length) {
+        // 重试仍不通过：不再自动循环，也不覆盖现有剧本。
+        // 这一版放进下面的编辑器（未保存），用户逐镜改完再保存。
+        setSpecIssues(spec.issues);
+        setSpecWarnings(spec.warnings);
+        setRetryNote('自动重试一次后仍不合规，已经停下：不再自动循环，也不覆盖现有剧本。');
+        setScreenplayDraft(draft.screenplay || '');
+        setProgress(undefined);
+        setConfirm(undefined);
+        if (jobId) finishJob(jobId, 'failed');
+        toast.error('剧本没有通过镜数与时长校验：现有剧本没有被覆盖，这一版放在下面的编辑器里（未保存），改完再保存。');
+        return;
+      }
+      setSpecIssues([]);
+      setSpecWarnings(spec.warnings);
+      setRetryNote('');
       updateProject(project.id, p => draftUpdate(p, draft, task.kind === 'ai' ? 'ai' : 'template'), true);
       setScreenplayDraft(draft.screenplay || '');
       setScreenplaySaved(draft.screenplay || '');
@@ -153,20 +204,36 @@ function ScriptEditor({ project, navigate }: PageProps) {
       toast.success('原文已载入，请确认内容后再生成剧本。');
     } catch (error) { toast.error(errorMessage(error)); }
   };
-  const saveScreenplay = () => {
+  const saveScreenplay = (legacy = false) => {
     try {
       const draft = normalizeScreenplay({ title: project.name, logline: project.logline, screenplay: screenplayDraft });
-      updateProject(project.id, p => draftUpdate(p, draft, p.source === 'empty' ? 'import' : p.source), true);
+      const spec = validateScreenplayShots(draft.screenplay || '');
+      setSpecWarnings(spec.warnings);
+      if (spec.issues.length && !legacy) {
+        // 拦住并逐镜说清差多少秒；用户改完再保存。
+        setSpecIssues(spec.issues);
+        toast.error('这份剧本没有通过镜数与时长校验，请按清单改完再保存。');
+        return;
+      }
+      setSpecIssues([]);
+      updateProject(project.id, p => draftUpdate(p, draft, p.source === 'empty' ? 'import' : p.source, legacy ? 'legacy' : 'new'), true);
       setScreenplaySaved(screenplayDraft);
-      toast.success('剧本已保存。下一步「导演分镜」会用大模型把它结构化成镜头。');
+      toast.success(legacy ? '剧本已按旧规格保存（不锁镜数与时长）。' : '剧本已保存。下一步「导演分镜」会用大模型把它结构化成镜头。');
     } catch (error) { toast.error(errorMessage(error)); }
   };
-  const saveImport = () => {
+  const saveImport = (legacy = false) => {
     if (!preview) return;
+    if (preview.spec.issues.length && !legacy) {
+      setSpecIssues(preview.spec.issues);
+      toast.error('导入的剧本没有通过镜数与时长校验，请按清单改完再导入。');
+      return;
+    }
     try {
       current(preview.revision);
-      updateProject(project.id, p => draftUpdate(p, preview.draft, 'import'), true);
-      setPreview(undefined); setImportOpen(false); toast.success('导入已保存，剧本与镜头已更新。');
+      updateProject(project.id, p => draftUpdate(p, preview.draft, 'import', legacy ? 'legacy' : 'new'), true);
+      setSpecIssues([]);
+      setSpecWarnings(preview.spec.warnings);
+      setPreview(undefined); setImportOpen(false); toast.success(legacy ? '剧本已按旧规格导入（不锁镜数与时长）。' : '导入已保存，剧本与镜头已更新。');
     } catch (error) { toast.error(errorMessage(error)); }
   };
   return <div className="stack">
@@ -186,30 +253,34 @@ function ScriptEditor({ project, navigate }: PageProps) {
         change({ style: e.target.value });
       }}>{!styles.includes(project.style) && project.style && <option>{project.style}</option>}{styles.map(style => <option key={style}>{style}</option>)}<option value={ADD_STYLE}>+ 新增自定义风格…</option></select>{customStyles.includes(project.style) && <Button variant="ghost" aria-label="删除当前自定义风格" onClick={() => removeCustomStyle(project.style)}><Trash2 size={15} /></Button>}</div></Field><div className="field"><span>剧本服务</span><div className="row"><span className="tag">{settings.endpoints.find(endpoint => endpoint.id === settings.scriptProvider)?.name ?? '未选择端点'} · {modelFor(settings, settings.scriptProvider, 'script')}</span><Button variant="ghost" onClick={() => navigate('settings')}>更改设置</Button></div></div></div>
       <details className="panel"><summary><strong>高级：提示词与规则</strong><span className="small muted"> · 所选 Skill 会写入对应生成任务的完整提示词</span></summary><div className="grid-2" style={{ marginTop: 12 }}>{skills.map(skill => <label className="panel row skill-option" key={skill.id}><input type="checkbox" checked={project.skills.includes(skill.id)} onChange={e => change({ skills: e.target.checked ? [...project.skills, skill.id] : project.skills.filter(id => id !== skill.id) })} /><span><strong>{skill.name}</strong><small className="muted">{skill.description}</small></span></label>)}</div><div className="toolbar" style={{ marginTop: 12 }}><Button variant="outline" onClick={() => { location.hash = '/settings/templates?kind=script&scope=project'; }}>编辑提示词模板</Button></div></details>
+      {!hasShotSpecBlock && <div className="alert">当前剧本模板里没有「镜数与时长（硬性）」条款块，生成出来的剧本大概率过不了「{SHOT_SPEC_TEXT}」的校验。<Button variant="ghost" onClick={() => { location.hash = `/settings/templates?kind=script&scope=${ownsKind(project, 'script') ? 'project' : 'global'}`; }}>去模板编辑器补上</Button></div>}
       {!keys[settings.scriptProvider] && <div className="alert">{settings.scriptProvider ? '尚未配置剧本 API Key。' : '还没有可用的剧本端点，请到设置页添加或恢复一个。'}可以前往设置，或主动使用不联网的「模板演练」。模板不是 AI 生成。<Button variant="ghost" onClick={() => navigate('settings')}>前往设置</Button></div>}
       <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={busy || sourceMode} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
     </section>
     <section className="panel stack">
       <div className="section-title"><div><h2>剧本</h2><p className="muted">{screenplayText.length} 字 · {sceneCount} 场{project.shots.length ? ' · 现有 ' + project.shots.length + ' 镜' : ''}</p></div><div className="row"><span className="tag">{sourceTag}</span></div></div>
       {!screenplayDraft && !project.screenplay ? <Empty title="还没有剧本" text="填写主题或粘贴原文，生成一份完整漫剧剧本；也可以导入你已经写好的剧本。这里不会预置作品或视频。" /> : <>
-        <Field label="剧本全文" hint="四部分结构：核心前提与黄金3秒钩子 / 场景因果节拍表 / 世界观与人物关系 / 标准漫剧剧本。正文里写了【镜头：类型】的话，下一步的导演分镜会按它落实景别。改完点「保存剧本」，下一步会用大模型把它结构化成镜头。">
+        {screenplayShots.shots.length > 0 && <div className="stack"><p className="small muted">剧本声明的镜头（规格：{SHOT_SPEC_TEXT}）</p><ScreenplayDurationTable result={screenplayShots} /></div>}
+        <Field label="剧本全文" hint="四部分结构：核心前提与黄金3秒钩子 / 场景因果节拍表 / 世界观与人物关系 / 标准漫剧剧本。正文里每个镜头块写成【镜头N：景别】（时长12s），下一步的导演分镜会按它落实景别与时长。改完点「保存剧本」，下一步会用大模型把它结构化成镜头。">
           <textarea rows={26} value={screenplayDraft} onChange={e => setScreenplayDraft(e.target.value)} />
         </Field>
-        <div className="toolbar"><Button variant="secondary" disabled={screenplayDraft === screenplaySaved} onClick={saveScreenplay}>保存剧本</Button><Button variant="ghost" disabled={screenplayDraft === screenplaySaved} onClick={() => setScreenplayDraft(screenplaySaved)}>撤销修改</Button></div>
+        <div className="toolbar"><Button variant="secondary" disabled={screenplayDraft === screenplaySaved} onClick={() => saveScreenplay(false)}>保存剧本</Button><Button variant="ghost" disabled={screenplayDraft === screenplaySaved} onClick={() => setScreenplayDraft(screenplaySaved)}>撤销修改</Button>{specIssues.length > 0 && <Button variant="outline" onClick={() => saveScreenplay(true)}>仍按旧规格保存（不锁镜数与时长）</Button>}</div>
       </>}
     </section>
     </div><aside className="workbench-aside" aria-label="剧本状态">
       <Fold title="当前状态" meta={sourceTag}><p className="small muted">{screenplayText.length} 字 · {sceneCount} 场</p><p className="small muted">{characters.length} 位人物 · {project.assets.length} 项资产 · 编辑自动保存</p></Fold>
+      <section className="panel stack"><div className="section-title"><h3>镜数与时长规格</h3><span className="tag">{project.specVersion === SHOT_SPEC_VERSION ? '已按新规格校验' : '旧规格'}</span></div><p className="small muted">本片规格：{SHOT_SPEC_TEXT}。</p>{screenplayShots.shots.length > 0 && <ScreenplayDurationTable result={screenplayShots} />}<p className="small muted">这几条规则写在提示词模板的「镜数与时长（硬性）」块里，你自己可以改。</p></section>
+      {specIssues.length > 0 && <section className="panel stack"><div className="section-title"><h3>镜数与时长不合格</h3><span className="tag">{specIssues.length} 项</span></div><IssueList issues={specIssues} />{retryNote && <p className="small muted">{retryNote}</p>}<p className="small muted">逐镜改时长或合并、拆分镜头后点「保存剧本」；确实要保留旧规格，就点「仍按旧规格保存」。</p></section>}
       {issues.length > 0 && <section className="panel stack"><div className="section-title"><h3>需要完善</h3><span className="tag">{issues.length} 项</span></div><IssueList issues={issues} /></section>}
       {tips.length > 0 && <section className="panel stack"><div className="section-title"><h3>建议核对</h3><span className="tag">{tips.length} 项</span></div><IssueList issues={tips} /></section>}
       <section className="panel stack"><Button variant="secondary" disabled={!screenplayText} onClick={confirmScript}>确认并进入下一步</Button><p className="small muted">这一步只写剧本。确认后进入「导演分镜」，由大模型按剧本内容结构化出镜头，镜数由模型决定。</p></section>
     </aside></div>
     <Modal open={!!confirm} onClose={() => { if (!busy) { setConfirm(undefined); setFailure(undefined); setProgress(undefined); } }} title={confirm?.kind === 'ai' ? '确认完整剧本任务' : '确认模板演练'} description="确认后只替换剧本正文；已有资产不会被删除，固定短语与设定图原样保留。镜头在下一步「导演分镜」由大模型产出。">
-      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题写一份完整剧本，不拆镜头——镜头由下一步的「导演分镜」产出。'}</div><p>主题：{confirm.project.theme}<br />{confirm.project.scriptMode === 'source' ? '原文：' + (confirm.project.sourceText || '').length + ' 字（逐字忠于原文）<br />' : ''}风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：完整漫剧剧本（60–240 秒）</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词" hint="可直接修改，只影响本次请求；模板不会被改写。"><textarea rows={12} value={confirm.prompt} disabled={busy} onChange={e => setConfirm(previous => previous && { ...previous, prompt: e.target.value })} /></Field>}{confirm.kind === 'ai' && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirm(previous => previous && { ...previous, prompt: previous.defaultPrompt })}>恢复默认提示词</Button>}{progress && <ProgressPanel title={confirm.kind === 'ai' ? 'AI 生成剧本' : '模板演练'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={scriptSamples ? scriptAverage : undefined} detail={scriptSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={busy && confirm.kind === 'ai' ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setConfirm(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy || (confirm.kind === 'ai' && !confirm.prompt.trim())} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" onClick={() => { setConfirm(undefined); location.hash = '/settings/templates?kind=script&scope=project'; }}>编辑模板</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
+      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题写一份完整剧本，不拆镜头——镜头由下一步的「导演分镜」产出。'}</div><p>主题：{confirm.project.theme}<br />{confirm.project.scriptMode === 'source' ? '原文：' + (confirm.project.sourceText || '').length + ' 字（逐字忠于原文）<br />' : ''}风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：完整漫剧剧本（{SHOT_SPEC_TEXT}）</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词" hint="可直接修改，只影响本次请求；模板不会被改写。"><textarea rows={12} value={confirm.prompt} disabled={busy} onChange={e => setConfirm(previous => previous && { ...previous, prompt: e.target.value })} /></Field>}{confirm.kind === 'ai' && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirm(previous => previous && { ...previous, prompt: previous.defaultPrompt })}>恢复默认提示词</Button>}{progress && <ProgressPanel title={confirm.kind === 'ai' ? 'AI 生成剧本' : '模板演练'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={scriptSamples ? scriptAverage : undefined} detail={scriptSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={busy && confirm.kind === 'ai' ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setConfirm(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy || (confirm.kind === 'ai' && !confirm.prompt.trim())} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" onClick={() => { setConfirm(undefined); location.hash = '/settings/templates?kind=script&scope=project'; }}>编辑模板</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
     </Modal>
     <Modal open={importOpen} onClose={() => setImportOpen(false)} title="导入剧本 · 先预览再保存" description="原文逐字完整保留，作为剧本正文存下。镜头不在这里拆——下一步「导演分镜」会用大模型按内容结构化，镜数由模型决定。">
-      <div className="stack"><Field label="上传 UTF-8 的 .txt / .md 文件（≤2MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={e => { void readImport(e.target.files?.[0]); e.target.value = ''; }} /></Field><Field label="或粘贴原文"><textarea rows={8} value={importText} placeholder={'# 第一部分｜核心前提\n【核心前提】\n……\n\n# 第四部分｜标准漫剧剧本\n## 第一章  章名\n\n### 场景1 外景 · 地点 — 清晨\n**剧情：**……\n**人物：**角色A\n\n【镜头：远景】\n△ 动作描写。（时长3s）\n\n角色A（情绪）：“台词。”（时长2s）'} onChange={e => { setImportText(e.target.value); setPreview(undefined); }} /></Field><Button variant="secondary" onClick={() => { try { setPreview({ draft: parseScriptText(importText), revision: project.revision }); } catch (error) { toast.error(errorMessage(error)); } }}>解析并预览</Button>
-        {preview && <div className="stack"><div className="alert">识别到 {preview.draft.shots.length} 镜，共 {preview.draft.shots.reduce((sum, s) => sum + s.duration, 0)} 秒。未识别字段请人工完善；保存后可继续编辑剧本正文并重新拆镜。</div>{preview.draft.shots.map(s => <details className="panel" key={s.id}><summary>第{s.number}镜 · {s.duration}秒 · {s.scene || '未标注场景'} · {s.cameraHint || '未指定画面类型'} · {s.dialogues.length}句台词</summary><pre>{s.visual}</pre></details>)}<p className="muted">保存会替换当前镜头；已有资产、设定图与固定短语不会被删除，资产补全在下一步完成。</p><Button onClick={saveImport}>确认导入并替换剧本</Button></div>}
+      <div className="stack"><Field label="上传 UTF-8 的 .txt / .md 文件（≤2MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={e => { void readImport(e.target.files?.[0]); e.target.value = ''; }} /></Field><Field label="或粘贴原文"><textarea rows={8} value={importText} placeholder={'# 第一部分｜核心前提\n【核心前提】\n……\n\n# 第四部分｜标准漫剧剧本\n## 第一章  章名\n\n### 场景1 外景 · 地点 — 清晨\n**剧情：**……\n**人物：**角色A\n\n【镜头1：远景】（时长12s）\n△ 动作描写。\n\n角色A（情绪）：“台词。”'} onChange={e => { setImportText(e.target.value); setPreview(undefined); }} /></Field><Button variant="secondary" onClick={() => { try { const draft = parseScriptText(importText); setPreview({ draft, revision: project.revision, spec: validateScreenplayShots(draft.screenplay || '') }); } catch (error) { toast.error(errorMessage(error)); } }}>解析并预览</Button>
+        {preview && <div className="stack"><div className="alert">识别到 {preview.spec.shots.length} 镜，声明总时长 {preview.spec.total} 秒。未识别字段请人工完善；保存后可继续编辑剧本正文并重新拆镜。</div>{preview.spec.issues.length > 0 && <section className="panel stack"><div className="section-title"><h3>没有通过镜数与时长校验</h3><span className="tag">{preview.spec.issues.length} 项</span></div><IssueList issues={preview.spec.issues} /><p className="small muted">本片规格：{SHOT_SPEC_TEXT}。改完上面的原文再点「解析并预览」，或者明确按旧规格导入。</p></section>}{preview.spec.shots.length > 0 && <ScreenplayDurationTable result={preview.spec} />}<p className="muted">保存会替换当前剧本；已有资产、设定图与固定短语不会被删除，资产补全在下一步完成。</p><div className="toolbar"><Button onClick={() => saveImport(false)} disabled={preview.spec.issues.length > 0}>确认导入并替换剧本</Button>{preview.spec.issues.length > 0 && <Button variant="outline" onClick={() => saveImport(true)}>仍按旧规格导入（不锁镜数与时长）</Button>}</div></div>}
       </div>
     </Modal>
     <Modal open={documentsOpen} onClose={() => setDocumentsOpen(false)} title="导出创作文档" description="导出的是文本文档，不包含图片和音视频文件。"><div className="stack"><Field label="选择文档"><select value={documentName} onChange={e => setDocumentName(e.target.value)}>{Object.keys(documents).map(name => <option key={name}>{name}</option>)}</select></Field><textarea aria-label="文档预览" rows={12} readOnly value={documents[documentName]} /><div className="toolbar"><Button onClick={() => downloadBlob(new Blob([documents[documentName]], { type: 'text/markdown;charset=utf-8' }), `${project.name}-${documentName}`)}>下载当前文档</Button><Button variant="secondary" onClick={() => void copyText(documents[documentName])}>复制内容</Button><Button variant="ghost" onClick={() => navigate('export')}>前往完整导出</Button></div></div></Modal>

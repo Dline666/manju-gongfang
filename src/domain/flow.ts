@@ -1,4 +1,5 @@
 import type { Project } from './types';
+import { SHOT_SPEC_VERSION, validateScreenplayShots } from '../lib/screenplay';
 
 export type FlowStage = 'script' | 'director' | 'assets' | 'storyboard' | 'video';
 /** 顺序即流程：剧本只出剧本 → 导演步骤调模型结构化出镜头 → 资产从镜头里提取 → 编排分镜 → 视频。 */
@@ -87,12 +88,25 @@ export function withConfirmation(project: Project, stage: Extract<FlowStage, 'sc
   };
 }
 
+/**
+ * 剧本层门禁。
+ *
+ * 新规格（镜数与时长）只对按新规格校验过的作品生效：作品带 specVersion 才按 4–6 镜、
+ * 每镜 10–15 秒、总时长 40–90 秒拦。
+ * 新规格之前存下来的旧作品没有这个标记——它们只提示「旧规格」，不阻断查看、预览与导出。
+ */
 export function validateScriptStage(project: Project): string[] {
   const issues: string[] = [];
   const screenplay = (project.screenplay || '').trim();
   if (!screenplay) issues.push('剧本还没有正文，请先生成或导入剧本。');
   else if (screenplay.length < 50) issues.push(`剧本正文只有 ${screenplay.length} 字，太短了，至少要写够一段能拍的戏。`);
+  else if (project.specVersion === SHOT_SPEC_VERSION) issues.push(...validateScreenplayShots(screenplay).issues);
   return issues;
+}
+
+/** 这份作品是不是按新规格（镜数与时长）校验过的。 */
+export function usesShotSpec(project: Project): boolean {
+  return project.specVersion === SHOT_SPEC_VERSION;
 }
 
 export function validateAssetsStage(project: Project): string[] {
@@ -133,6 +147,9 @@ export function scriptWarnings(project: Project): string[] {
     if (names.some(name => screenplay.includes(name))) continue;
     warnings.push(`资产「${asset.name}」的名字在剧本正文里没出现，请确认它是不是模型编出来的。`);
   }
+  // 规格提示：旧作品只提示不阻断；新规格的软提示（内容偏少、镜号不连续）也在这里。
+  if (!usesShotSpec(project)) warnings.push('这份剧本是旧规格（没有按 4–6 镜、每镜 10–15 秒、总时长 40–90 秒校验过）。查看、预览与导出不受影响；重新生成或导入会按新规格校验。');
+  else warnings.push(...validateScreenplayShots(screenplay).warnings);
   return warnings;
 }
 

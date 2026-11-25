@@ -17,9 +17,12 @@ export type { ExtractCategory } from './promptBlocks';
 function buildSpec(project: Project, kind: PromptKind, ctx: Omit<RenderContext, 'project'> = {}, global?: PromptTemplateSet): PromptSpec {
   const style = effectiveStyle(project, global);
   const vars = promptVariables(project, style);
-  const userBlocks: PromptBlock[] = effectivePlan(project, kind, global).map(plan => ({
-    id: plan.id, label: plan.title, locked: false, text: applyVariables(plan.text.trim(), vars),
-  }));
+  const userBlocks: PromptBlock[] = effectivePlan(project, kind, global)
+    // 停用的块不进提示词，但内容还留着，用户随时能再打开。
+    .filter(plan => plan.enabled !== false)
+    .map(plan => ({
+      id: plan.id, label: plan.title, locked: false, text: applyVariables(plan.text.trim(), vars),
+    }));
   // 这一步选中的 Skill：正文由用户在 Skill 库里写，选了就每次自动带上；空正文等于没写。
   const skill = findSkill(global?.skills, effectiveSkillId(project, kind, global));
   const skillBlocks: PromptBlock[] = skill?.template.trim()

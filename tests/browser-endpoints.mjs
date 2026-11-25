@@ -34,7 +34,10 @@ try {
     await page.getByRole('button', { name: '导入剧本', exact: true }).click();
     await page.getByLabel('或粘贴原文').fill(source);
     await page.getByRole('button', { name: '解析并预览', exact: true }).click();
-    await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
+    // 旧格式剧本过不了新规格校验：走「仍按旧规格导入」这条显式出口。
+    const legacyImport = page.getByRole('button', { name: '仍按旧规格导入（不锁镜数与时长）' });
+    if (await legacyImport.isVisible()) await legacyImport.click();
+    else await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
     await page.getByRole('dialog').waitFor({ state: 'hidden' });
     // 导入只存剧本正文，不建资产；这里手动建一个人物用于生图。
     await page.evaluate(async () => {
