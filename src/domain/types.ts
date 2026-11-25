@@ -70,17 +70,31 @@ export type PromptDataSource =
   | 'video.dialogue' | 'video.audio' | 'video.assets' | 'video.style' | 'video.skills';
 /** 用户在模板编辑器里排好的一块。text 是用户写的正文；source 是数据来源（数据块）。 */
 export interface PromptBlockPlan { id: string; title: string; text: string; source?: PromptDataSource; builtin?: string; shared?: boolean }
-/** 一个 kind 的完整块计划，顺序即发送顺序。 */
-export interface PromptTemplatePlan { blocks: PromptBlockPlan[] }
+/**
+ * 一份 Skill：可复用的提示词配方，正文由用户自己写。
+ * 库里一份写一次，可以被多个步骤引用；正文留空等于没写（不会进提示词）。
+ */
+export interface SkillSpec {
+  id: string;
+  name: string;
+  /** 正文。为空表示这份 Skill 还没写内容。 */
+  template: string;
+  /** 适用步骤；空数组 = 所有步骤都能选它。 */
+  kinds: PromptKindId[];
+}
+/** 一个 kind 的完整块计划，顺序即发送顺序。skill 是这一步固定选中的 Skill（引用 Skill 库里的 id）。 */
+export interface PromptTemplatePlan { blocks: PromptBlockPlan[]; skill?: string }
 /**
  * 模板按 kind 存一份。
  * `image` 是旧结构：人物 / 场景 / 道具共用一份设定图模板，载入时拆成 image-character / image-scene / image-prop 三份。
  */
 export type PromptTemplateMap = Partial<Record<PromptKindId, PromptTemplatePlan>> & { image?: PromptTemplatePlan };
-/** 一套提示词模板：风格 + 每个 kind 一份块计划。全局默认与作品覆盖层都用这个形状。 */
+/** 一套提示词模板：风格 + 每个 kind 一份块计划 + 全局 Skill 库。全局默认与作品覆盖层都用这个形状。 */
 export interface PromptTemplateSet {
   style?: StyleSpec;
   templates?: PromptTemplateMap;
+  /** Skill 库：全局唯一，所有作品共用。 */
+  skills?: SkillSpec[];
 }
 /** v1 旧结构：块 id → 覆盖文本。载入时迁移成 v2 的 templates。 */
 export interface PromptConfigV1 { v: 1; style?: StyleSpec; blocks?: Record<string, string> }
@@ -167,6 +181,24 @@ export function defaultModels(): Settings['models'] {
   };
 }
 /**
+ * 出厂 Skill 库。
+ *
+ * 每个步骤先留一个空的槽位，正文由用户自己写——系统不预置任何 Skill 文案，
+ * 空正文也不会进提示词。名字只是槽位标签，随时可以改。
+ */
+export const defaultSkillLibrary: SkillSpec[] = [
+  { id: 'skill.novel-to-screenplay', name: '小说转剧本', template: '', kinds: ['script'] },
+  { id: 'skill.screenplay-to-storyboard', name: '剧本生分镜', template: '', kinds: ['director'] },
+  { id: 'skill.extract-characters', name: '人物提取', template: '', kinds: ['extract-characters'] },
+  { id: 'skill.extract-scenes', name: '场景提取', template: '', kinds: ['extract-scenes'] },
+  { id: 'skill.extract-props', name: '道具提取', template: '', kinds: ['extract-props'] },
+  { id: 'skill.image-character', name: '人物设定图', template: '', kinds: ['image-character'] },
+  { id: 'skill.image-scene', name: '场景设定图', template: '', kinds: ['image-scene'] },
+  { id: 'skill.image-prop', name: '道具设定图', template: '', kinds: ['image-prop'] },
+  { id: 'skill.video-shot', name: '镜头视频', template: '', kinds: ['video'] },
+];
+
+/**
  * 出厂全局模板。
  *
  * 这里的每一句都是用户自己写的（资产提取规则 + 设定图出图约定），系统不替用户编造规则。
@@ -175,6 +207,7 @@ export function defaultModels(): Settings['models'] {
  * 用户可以在模板编辑器里随时改或删。
  */
 export const defaultPromptTemplates: PromptTemplateSet = {
+  skills: defaultSkillLibrary,
   templates: {
     script: { blocks: [
       { id: 'script.characters.extract', title: '人物 · 提取规则', builtin: 'script.characters.extract', text: [

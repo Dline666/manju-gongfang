@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { directorPrompt, directorSpec, extractCharactersPrompt, imagePrompt, scriptPrompt, scriptSpec, videoPrompt, videoSpec } from '../src/lib/prompts';
 import { promptBlock, validatePromptSpec } from '../src/lib/promptSpec';
 import { findUnknownVariables } from '../src/lib/promptTemplates';
-import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, migrateTemplateSet, withFactoryDefaults } from '../src/lib/promptBlocks';
+import { builtinBlocks, builtinBlocksFor, dataSourcesFor, migratePromptConfig, migrateTemplateSet, skillsForKind, withFactoryDefaults } from '../src/lib/promptBlocks';
 import { migrateSettings } from '../src/lib/endpoints';
-import { effectivePlan, effectiveStyle, ownsKind, ownsStyle } from '../src/lib/promptScope';
+import { effectivePlan, effectiveSkillId, effectiveStyle, ownsKind, ownsStyle } from '../src/lib/promptScope';
 import { savedStudioSchema } from '../src/store/schema';
-import { defaultPromptTemplates, defaultSettings, defaultStyle, makeShot, type Asset, type Project, type PromptTemplateSet } from '../src/domain/types';
+import { defaultPromptTemplates, defaultSettings, defaultSkillLibrary, defaultStyle, makeShot, type Asset, type Project, type PromptTemplateSet } from '../src/domain/types';
 
 const hero: Asset = { id: 'hero', kind: 'character', name: '沈砚', description: '灰白布衣', lock: '十七岁少年，灰白旧布衣，背空剑鞘', imageId: 'image-hero' };
 const scene: Asset = { id: 'scene', kind: 'scene', name: '山门', description: '石阶', lock: '青灰石阶九十九级，晨雾低垂', imageId: 'image-scene' };
@@ -379,4 +379,78 @@ test('老存档（早期版本留下的空全局模板）也能拿到出厂模�
   });
   assert.equal(settings.promptTemplates!.templates!.script!.blocks.length, 3, '老存档要补上出厂的提取规则');
   assert.equal(settings.promptTemplates!.templates!['image-prop']!.blocks.length, 1);
+});
+
+test('出厂 Skill 库：每个步骤一份空槽位，正文留给用户写', () => {
+  assert.equal(defaultSkillLibrary.length, 9, '九个步骤各留一个槽位');
+  for (const skill of defaultSkillLibrary) assert.equal(skill.template, '', '系统不预置任何 Skill 正文');
+  assert.equal(skillsForKind(defaultSkillLibrary, 'script').length, 1);
+  assert.equal(skillsForKind(defaultSkillLibrary, 'script')[0].name, '小说转剧本');
+  assert.equal(skillsForKind(defaultSkillLibrary, 'director')[0].name, '剧本生分镜');
+});
+
+test('Skill 库随存档走：老存档补上出厂的，用户自己清空过就不再补', () => {
+  const base = { scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance', speechModel: 'speech-2.8-hd', styles: [] };
+  const filled = migrateSettings({ ...base, promptTemplates: { templates: {} } });
+  assert.equal(filled.promptTemplates!.skills!.length, 9, '老存档要拿到出厂的 Skill 库');
+  const cleared = migrateSettings({ ...base, promptTemplates: { templates: {}, skills: [] } });
+  assert.deepEqual(cleared.promptTemplates!.skills, [], '用户自己清空过就不再补');
+});
+
+test('每步选中的 Skill：作品覆盖优先，其次全局，都没有就没有', () => {
+  const global: PromptTemplateSet = { templates: { script: { blocks: [], skill: 'g' } } };
+  assert.equal(effectiveSkillId(makeProject(), 'script', global), 'g');
+  const owned = makeProject({ v: 3, overrides: { templates: { script: { blocks: [], skill: 'p' } } } });
+  assert.equal(effectiveSkillId(owned, 'script', global), 'p', '作品自己管的这一步用作品选的那份');
+  const ownedNone = makeProject({ v: 3, overrides: { templates: { script: { blocks: [] } } } });
+  assert.equal(effectiveSkillId(ownedNone, 'script', global), undefined, '作品管了这一步却没选，就不用全局那份');
+  assert.equal(effectiveSkillId(makeProject(), 'video', global), undefined, '没管过的步骤没有 Skill');
+});
+
+test('选中的 Skill 每次都进提示词：用户块之后、作品数据之前', () => {
+  const global: PromptTemplateSet = {
+    skills: [{ id: 's1', name: '小说转剧本', template: '按小说原文改写成漫剧剧本。', kinds: ['script'] }],
+    templates: { script: { blocks: blocks('我写的剧本规则'), skill: 's1' } },
+  };
+  const prompt = scriptPrompt(makeProject(), global);
+  assert.ok(prompt.includes('按小说原文改写成漫剧剧本。'), '所选 Skill 的正文要进提示词');
+  const spec = scriptSpec(makeProject(), global);
+  const ids = spec.blocks.map(block => block.id);
+  assert.ok(ids.indexOf('b0') < ids.indexOf('skill.s1'), 'Skill 排在用户写的块之后');
+  assert.ok(ids.indexOf('skill.s1') < ids.indexOf('data.script.theme'), 'Skill 排在作品数据之前');
+  const skillBlock = promptBlock(spec, 'skill.s1');
+  assert.equal(skillBlock?.locked, true, 'Skill 是系统附带的锁定块，用户不能在模板块里改它');
+});
+
+test('空正文的 Skill 不进提示词；没选 Skill 时内置附加 Skill 照旧', () => {
+  const empty: PromptTemplateSet = {
+    skills: [{ id: 's1', name: '空 Skill', template: '   ', kinds: ['script'] }],
+    templates: { script: { blocks: blocks('我写的剧本规则'), skill: 's1' } },
+  };
+  const plain = scriptPrompt(makeProject(), empty);
+  assert.ok(!plain.includes('空 Skill'), '空正文不进提示词');
+  assert.ok(!plain.includes('按四部分结构写出完整剧本'), '选了这一步的 Skill，就不再叠加作品级勾选的内置附加 Skill');
+  const without = scriptPrompt(makeProject(), { templates: { script: { blocks: blocks('我写的剧本规则') } } });
+  assert.ok(without.includes('按四部分结构写出完整剧本'), '没选 Skill 时，原来的附加 Skill 照旧');
+});
+
+test('下拉只列适用于这一步的 Skill', () => {
+  const library = [
+    { id: 'a', name: 'A', template: 'x', kinds: ['script'] as const },
+    { id: 'b', name: 'B', template: 'y', kinds: [] as const },
+  ].map(skill => ({ ...skill, kinds: [...skill.kinds] }));
+  assert.deepEqual(skillsForKind(library, 'script').map(skill => skill.id), ['a', 'b']);
+  assert.deepEqual(skillsForKind(library, 'video').map(skill => skill.id), ['b'], '不限步骤的才到处都能选');
+});
+
+test('Skill 相关的字段能通过存档 schema', () => {
+  const saved = savedStudioSchema.parse({
+    version: 1, projects: [], activeId: null,
+    settings: {
+      scriptProvider: 'gemini', imageProvider: 'openai', videoProvider: 'seedance', speechModel: 'x',
+      promptTemplates: { skills: [{ id: 's', name: 'n', template: 't', kinds: ['script'] }], templates: { script: { blocks: [], skill: 's' } } },
+    },
+  });
+  assert.equal(saved.settings.promptTemplates!.skills!.length, 1);
+  assert.equal(saved.settings.promptTemplates!.templates!.script!.skill, 's');
 });

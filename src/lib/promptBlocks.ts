@@ -3,7 +3,7 @@
 // 作品数据不属于模板块，渲染时由系统固定附带。
 // 模型的固定契约由后端持有，编辑器通过 contracts 接口原样展示。
 import type {
-  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplateMap, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, StyleSpec,
+  Asset, Project, PromptBlockPlan, PromptDataSource, PromptKindId, PromptTemplateMap, PromptTemplatePlan, PromptTemplateSet, Shot, SkillId, SkillSpec, StyleSpec,
 } from '../domain/types';
 import { defaultPromptTemplates, speakerName } from '../domain/types';
 import { skills } from './skills';
@@ -146,6 +146,32 @@ const DATA_SOURCES: Record<PromptKindId, DataBlockDef[]> = {
 export function dataSourcesFor(kind: PromptKindId): DataBlockDef[] {
   return DATA_SOURCES[kind] ?? [];
 }
+
+// ── Skill 库 ──────────────────────────────────────────────────
+
+/** 某一步能选的 Skill：标明适用这一步的，和不限步骤的，都在列表里。 */
+export function skillsForKind(library: SkillSpec[] | undefined, kind: PromptKindId): SkillSpec[] {
+  return (library ?? []).filter(skill => !skill.kinds.length || skill.kinds.includes(kind));
+}
+
+/** 按 id 取一份 Skill；取不到就当没有。 */
+export function findSkill(library: SkillSpec[] | undefined, id: string | undefined): SkillSpec | undefined {
+  if (!id) return undefined;
+  return (library ?? []).find(skill => skill.id === id);
+}
+
+/** 每个步骤的中文标签，Skill 库标适用步骤、编辑器标当前步骤都用它。 */
+export const KIND_LABELS: Record<PromptKindId, string> = {
+  script: '剧本',
+  'extract-characters': '人物提取',
+  'extract-scenes': '场景提取',
+  'extract-props': '道具提取',
+  director: '导演分镜',
+  'image-character': '人物设定图',
+  'image-scene': '场景设定图',
+  'image-prop': '道具设定图',
+  video: '视频',
+};
 
 /**
  * 模板默认是空的：模板里只有用户自己写的块。

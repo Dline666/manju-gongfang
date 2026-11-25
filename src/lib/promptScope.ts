@@ -51,6 +51,19 @@ export function effectiveStyle(project: Project, global?: PromptTemplateSet): St
   return {};
 }
 
+/**
+ * 这一步生效的 Skill id。
+ * 规则跟块计划一样：作品覆盖层里有这一步就归作品管（选没选 Skill 都算作品的意思），
+ * 没有的键跟随全局模板，两边都没选就没有 Skill。
+ */
+export function effectiveSkillId(project: Project, kind: PromptKindId, global?: PromptTemplateSet): string | undefined {
+  const own = overridesOf(project)?.templates?.[kind];
+  if (own) return own.skill;
+  const shared = global?.templates?.[kind];
+  if (shared) return shared.skill;
+  return undefined;
+}
+
 /** 整份生效的模板：作品覆盖的 kind 盖住全局，其余沿用全局。 */
 export function effectiveTemplateSet(project: Project, global?: PromptTemplateSet): PromptTemplateSet {
   const overrides = overridesOf(project);

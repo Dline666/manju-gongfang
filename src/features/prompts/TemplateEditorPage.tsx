@@ -4,11 +4,11 @@ import { toast } from 'sonner';
 import { Button, ErrorNote, Field } from '../../components/Ui';
 import { PROMPT_LIMITS, renderPrompt, validatePromptSpec } from '../../lib/promptSpec';
 import { findUnknownVariables } from '../../lib/promptTemplates';
-import { PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, type ExtractCategory } from '../../lib/promptBlocks';
+import { KIND_LABELS, PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, findSkill, skillsForKind, type ExtractCategory } from '../../lib/promptBlocks';
 import { directorSpec, extractCharactersSpec, extractPropsSpec, extractScenesSpec, imageSpec, scriptSpec, videoSpec } from '../../lib/prompts';
 import { overridesOf } from '../../lib/promptScope';
 import { setSettings, updateProject, useStudio } from '../../store/studio';
-import { makeShot, uid, defaultPromptTemplates, type Asset, type Project, type PromptBlockPlan, type PromptKindId, type PromptTemplatePlan, type PromptTemplateSet, type StyleSpec } from '../../domain/types';
+import { makeShot, uid, defaultPromptTemplates, type Asset, type Project, type PromptBlockPlan, type PromptKindId, type PromptTemplatePlan, type PromptTemplateSet, type SkillSpec, type StyleSpec } from '../../domain/types';
 
 const styleLabels: Record<'medium' | 'line' | 'palette' | 'face' | 'light', string> = {
   medium: '介质', line: '线条', palette: '配色', face: '面部渲染', light: '光线',
@@ -72,10 +72,13 @@ const cloneTemplates = (templates: PromptTemplateSet['templates']): PromptTempla
   const result: NonNullable<PromptTemplateSet['templates']> = {};
   for (const kind of PROMPT_KINDS) {
     const plan = templates?.[kind];
-    if (plan) result[kind] = { blocks: plan.blocks.map(block => ({ ...block })) };
+    if (plan) result[kind] = { blocks: plan.blocks.map(block => ({ ...block })), ...(plan.skill ? { skill: plan.skill } : {}) };
   }
   return result;
 };
+
+/** Skill 库是全局的：抄一份进草稿，改完存回全局模板。 */
+const cloneSkills = (skills: SkillSpec[] | undefined): SkillSpec[] => (skills ?? []).map(skill => ({ ...skill, kinds: [...skill.kinds] }));
 
 /**
  * 提示词模板整页编辑器。
@@ -93,7 +96,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   const [scope, setScope] = useState<TemplateScope>(project ? initialScope : 'global');
   const [tab, setTab] = useState<TemplateTab>(initialKind);
   const [sub, setSub] = useState<Record<string, string>>({ assets: initialSub ?? 'character', image: initialSub ?? 'character' });
-  const [mode, setMode] = useState<'blocks' | 'style'>('blocks');
+  const [mode, setMode] = useState<'blocks' | 'style' | 'skills'>('blocks');
   const [builtinChoice, setBuiltinChoice] = useState('');
   const [contract, setContract] = useState<{ instruction: string; schema: unknown } | undefined>();
   const [globalDraft, setGlobalDraft] = useState<PromptTemplateSet>({ templates: {} });
@@ -104,7 +107,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
 
   // 全局草稿跟着已保存的全局模板走；作品草稿只装这部作品自己管的那几步。
   useEffect(() => {
-    setGlobalDraft({ style: cleanStyle(savedGlobal?.style), templates: cloneTemplates(savedGlobal?.templates) });
+    setGlobalDraft({ style: cleanStyle(savedGlobal?.style), templates: cloneTemplates(savedGlobal?.templates), skills: cloneSkills(savedGlobal?.skills) });
   }, [savedGlobal]);
   useEffect(() => {
     if (!project) { setProjectDraft({ templates: {} }); return; }
@@ -127,6 +130,14 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   const editable = kindIsOwned;
   const ownsStyleSpec = scope === 'global' || draft.style !== undefined;
   const styleValue = scope === 'global' ? cleanStyle(draft.style) : (ownsStyleSpec ? cleanStyle(draft.style) : cleanStyle(savedGlobal?.style));
+  // Skill 库是全局的，两个作用域读的都是同一份草稿。
+  const library = globalDraft.skills ?? [];
+  // 这一步选中的 Skill：作品自己管这一步就用作品选的，否则跟随全局。
+  const globalSkillId = savedGlobal?.templates?.[kind]?.skill ?? '';
+  const selectedSkillId = kindIsOwned ? (draft.templates?.[kind]?.skill ?? '') : globalSkillId;
+  const skillOptions = skillsForKind(library, kind);
+  const selectedSkill = findSkill(library, selectedSkillId);
+  const missingSkill = !!selectedSkillId && !selectedSkill;
   // 旧模板共用过的块：只留在人物那份，编辑器里说明它从哪儿来。
   const sharedBlockCount = useMemo(() => {
     if (tab !== 'image') return 0;
@@ -176,6 +187,11 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   });
   const overLimit = previews.some(item => item.over);
   const unknown = blocks.flatMap(block => findUnknownVariables(block.text).map(variable => `「${block.title}」使用了未知变量 {{${variable}}}`));
+  // Skill 正文里的未知变量同样拦下来：在 Skill 库里查全部，在模板块里只看这一步选中的那一份。
+  const skillVariables = (mode === 'skills' ? library : (selectedSkill ? [selectedSkill] : []))
+    .flatMap(skill => findUnknownVariables(skill.template).map(variable => `Skill「${skill.name}」使用了未知变量 {{${variable}}}`));
+  // 在 Skill 库里改的是全局内容，不该被当前这一步模板块的问题拦住。
+  const blockingIssues = mode === 'skills' ? skillVariables : [...unknown, ...skillVariables];
 
   useEffect(() => {
     let cancelled = false;
@@ -199,6 +215,36 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     setKindBlocks(next);
   };
   const addBlock = () => setKindBlocks([...blocks, { id: uid(), title: '新块', text: '' }]);
+  /** 选中的 Skill 记在这一步的模板计划里；不选就把它摘掉。 */
+  const setKindSkill = (id: string) => {
+    setDraft(previous => {
+      const templates = { ...previous.templates };
+      const plan = templates[kind];
+      if (!id) {
+        // 取消选择不该凭空造出这一步的模板计划：否则这一步会被当成「用户自己管的空模板」。
+        if (plan?.skill) { const { skill, ...rest } = plan; templates[kind] = rest; }
+        return { ...previous, templates };
+      }
+      templates[kind] = { ...(plan ?? { blocks: [] }), skill: id };
+      return { ...previous, templates };
+    });
+  };
+  // ── Skill 库（全局，所有作品共用） ──
+  const setLibrary = (next: SkillSpec[]) => setGlobalDraft(previous => ({ ...previous, skills: next }));
+  const addSkill = () => setLibrary([...library, { id: uid(), name: '新 Skill', template: '', kinds: [kind] }]);
+  const updateSkill = (id: string, patch: Partial<SkillSpec>) => setLibrary(library.map(skill => skill.id === id ? { ...skill, ...patch } : skill));
+  const removeSkill = (id: string) => {
+    const target = library.find(skill => skill.id === id);
+    if (!target) return;
+    if (!window.confirm(`删除 Skill「${target.name}」？引用它的步骤会自动变成「不启用」。`)) return;
+    setLibrary(library.filter(skill => skill.id !== id));
+  };
+  const toggleSkillKind = (id: string, target: PromptKindId) => {
+    const skill = library.find(item => item.id === id);
+    if (!skill) return;
+    const kinds = skill.kinds.includes(target) ? skill.kinds.filter(item => item !== target) : [...skill.kinds, target];
+    updateSkill(id, { kinds });
+  };
   const insertBuiltin = () => {
     const found = builtinBlocksFor(kind).find(item => item.id === builtinChoice);
     if (!found) return;
@@ -268,10 +314,10 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   };
 
   const save = () => {
-    if (unknown.length || overLimit) return;
+    if (blockingIssues.length || overLimit) return;
     if (scope === 'global') {
-      setSettings({ ...settings, promptTemplates: { style: cleanStyle(draft.style), templates: cloneTemplates(draft.templates) } });
-      toast.success('全局模板已保存，所有跟随全局的作品立即生效。');
+      setSettings({ ...settings, promptTemplates: { style: cleanStyle(draft.style), templates: cloneTemplates(draft.templates), skills: cloneSkills(globalDraft.skills) } });
+      toast.success('全局模板与 Skill 库已保存，所有跟随全局的作品立即生效。');
       return;
     }
     if (!project) return;
@@ -294,10 +340,10 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     <p className="small muted">{scope === 'global'
       ? '全局模板是所有作品的默认。改动立刻影响所有跟随全局的作品；某部作品自己管的步骤不受影响。'
       : '这里只改这部作品。没单独管的步骤仍跟随全局模板，改全局时它们一起变。'}</p>
-    <div className="template-editor">
-      <nav className="template-tabs" aria-label="模板选择">{TEMPLATE_TABS.map(item => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}><strong>{item.title}</strong><small>{item.description}</small></button>)}</nav>
+    <div className={`template-editor ${mode === 'skills' ? 'is-single' : ''}`}>
+      {mode !== 'skills' && <nav className="template-tabs" aria-label="模板选择">{TEMPLATE_TABS.map(item => <button key={item.id} type="button" className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}><strong>{item.title}</strong><small>{item.description}</small></button>)}</nav>}
       <div className="template-body stack">
-        <div className="toolbar"><div className="tabs-row"><button className={mode === 'blocks' ? 'active' : ''} onClick={() => setMode('blocks')}>模板块</button><button className={mode === 'style' ? 'active' : ''} onClick={() => setMode('style')}>风格设定</button></div></div>
+        <div className="toolbar"><div className="tabs-row"><button className={mode === 'blocks' ? 'active' : ''} onClick={() => setMode('blocks')}>模板块</button><button className={mode === 'style' ? 'active' : ''} onClick={() => setMode('style')}>风格设定</button><button className={mode === 'skills' ? 'active' : ''} onClick={() => setMode('skills')}>Skill 库</button></div></div>
         {mode === 'style' && <section className="panel stack">
           <div className="section-title"><h3>风格设定</h3><span className="small muted">风格内容由你填写；提示词里用 {'{{style.medium}}'} 这类变量引用</span></div>
           {scope === 'project' && !ownsStyleSpec && <div className="alert" role="alert">本作品的风格设定正在跟随全局。<Button variant="secondary" size="sm" onClick={makeStyleIndependent}>改为独立编辑</Button></div>}
@@ -312,6 +358,19 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
           {scope === 'project' && (kindIsOwned
             ? <div className="toolbar"><span className="tag">本作品独立</span><Button variant="ghost" size="sm" onClick={followGlobal}>恢复跟随全局</Button></div>
             : <div className="alert" role="alert">这一步正在跟随全局模板，下面显示的是全局的内容。<Button variant="secondary" size="sm" onClick={makeIndependent}>改为独立编辑</Button></div>)}
+          <div className="panel stack">
+            <div className="section-title"><h4>这一步的 Skill</h4><span className="small muted">选中的 Skill 每次都自动带进这一类的提示词，不用自己再写一遍</span></div>
+            <div className="row wrap">
+              <select aria-label={`选择 Skill · ${KIND_LABELS[kind]}`} style={{ maxWidth: 280 }} value={selectedSkillId} disabled={!editable} onChange={event => setKindSkill(event.target.value)}>
+                <option value="">不启用 Skill</option>
+                {missingSkill && <option value={selectedSkillId}>（这份 Skill 已从库里删除）</option>}
+                {skillOptions.map(skill => <option key={skill.id} value={skill.id}>{skill.name}{skill.template.trim() ? '' : '（还没有正文）'}</option>)}
+              </select>
+              <Button variant="ghost" size="sm" onClick={() => setMode('skills')}>去 Skill 库</Button>
+            </div>
+            {selectedSkill && !selectedSkill.template.trim() && <p className="small muted">「{selectedSkill.name}」还没有正文——去 Skill 库里贴上内容；空正文不会进提示词。</p>}
+            {selectedSkill?.template.trim() && <p className="small muted">「{selectedSkill.name}」的正文会原样带进这一类的提示词，不需要再插成模板块；选了这一步的 Skill，就不再叠加作品页勾选的内置附加 Skill。</p>}
+          </div>
           <div className="toolbar">
             <Button variant="secondary" size="sm" onClick={addBlock} disabled={!editable}><Plus size={14} />新增块</Button>
             <select aria-label="选择内置块" style={{ maxWidth: 240 }} value={builtinChoice} onChange={event => setBuiltinChoice(event.target.value)} disabled={!editable}>
@@ -342,20 +401,45 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
             </section>;
           })}
         </section>}
-        {previews.map(item => <section className="panel stack" key={item.spec.kind}>
+        {mode === 'skills' && <section className="stack">
+          <div className="section-title"><h3>Skill 库</h3><span className="small muted">一份 Skill 写一次，可以被多个步骤引用；正文留空就等于没写，不会进提示词</span></div>
+          {scope === 'project' && <div className="alert" role="alert">Skill 库是全局的，所有作品共用。切到「全局模板（默认）」里管理。</div>}
+          <div className="toolbar">
+            <Button variant="secondary" size="sm" onClick={addSkill} disabled={scope !== 'global'}><Plus size={14} />新增 Skill</Button>
+            <span className="small muted">共 {library.length} 份</span>
+          </div>
+          {library.length === 0 && <p className="muted">库里还没有 Skill。点「新增 Skill」建一份，再勾它适用哪几步。</p>}
+          {library.map((skill, index) => <section className="panel stack" key={skill.id}>
+            <div className="section-title">
+              <input aria-label={`Skill 名称 ${index + 1}`} value={skill.name} disabled={scope !== 'global'} onChange={event => updateSkill(skill.id, { name: event.target.value })} />
+              <span className="small muted">{skill.template.length} 字</span>
+              {!skill.kinds.length && <span className="tag">适用所有步骤</span>}
+              <Button variant="ghost" size="sm" aria-label={`删除 ${skill.name}`} onClick={() => removeSkill(skill.id)} disabled={scope !== 'global'}><Trash2 size={14} /></Button>
+            </div>
+            <Field label="适用步骤" hint="勾哪几步，哪几步的下拉里就能选它；一个都不勾 = 所有步骤都能选">
+              <div className="row wrap">{PROMPT_KINDS.map(item => <label className="row" key={item} style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={skill.kinds.includes(item)} disabled={scope !== 'global'} onChange={() => toggleSkillKind(skill.id, item)} />{KIND_LABELS[item]}</label>)}</div>
+            </Field>
+            <Field label="正文" hint="支持变量：{{project.theme}}、{{project.style}}、{{style.medium}} 等；未知变量会阻止保存。">
+              <textarea rows={5} value={skill.template} disabled={scope !== 'global'} onChange={event => updateSkill(skill.id, { template: event.target.value })} />
+            </Field>
+            {findUnknownVariables(skill.template).length > 0 && <small className="text-[#e88b93]">未知变量：{findUnknownVariables(skill.template).map(item => `{{${item}}}`).join('、')}</small>}
+          </section>)}
+          {blockingIssues.length > 0 && <ErrorNote message={`${blockingIssues.join('；')}。请修正后再保存。`} />}
+        </section>}
+        {mode !== 'skills' && previews.map(item => <section className="panel stack" key={item.spec.kind}>
           <div className="section-title"><h3>{item.label ? `实时预览 · ${item.label}` : '实时预览'}</h3><span className={`small ${item.over ? 'text-[#e88b93]' : item.text.length > item.warningAt ? 'text-[#d8b26a]' : 'muted'}`}>{item.text.length} / {item.limit} 字</span></div>
           {injectedSources.length > 0 && <p className="small muted">下面是你写的块，后面由系统自动附带作品数据：{injectedSources.map(source => source.title).join('、')}。数据不在模板里，不能增删调序。</p>}
           <textarea readOnly rows={14} aria-label={item.label ? `模板预览 · ${item.label}` : '模板预览'} value={item.text} />
           {item.over && <ErrorNote message={`提示词 ${item.text.length} 字，超过上限 ${item.limit} 字，请精简后可保存。`} />}
-          {!item.over && unknown.length > 0 && <ErrorNote message={`${unknown.join('；')}。请修正未知变量后再保存。`} />}
+          {!item.over && blockingIssues.length > 0 && <ErrorNote message={`${blockingIssues.join('；')}。请修正未知变量后再保存。`} />}
         </section>)}
-        {contract && <section className="panel stack">
+        {mode !== 'skills' && contract && <section className="panel stack">
           <div className="section-title"><h3>接口固定契约</h3><span className="small muted">由后端固定，不可编辑；模型会连同上面的预览一起收到</span></div>
           <pre>{contract.instruction}</pre>
           <pre>{JSON.stringify(contract.schema, null, 2)}</pre>
         </section>}
         <div className="toolbar sticky-actions">
-          <Button onClick={save} disabled={unknown.length > 0 || overLimit || (scope === 'project' && !project)}>保存</Button>
+          <Button onClick={save} disabled={blockingIssues.length > 0 || overLimit || (scope === 'project' && !project)}>保存</Button>
           {scope === 'project' && <Button variant="outline" onClick={promoteToGlobal}>把本作品的模板复制为全局默认</Button>}
           <span className="small muted">{scopeLabel}</span>
         </div>
