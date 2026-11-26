@@ -142,9 +142,7 @@ function AssetEditor({ project, navigate }: PageProps) {
   const extractionDraft = useExtractionDraft();
   const extractionScope = extractionDraft ? extractionDraft.assets.filter(asset => asset.kind === extractionDraft.kind) : [];
   const [uploading, setUploading] = useState(false);
-  const [busy, setBusy] = useState(false);
-  // 单个生成任务正在处理哪个资产：只禁用那一行的「生成」，其它行照常操作。
-  const [busyAssetId, setBusyAssetId] = useState<string>();
+  const [busyAssets, setBusyAssets] = useState<Set<string>>(new Set());
   const [voicesBusy, setVoicesBusy] = useState(false);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
   const [speechText, setSpeechText] = useState('你好，很高兴与你一起开始这段故事。');
@@ -218,7 +216,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     }
   };
   const prepareImage = async (asset: Asset) => {
-    if (busy || batch?.running) { toast.error('还有生成任务没结束，请等它跑完再提交。'); return; }
+    if (busyAssets.has(asset.id) || inFlightBatch(asset.id)) { toast.error('这张设定图正在生成，请等它跑完。'); return; }
     const provider = settings.imageProvider;
     const endpoint = settings.endpoints.find(item => item.id === provider);
     const providerName = endpoint?.name ?? '当前生图端点';
@@ -247,17 +245,20 @@ function AssetEditor({ project, navigate }: PageProps) {
     finally { setVoicesBusy(false); }
   };
   const prepareSpeech = (asset: Asset, local: boolean) => {
-    if (busy || batch?.running) { toast.error('还有生成任务没结束，请等它跑完再提交。'); return; }
+    if (busyAssets.has(asset.id)) { toast.error('这张设定图正在生成，请等它跑完再试听。'); return; }
     if (!local && !keys.minimax) { toast.error('请配置 MiniMax API Key，或选择明确标注的本机试听。'); return; }
     if (!local && !asset.voiceId) { toast.error('请先编辑并保存音色ID。'); return; }
     setPending({ kind: 'speech', asset: { ...asset }, revision: project.revision, model: settings.speechModel, local });
   };
+  const markBusy = (id: string, running: boolean) => setBusyAssets(previous => {
+    const next = new Set(previous);
+    if (running) next.add(id); else next.delete(id);
+    return next;
+  });
   const execute = async () => {
     if (!pending) return;
-    if (busy) { toast.error('上一个生成任务还没结束，请等它跑完再提交。'); return; }
     const task = pending;
-    setBusy(true);
-    setBusyAssetId(task.asset.id);
+    markBusy(task.asset.id, true);
     // 提交后立刻关掉确认弹窗：进度看右下角任务托盘，页面其余操作不受影响。
     setPending(undefined);
     const controller = new AbortController();
@@ -300,11 +301,11 @@ function AssetEditor({ project, navigate }: PageProps) {
       finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
       toast.error(controller.signal.aborted ? '取消只停止等待，服务商可能已受理并计费。' : errorMessage(error));
     }
-    finally { setBusy(false); setBusyAssetId(undefined); }
+    finally { markBusy(task.asset.id, false); }
   };
   const prepareBatch = (assets: Asset[]) => {
     if (!assets.length) return;
-    if (busy) { toast.error('还有单个生成任务没结束，请等它跑完再提交批量。'); return; }
+    if (assets.some(asset => busyAssets.has(asset.id))) { toast.error('有设定图正在单独生成，请等它跑完再批量。'); return; }
     const provider = settings.imageProvider;
     const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
     if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
@@ -499,6 +500,8 @@ function AssetEditor({ project, navigate }: PageProps) {
   const batchFailed = batch?.items.filter(item => item.status === 'failed').map(item => project.assets.find(asset => asset.id === item.id)).filter((asset): asset is Asset => !!asset) ?? [];
   const imageChannel = settings.endpoints.find(endpoint => endpoint.id === settings.imageProvider)?.name ?? '未选择端点';
   const imageModel = modelFor(settings, settings.imageProvider, 'image');
+  // 批量里某一张是否正在跑：只锁这一行，其它行仍可单独生成。
+  const inFlightBatch = (id: string) => !!batch?.running && batch.items.some(item => item.id === id && (item.status === 'queued' || item.status === 'running'));
   const renderRow = (asset: Asset, group: AssetGroup) => {
     const info = splitFormName(asset.name);
     const isBase = asset.id === group.base.id;
@@ -506,7 +509,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     const usages = assetUsage(project, asset.id);
     const descOpen = openDesc.has(asset.id);
     // 只锁正在处理的那一行：单个任务或批量里正在跑的这张图。
-    const rowBusy = busyAssetId === asset.id || (!!batch?.running && batch.items.some(item => item.id === asset.id && (item.status === 'queued' || item.status === 'running')));
+    const rowBusy = busyAssets.has(asset.id) || inFlightBatch(asset.id);
     return <tr className={`asset-row ${isBase ? '' : 'is-form'}`.trim()} key={asset.id}>
       <td className="asset-form-cell"><div className="asset-form">
         {isBase && group.forms.length > 0 ? <button type="button" className="form-toggle" aria-expanded={isOpen} aria-label={`${isOpen ? '收起' : '展开'}${group.key}的形态`} onClick={() => toggleForm(group.key)}><ChevronRight size={14} /></button> : <span className="form-toggle-space" />}
