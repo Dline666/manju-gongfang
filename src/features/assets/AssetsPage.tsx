@@ -154,6 +154,13 @@ function AssetEditor({ project, navigate }: PageProps) {
     if (!p || p.revision !== revision || (assetId && !p.assets.some(a => a.id === assetId))) throw new Error('项目或资产已修改／删除，本次操作不会覆盖新内容。请重新确认。');
     return p;
   };
+  // 并发生成时不能用全项目 revision 做闸门：别的图写回就会把 revision 推高。只认这个资产还在不在。
+  const liveAsset = (assetId: string) => {
+    const p = getStudio().projects.find(p => p.id === project.id);
+    const asset = p?.assets.find(a => a.id === assetId);
+    if (!p || !asset) throw new Error('资产已删除，本次结果不会写入。');
+    return asset;
+  };
   const patch = (id: string, update: Partial<Asset>) => updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: p.assets.map(a => a.id === id ? { ...a, ...update } : a) }), true);
   const edit = (asset?: Asset) => setEditing({ asset: asset ? { ...asset } : { id: uid(), kind, name: '', description: '', lock: '', ...(kind === 'voice' ? { speed: 1, voiceId: '' } : {}) }, revision: project.revision, isNew: !asset });
   const draftPatch = (update: Partial<Asset>) => setEditing(previous => previous ? { ...previous, asset: { ...previous.asset, ...update } } : previous);
@@ -264,18 +271,22 @@ function AssetEditor({ project, navigate }: PageProps) {
     const controller = new AbortController();
     const jobId = startJob({ kind: task.kind, label: task.kind === 'image' ? `生成「${task.asset.name}」设定图` : `试听「${task.asset.name}」`, cancel: () => controller.abort() });
     try {
-      current(task.revision, task.asset.id);
+      const hash = fixedHash(fixedDescription(task.asset));
+      liveAsset(task.asset.id);
       if (task.kind === 'image') {
         if (!task.prompt.trim()) throw new Error('图片提示词不能为空：请在模板编辑器里补充内容。');
         const auth = credentials(task.provider, 'image');
         if (getStudio().settings.imageProvider !== task.provider || auth.model !== task.model) throw new Error('图片模型设置已改变，请重新确认。');
+        if (fixedHash(fixedDescription(liveAsset(task.asset.id))) !== hash) throw new Error('固定短语已修改，本次结果不会写入。');
         updateJob(jobId, { detail: '生成图片中' });
         const payload: ImageRequest = { ...auth, prompt: task.prompt, ...(task.reference ? { reference: task.reference } : {}) };
         const result = await callApi<ImageResult>('image', payload, controller.signal);
-        current(task.revision, task.asset.id);
+        if (fixedHash(fixedDescription(liveAsset(task.asset.id))) !== hash) throw new Error('固定短语已修改，本次结果不会写入。');
         const blob = await generatedImageBlob(result);
-        const imageId = await putMedia(blob); current(task.revision, task.asset.id);
-        patch(task.asset.id, { imageId }); toast.success('生成图片已保存，现有引用会使用新图片。');
+        const imageId = await putMedia(blob);
+        if (fixedHash(fixedDescription(liveAsset(task.asset.id))) !== hash) throw new Error('固定短语已修改，本次结果不会写入。');
+        // 只写这一张图并只把引用它的镜头标待更新，不影响其它正在生成的图。
+        setAssetImage(project.id, task.asset.id, imageId); toast.success('生成图片已保存，现有引用会使用新图片。');
       } else {
         const text = speechText.trim();
         if (!text || text.length > 120) throw new Error('试听短句请控制在1–120字。');
@@ -290,8 +301,8 @@ function AssetEditor({ project, navigate }: PageProps) {
           if (getStudio().settings.speechModel !== task.model) throw new Error('语音模型已改变，请重新确认。');
           const blob = await callBinary('speech', { ...credentials('minimax', 'speech'), model: task.model, text, voiceId: task.asset.voiceId, speed: task.asset.speed ?? 1 }, controller.signal);
           if (!blob.type.startsWith('audio/') || !blob.size) throw new Error('服务商没有返回有效音频。');
-          current(task.revision, task.asset.id);
-          const mediaId = await putMedia(blob); current(task.revision, task.asset.id);
+          liveAsset(task.asset.id);
+          const mediaId = await putMedia(blob);
           setPreviews(previous => ({ ...previous, [task.asset.id]: { mediaId, text } }));
           toast.success('试听音频已准备好，请使用播放器播放。');
         }
