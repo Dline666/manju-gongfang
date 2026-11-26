@@ -1,12 +1,12 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { Sparkles, Download, FileText, Trash2 } from 'lucide-react';
-import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, IssueList, Modal, ProgressPanel, copyText, downloadBlob, errorAction } from '../../components/Ui';
+import { Button, Empty, Field, Fold, HelpPopover, IssueList, Modal, copyText, downloadBlob } from '../../components/Ui';
 import { PageHeader } from '../../components/PageHeader';
 import { MAX_SOURCE_CHARS, builtinStyles, defaultStyle, type PageProps, type Project } from '../../domain/types';
 import { scriptWarnings, validateScriptStage, withConfirmation } from '../../domain/flow';
 import { getStudio, setSettings, updateProject, useStudio } from '../../store/studio';
-import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
+import { finishJob, startJob, updateJob } from '../../store/jobs';
 import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
 import { skills } from '../../lib/skills';
 import { screenplayPrompt } from '../../lib/prompts';
@@ -37,9 +37,6 @@ function ScriptEditor({ project, navigate }: PageProps) {
   const { settings, keys } = useStudio();
   const [confirm, setConfirm] = useState<Confirmation>();
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
-  const [failure, setFailure] = useState<unknown>();
-  const abortRef = useRef<AbortController | undefined>(undefined);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
   const [preview, setPreview] = useState<{ draft: ScriptDraft; revision: number; spec: ShotSpecResult }>();
@@ -72,8 +69,6 @@ function ScriptEditor({ project, navigate }: PageProps) {
     updateProject(project.id, p => ({ ...p, confirmed: withConfirmation(p, 'script') }), false);
     navigate('director');
   };
-  const scriptSamples = durationSamples('script');
-  const scriptAverage = averageDuration('script');
   const documents = buildDocuments(project, settings.promptTemplates);
   const change = (patch: Partial<Project>) => updateProject(project.id, { ...patch, storyboardReady: false }, true);
   // 自定义视觉风格存在本机设置里，所有作品都能选。
@@ -113,11 +108,11 @@ function ScriptEditor({ project, navigate }: PageProps) {
     if (!confirm || busy) return;
     const task = confirm;
     if (task.kind === 'ai' && !task.prompt.trim()) { toast.error('提示词不能为空：请在模板编辑器里添加内容。'); return; }
-    setBusy(true); setFailure(undefined);
-    const controller = new AbortController(); abortRef.current = controller;
+    setBusy(true);
+    const controller = new AbortController();
     const jobId = task.kind === 'ai' ? startJob({ kind: 'script', label: '生成剧本', cancel: () => controller.abort() }) : undefined;
-    const startedAt = Date.now();
-    if (jobId) setProgress({ stage: '提交任务', startedAt });
+    // 提交后立刻关掉确认弹窗：进度看右下角任务托盘，生成继续跑，页面其它操作不受影响。
+    setConfirm(undefined);
     try {
       current(task.project.revision);
       let draft: ScriptDraft;
@@ -129,14 +124,11 @@ function ScriptEditor({ project, navigate }: PageProps) {
         const auth = credentials(task.provider, 'script');
         if (auth.model !== task.model) throw new Error('模型设置已改变，请关闭弹窗并重新确认。');
         if (jobId) updateJob(jobId, { detail: '模型生成中' });
-        setProgress(previous => previous && { ...previous, stage: '模型生成中' });
         const data = await callApi<GeneratedScreenplay>('screenplay', { ...auth, prompt: task.prompt }, controller.signal);
-        setProgress(previous => previous && { ...previous, stage: '校验结构' });
         draft = normalizeScreenplay(data);
         spec = validateScreenplayShots(draft.screenplay || '');
         if (spec.issues.length) {
           // 第 3 层：不通过就重试一次，重试提示词只贴违规清单与上一版剧本，不重发整套模板。
-          setProgress(previous => previous && { ...previous, stage: '镜数与时长不合格，按清单重试一次' });
           setRetryNote(`第一次生成的剧本有 ${spec.issues.length} 项不合规，正在按违规清单自动重试一次。`);
           const retryPrompt = buildRetryPrompt(spec, draft.screenplay || '');
           const retryData = await callApi<GeneratedScreenplay>('screenplay', { ...auth, prompt: retryPrompt }, controller.signal);
@@ -152,8 +144,6 @@ function ScriptEditor({ project, navigate }: PageProps) {
         setSpecWarnings(spec.warnings);
         setRetryNote('自动重试一次后仍不合规，已经停下：不再自动循环，也不覆盖现有剧本。');
         setScreenplayDraft(draft.screenplay || '');
-        setProgress(undefined);
-        setConfirm(undefined);
         if (jobId) finishJob(jobId, 'failed');
         toast.error('剧本没有通过镜数与时长校验：现有剧本没有被覆盖，这一版放在下面的编辑器里（未保存），改完再保存。');
         return;
@@ -165,8 +155,6 @@ function ScriptEditor({ project, navigate }: PageProps) {
       setScreenplayDraft(draft.screenplay || '');
       setScreenplaySaved(draft.screenplay || '');
       if (jobId) finishJob(jobId, 'done');
-      setProgress(undefined);
-      setConfirm(undefined);
       toast.success(task.kind === 'ai' ? '剧本已生成，请审核剧本内容；下一步用大模型把剧本结构化成镜头。' : '模板剧本已建立（非AI生成），请继续编辑。');
       if (draft.assets.length) {
         const count = { character: 0, scene: 0, prop: 0 } as Record<string, number>;
@@ -177,9 +165,8 @@ function ScriptEditor({ project, navigate }: PageProps) {
       }
     } catch (error) {
       if (jobId) finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
-      setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
-      setProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
-    } finally { setBusy(false); abortRef.current = undefined; }
+      toast.error(controller.signal.aborted ? '取消只停止等待，服务商可能已受理并计费。' : errorMessage(error));
+    } finally { setBusy(false); }
   };
   const readImport = async (file?: File) => {
     if (!file) return;
@@ -255,7 +242,7 @@ function ScriptEditor({ project, navigate }: PageProps) {
       <details className="panel"><summary><strong>高级：提示词与规则</strong><span className="small muted"> · 所选 Skill 会写入对应生成任务的完整提示词</span></summary><div className="grid-2" style={{ marginTop: 12 }}>{skills.map(skill => <label className="panel row skill-option" key={skill.id}><input type="checkbox" checked={project.skills.includes(skill.id)} onChange={e => change({ skills: e.target.checked ? [...project.skills, skill.id] : project.skills.filter(id => id !== skill.id) })} /><span><strong>{skill.name}</strong><small className="muted">{skill.description}</small></span></label>)}</div><div className="toolbar" style={{ marginTop: 12 }}><Button variant="outline" onClick={() => { location.hash = '/settings/templates?kind=script&scope=project'; }}>编辑提示词模板</Button></div></details>
       {!hasShotSpecBlock && <div className="alert">当前剧本模板里没有「镜数与时长（硬性）」条款块，生成出来的剧本大概率过不了「{SHOT_SPEC_TEXT}」的校验。<Button variant="ghost" onClick={() => { location.hash = `/settings/templates?kind=script&scope=${ownsKind(project, 'script') ? 'project' : 'global'}`; }}>去模板编辑器补上</Button></div>}
       {!keys[settings.scriptProvider] && <div className="alert">{settings.scriptProvider ? '尚未配置剧本 API Key。' : '还没有可用的剧本端点，请到设置页添加或恢复一个。'}可以前往设置，或主动使用不联网的「模板演练」。模板不是 AI 生成。<Button variant="ghost" onClick={() => navigate('settings')}>前往设置</Button></div>}
-      <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={busy || sourceMode} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
+      <div className="toolbar"><Button disabled={busy} variant={keys[settings.scriptProvider] ? 'default' : 'outline'} onClick={() => prepare('ai')}><Sparkles size={16} />{busy ? '正在生成…' : 'AI 生成剧本'}</Button><Button variant={keys[settings.scriptProvider] ? 'secondary' : 'default'} disabled={sourceMode} onClick={() => prepare('template')}>模板演练</Button><Button variant="outline" onClick={() => setImportOpen(true)}><FileText size={16} />导入剧本</Button></div>
     </section>
     <section className="panel stack">
       <div className="section-title"><div><h2>剧本</h2><p className="muted">{screenplayText.length} 字 · {sceneCount} 场{project.shots.length ? ' · 现有 ' + project.shots.length + ' 镜' : ''}</p></div><div className="row"><span className="tag">{sourceTag}</span></div></div>
@@ -275,8 +262,8 @@ function ScriptEditor({ project, navigate }: PageProps) {
       {tips.length > 0 && <section className="panel stack"><div className="section-title"><h3>建议核对</h3><span className="tag">{tips.length} 项</span></div><IssueList issues={tips} /></section>}
       <section className="panel stack"><Button variant="secondary" disabled={!screenplayText} onClick={confirmScript}>确认并进入下一步</Button><p className="small muted">这一步只写剧本。确认后进入「导演分镜」，由大模型按剧本内容结构化出镜头，镜数由模型决定。</p></section>
     </aside></div>
-    <Modal open={!!confirm} onClose={() => { if (!busy) { setConfirm(undefined); setFailure(undefined); setProgress(undefined); } }} title={confirm?.kind === 'ai' ? '确认完整剧本任务' : '确认模板演练'} description="确认后只替换剧本正文；已有资产不会被删除，固定短语与设定图原样保留。镜头在下一步「导演分镜」由大模型产出。">
-      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题写一份完整剧本，不拆镜头——镜头由下一步的「导演分镜」产出。'}</div><p>主题：{confirm.project.theme}<br />{confirm.project.scriptMode === 'source' ? '原文：' + (confirm.project.sourceText || '').length + ' 字（逐字忠于原文）<br />' : ''}风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：完整漫剧剧本（{SHOT_SPEC_TEXT}）</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词" hint="可直接修改，只影响本次请求；模板不会被改写。"><textarea rows={12} value={confirm.prompt} disabled={busy} onChange={e => setConfirm(previous => previous && { ...previous, prompt: e.target.value })} /></Field>}{confirm.kind === 'ai' && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirm(previous => previous && { ...previous, prompt: previous.defaultPrompt })}>恢复默认提示词</Button>}{progress && <ProgressPanel title={confirm.kind === 'ai' ? 'AI 生成剧本' : '模板演练'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={scriptSamples ? scriptAverage : undefined} detail={scriptSamples ? '正在等待模型返回' : '通常 20–60 秒（经验值）'} onCancel={busy && confirm.kind === 'ai' ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setConfirm(undefined); setFailure(undefined); setProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void generate()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy || (confirm.kind === 'ai' && !confirm.prompt.trim())} onClick={generate}>{busy ? '生成中，请勿重复提交…' : confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" onClick={() => { setConfirm(undefined); location.hash = '/settings/templates?kind=script&scope=project'; }}>编辑模板</Button><Button variant="ghost" disabled={busy} onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
+    <Modal open={!!confirm} onClose={() => setConfirm(undefined)} title={confirm?.kind === 'ai' ? '确认完整剧本任务' : '确认模板演练'} description="确认后只替换剧本正文；提交后可以关掉弹窗去做别的事，进度在右下角任务里。已有资产不会被删除，固定短语与设定图原样保留。镜头在下一步「导演分镜」由大模型产出。">
+      {confirm && <div className="stack"><div className="alert">{confirm.kind === 'ai' ? `服务：${confirm.provider} / ${confirm.model}。将发送以下完整提示词，可能产生服务商费用。` : '本操作只运行本机固定模板，不联网、不消耗额度，不是AI生成。将按主题写一份完整剧本，不拆镜头——镜头由下一步的「导演分镜」产出。'}</div><p>主题：{confirm.project.theme}<br />{confirm.project.scriptMode === 'source' ? '原文：' + (confirm.project.sourceText || '').length + ' 字（逐字忠于原文）<br />' : ''}风格：{confirm.project.style}<br />规则：{skills.filter(s => confirm.project.skills.includes(s.id)).map(s => s.name).join('、') || '不启用附加 Skill'}<br />目标：完整漫剧剧本（{SHOT_SPEC_TEXT}）</p>{confirm.kind === 'ai' && <Field label="即将发送的完整提示词" hint="可直接修改，只影响本次请求；模板不会被改写。"><textarea rows={12} value={confirm.prompt} onChange={e => setConfirm(previous => previous && { ...previous, prompt: e.target.value })} /></Field>}{confirm.kind === 'ai' && <Button variant="ghost" size="sm" onClick={() => setConfirm(previous => previous && { ...previous, prompt: previous.defaultPrompt })}>恢复默认提示词</Button>}<div className="toolbar"><Button disabled={confirm.kind === 'ai' && !confirm.prompt.trim()} onClick={generate}>{confirm.kind === 'ai' ? '确认发送并生成' : '建立模板草稿（非AI）'}</Button><Button variant="ghost" onClick={() => { setConfirm(undefined); location.hash = '/settings/templates?kind=script&scope=project'; }}>编辑模板</Button><Button variant="ghost" onClick={() => setConfirm(undefined)}>取消</Button></div></div>}
     </Modal>
     <Modal open={importOpen} onClose={() => setImportOpen(false)} title="导入剧本 · 先预览再保存" description="原文逐字完整保留，作为剧本正文存下。镜头不在这里拆——下一步「导演分镜」会用大模型按内容结构化，镜数由模型决定。">
       <div className="stack"><Field label="上传 UTF-8 的 .txt / .md 文件（≤2MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={e => { void readImport(e.target.files?.[0]); e.target.value = ''; }} /></Field><Field label="或粘贴原文"><textarea rows={8} value={importText} placeholder={'# 第一部分｜核心前提\n【核心前提】\n……\n\n# 第四部分｜标准漫剧剧本\n## 第一章  章名\n\n### 场景1 外景 · 地点 — 清晨\n**剧情：**……\n**人物：**角色A\n\n【镜头1：远景】（时长12s）\n△ 动作描写。\n\n角色A（情绪）：“台词。”'} onChange={e => { setImportText(e.target.value); setPreview(undefined); }} /></Field><Button variant="secondary" onClick={() => { try { const draft = parseScriptText(importText); setPreview({ draft, revision: project.revision, spec: validateScreenplayShots(draft.screenplay || '') }); } catch (error) { toast.error(errorMessage(error)); } }}>解析并预览</Button>

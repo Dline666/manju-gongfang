@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useRef, useState, type DragEvent } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronLeft, ChevronRight, Download, FileText, Play, Plus, Pencil, Trash2, Sparkles, Upload, Volume2, ImagePlus, Copy, X } from 'lucide-react';
-import { Button, Empty, ErrorNote, Field, Fold, HelpPopover, Modal, ProgressPanel, StatusChip, copyText, downloadBlob, errorAction, formatElapsed } from '../../components/Ui';
+import { Button, Empty, Field, Fold, HelpPopover, Modal, StatusChip, copyText, downloadBlob, formatElapsed } from '../../components/Ui';
 import { PageHeader } from '../../components/PageHeader';
 import SearchSelect from '../../components/SearchSelect';
 import { makeShot, uid, type Asset, type AssetKind, type PageProps, type Project, type PromptTemplateSet, type Shot } from '../../domain/types';
 import { getStudio, setAssetImage, setSettings, updateProject, useStudio } from '../../store/studio';
-import { averageDuration, durationSamples, finishJob, startJob, updateJob } from '../../store/jobs';
+import { finishJob, startJob, updateJob } from '../../store/jobs';
 import { putMedia, getMedia, blobDataUrl, useMediaUrl } from '../../store/media';
 import { ApiError, callApi, callBinary, credentials, errorMessage, supportsImageReference, type ImageRequest, type ImageResult } from '../../lib/api';
 import { extractCharactersPrompt, extractPropsPrompt, extractScenesPrompt, fixedDescription, imagePrompt, type ExtractCategory } from '../../lib/prompts';
@@ -15,6 +15,7 @@ import { endpointsFor, modelFor } from '../../lib/endpoints';
 import { effectiveStyle } from '../../lib/promptScope';
 import { runPool } from '../../lib/pool';
 import { assetShotIds, assetUsage, generatedImageBlob, linkSpeakersToCharacter, referenceAssetFor, removeAsset, splitFormName, validateImage } from './helpers';
+import { clearExtractionDraft, getExtractionDraft, setExtractionDraft, useExtractionDraft } from './extraction';
 import { applyCategoryExtraction, extractLocalAssets, mergeDraftAssets } from '../script/creation';
 import { assetWarnings, validateAssetsStage, withConfirmation } from '../../domain/flow';
 
@@ -66,7 +67,7 @@ function Elapsed({ since }: { since?: number }) {
 
 function AssetImage({ asset, detail = false }: { asset: Asset; detail?: boolean }) {
   const url = useMediaUrl(asset.imageId);
-  return url ? <img className={detail ? 'media-detail-media' : 'compact-media-image'} src={url} alt={`${asset.name}的设定图`} /> : <span className="compact-media-placeholder muted">{asset.imageId ? '图片加载中；若持续为空，请重新上传本地素材。' : '未添加设定图'}</span>;
+  return url ? <img className={detail ? 'media-detail-media' : 'compact-media-image'} src={url} alt={`${asset.name}的设定图`} /> : <span className="compact-media-placeholder muted">{asset.imageId ? '图片加载中；若持续为空，请重新上传本地素材。' : '未添加设定图 · 待生成'}</span>;
 }
 /**
  * 资产表里的「参考图」格：默认留空，把其他资产的图片拖进来即挂载。
@@ -112,11 +113,7 @@ function AssetEditor({ project, navigate }: PageProps) {
   const [deleting, setDeleting] = useState<Asset>();
   const [removingImage, setRemovingImage] = useState<Asset>();
   const [pending, setPending] = useState<Pending>();
-  const [failure, setFailure] = useState<unknown>();
-  const [progress, setProgress] = useState<{ stage: string; startedAt: number }>();
-  const abortRef = useRef<AbortController | undefined>(undefined);
   const [batch, setBatch] = useState<BatchState>();
-  const batchAbort = useRef<AbortController | undefined>(undefined);
   const [batchPlan, setBatchPlan] = useState<{ assets: Asset[]; prompts: Record<string, string>; defaults: Record<string, string> }>();
   const [expandedForms, setExpandedForms] = useState<Set<string>>(new Set());
   const [openDesc, setOpenDesc] = useState<Set<string>>(new Set());
@@ -141,12 +138,13 @@ function AssetEditor({ project, navigate }: PageProps) {
   const assetTips = assetWarnings(project);
   const [extraction, setExtraction] = useState<{ kind: ExtractCategory; revision: number; prompt: string; defaultPrompt: string; provider: string; model: string }>();
   const [extracting, setExtracting] = useState(false);
-  const [extractionDraft, setExtractionDraft] = useState<{ assets: Asset[]; shots: Shot[]; warnings?: string[] }>();
-  const extractionScope = extractionDraft && extraction ? extractionDraft.assets.filter(asset => asset.kind === extraction.kind) : [];
-  const [extractProgress, setExtractProgress] = useState<{ stage: string; startedAt: number }>();
-  const [extractFailure, setExtractFailure] = useState<unknown>();
-  const extractAbort = useRef<AbortController | undefined>(undefined);
+  // 提取结果存在页面之外：任务跑完时页面可能已经切走，回来还能接着审核写入。
+  const extractionDraft = useExtractionDraft();
+  const extractionScope = extractionDraft ? extractionDraft.assets.filter(asset => asset.kind === extractionDraft.kind) : [];
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 单个生成任务正在处理哪个资产：只禁用那一行的「生成」，其它行照常操作。
+  const [busyAssetId, setBusyAssetId] = useState<string>();
   const [voicesBusy, setVoicesBusy] = useState(false);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>([]);
   const [speechText, setSpeechText] = useState('你好，很高兴与你一起开始这段故事。');
@@ -186,13 +184,13 @@ function AssetEditor({ project, navigate }: PageProps) {
   const upload = async (asset: Asset, file?: File) => {
     if (!file) return;
     const revision = project.revision;
-    setBusy(true);
+    setUploading(true);
     try {
       await validateImage(file); current(revision, asset.id);
       const imageId = await putMedia(file); current(revision, asset.id);
       patch(asset.id, { imageId }); toast.success('图片已保存在本地素材库，可在分镜页挂载。');
     } catch (error) { toast.error(errorMessage(error)); }
-    finally { setBusy(false); }
+    finally { setUploading(false); }
   };
   /**
    * 生成时读取该资产挂载的参考图来源（其他资产的当前设定图）。
@@ -220,13 +218,13 @@ function AssetEditor({ project, navigate }: PageProps) {
     }
   };
   const prepareImage = async (asset: Asset) => {
+    if (busy || batch?.running) { toast.error('还有生成任务没结束，请等它跑完再提交。'); return; }
     const provider = settings.imageProvider;
     const endpoint = settings.endpoints.find(item => item.id === provider);
     const providerName = endpoint?.name ?? '当前生图端点';
     if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
     if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
     if (!fixedDescription(asset).trim()) { toast.error('请先完善资产描述与固定短语。'); return; }
-    setFailure(undefined);
     const prompt = imagePrompt(project, asset, settings.promptTemplates);
     // 只有挂载了参考图的资产才读取参考图；没有挂载就是纯文本请求。
     const reference = await loadReference(asset, project.assets);
@@ -249,19 +247,21 @@ function AssetEditor({ project, navigate }: PageProps) {
     finally { setVoicesBusy(false); }
   };
   const prepareSpeech = (asset: Asset, local: boolean) => {
+    if (busy || batch?.running) { toast.error('还有生成任务没结束，请等它跑完再提交。'); return; }
     if (!local && !keys.minimax) { toast.error('请配置 MiniMax API Key，或选择明确标注的本机试听。'); return; }
     if (!local && !asset.voiceId) { toast.error('请先编辑并保存音色ID。'); return; }
-    setFailure(undefined);
     setPending({ kind: 'speech', asset: { ...asset }, revision: project.revision, model: settings.speechModel, local });
   };
   const execute = async () => {
-    if (!pending || busy) return;
+    if (!pending) return;
+    if (busy) { toast.error('上一个生成任务还没结束，请等它跑完再提交。'); return; }
     const task = pending;
     setBusy(true);
-    setFailure(undefined);
-    const controller = new AbortController(); abortRef.current = controller;
+    setBusyAssetId(task.asset.id);
+    // 提交后立刻关掉确认弹窗：进度看右下角任务托盘，页面其余操作不受影响。
+    setPending(undefined);
+    const controller = new AbortController();
     const jobId = startJob({ kind: task.kind, label: task.kind === 'image' ? `生成「${task.asset.name}」设定图` : `试听「${task.asset.name}」`, cancel: () => controller.abort() });
-    setProgress({ stage: task.kind === 'image' ? '提交图片任务' : task.local ? '本机试听' : '提交试听', startedAt: Date.now() });
     try {
       current(task.revision, task.asset.id);
       if (task.kind === 'image') {
@@ -269,10 +269,8 @@ function AssetEditor({ project, navigate }: PageProps) {
         const auth = credentials(task.provider, 'image');
         if (getStudio().settings.imageProvider !== task.provider || auth.model !== task.model) throw new Error('图片模型设置已改变，请重新确认。');
         updateJob(jobId, { detail: '生成图片中' });
-        setProgress(previous => previous && { ...previous, stage: '生成图片中' });
         const payload: ImageRequest = { ...auth, prompt: task.prompt, ...(task.reference ? { reference: task.reference } : {}) };
         const result = await callApi<ImageResult>('image', payload, controller.signal);
-        setProgress(previous => previous && { ...previous, stage: '保存图片' });
         current(task.revision, task.asset.id);
         const blob = await generatedImageBlob(result);
         const imageId = await putMedia(blob); current(task.revision, task.asset.id);
@@ -289,10 +287,8 @@ function AssetEditor({ project, navigate }: PageProps) {
           toast.info('正在使用系统声音试听，不代表服务商音色，也不能作为导出音轨。');
         } else {
           if (getStudio().settings.speechModel !== task.model) throw new Error('语音模型已改变，请重新确认。');
-          setProgress(previous => previous && { ...previous, stage: '合成语音' });
           const blob = await callBinary('speech', { ...credentials('minimax', 'speech'), model: task.model, text, voiceId: task.asset.voiceId, speed: task.asset.speed ?? 1 }, controller.signal);
           if (!blob.type.startsWith('audio/') || !blob.size) throw new Error('服务商没有返回有效音频。');
-          setProgress(previous => previous && { ...previous, stage: '保存音频' });
           current(task.revision, task.asset.id);
           const mediaId = await putMedia(blob); current(task.revision, task.asset.id);
           setPreviews(previous => ({ ...previous, [task.asset.id]: { mediaId, text } }));
@@ -300,23 +296,20 @@ function AssetEditor({ project, navigate }: PageProps) {
         }
       }
       finishJob(jobId, 'done');
-      setProgress(undefined);
-      setPending(undefined);
     } catch (error) {
       finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
-      setFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
-      setProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
+      toast.error(controller.signal.aborted ? '取消只停止等待，服务商可能已受理并计费。' : errorMessage(error));
     }
-    finally { setBusy(false); abortRef.current = undefined; }
+    finally { setBusy(false); setBusyAssetId(undefined); }
   };
   const prepareBatch = (assets: Asset[]) => {
     if (!assets.length) return;
+    if (busy) { toast.error('还有单个生成任务没结束，请等它跑完再提交批量。'); return; }
     const provider = settings.imageProvider;
     const providerName = settings.endpoints.find(endpoint => endpoint.id === provider)?.name ?? '当前生图端点';
     if (!provider) { toast.error('还没有可用的生图端点，请到设置页添加或恢复一个。'); navigate('settings'); return; }
     if (!keys[provider]) { toast.error(`请先在设置页填写 ${providerName} 的 API Key。`); navigate('settings'); return; }
     if (assets.some(asset => !fixedDescription(asset).trim())) { toast.error('请先完善资产描述与固定短语。'); return; }
-    setFailure(undefined);
     const defaults = Object.fromEntries(assets.map(asset => [asset.id, imagePrompt(project, asset, settings.promptTemplates)]));
     setBatchPlan({ assets: assets.map(asset => ({ ...asset })), prompts: { ...defaults }, defaults });
   };
@@ -329,7 +322,7 @@ function AssetEditor({ project, navigate }: PageProps) {
     const model = modelFor(settings, provider, 'image'); const concurrency = imageConcurrency(settings);
     const prepared = assets.map(asset => ({ id: asset.id, name: asset.name, prompt: prompts?.[asset.id] ?? imagePrompt(project, asset, settings.promptTemplates), hash: fixedHash(fixedDescription(asset)) }));
     if (prepared.some(item => !item.prompt.trim())) { toast.error('提示词不能为空：请在模板编辑器里补充内容后再生成。'); return; }
-    const controller = new AbortController(); batchAbort.current = controller;
+    const controller = new AbortController();
     const jobId = startJob({ kind: 'image', label: `批量生成 ${prepared.length} 张设定图`, cancel: () => controller.abort() });
     setBatch({ items: prepared.map(item => ({ id: item.id, name: item.name, status: 'queued' })), startedAt: Date.now(), running: true, prompts: Object.fromEntries(prepared.map(item => [item.id, item.prompt])) });
     const mark = (id: string, patch: Partial<BatchItem>) => setBatch(previous => previous && { ...previous, items: previous.items.map(entry => entry.id === id ? { ...entry, ...patch } : entry) });
@@ -365,8 +358,6 @@ function AssetEditor({ project, navigate }: PageProps) {
       setBatch(previous => previous && { ...previous, running: false });
       finishJob(jobId, 'failed');
       toast.error(errorMessage(error));
-    } finally {
-      batchAbort.current = undefined;
     }
   };
   const confirmAssets = (goNext = false) => {
@@ -380,50 +371,49 @@ function AssetEditor({ project, navigate }: PageProps) {
   const prepareExtraction = (kind: ExtractCategory) => {
     try {
       if (!project.shots.length) { toast.error('请先完成剧本，再提取资产。'); return; }
+      if (getExtractionDraft()) { toast.error('上一次提取结果还没处理：请先写入资产库或丢弃，再重新提取。'); return; }
       const auth = credentials(settings.scriptProvider, 'script');
       const prompt = extractPromptFor(kind, project, settings.promptTemplates);
       if (prompt.length > 32_000) throw new Error('剧本过长，请精简后再提取；现有资产未修改。');
       setExtraction({ kind, revision: project.revision, prompt, defaultPrompt: prompt, provider: settings.scriptProvider, model: auth.model });
-      setExtractionDraft(undefined); setExtractFailure(undefined); setExtractProgress(undefined);
     } catch (error) { toast.error(errorMessage(error)); }
   };
   const runExtraction = async () => {
     if (!extraction || extracting) return;
     const task = extraction;
     if (!task.prompt.trim()) { toast.error('提示词不能为空：请在模板编辑器里添加内容。'); return; }
-    setExtracting(true); setExtractFailure(undefined);
-    const controller = new AbortController(); extractAbort.current = controller;
+    setExtracting(true);
+    const controller = new AbortController();
     const jobId = startJob({ kind: 'storyboard', label: `提取${extractKindLabel(task.kind)}资产`, cancel: () => controller.abort() });
-    setExtractProgress({ stage: '提交任务', startedAt: Date.now() });
+    // 提交后立刻关掉确认弹窗：进度看右下角任务托盘，跑完的结果留在资产页待审核。
+    setExtraction(undefined);
     try {
       const auth = credentials(task.provider, 'script');
       const live = getStudio().projects.find(p => p.id === project.id);
       if (!live || live.revision !== task.revision) throw new Error('剧本或资产已修改，请重新确认提取。');
       if (auth.model !== task.model) throw new Error('模型设置已改变，请重新确认提取。');
       updateJob(jobId, { detail: '模型生成中' });
-      setExtractProgress(previous => previous && { ...previous, stage: '模型生成中' });
       const result = await callApi<unknown>(extractActionFor(task.kind), { ...auth, prompt: task.prompt }, controller.signal);
-      setExtractProgress(previous => previous && { ...previous, stage: '校验结构' });
       const current = getStudio().projects.find(p => p.id === project.id);
       if (!current || current.revision !== task.revision) throw new Error('项目已修改或删除，提取结果未覆盖现有内容。');
       const draft = applyCategoryExtraction(current, result, task.kind);
-      setExtractionDraft(draft);
-      finishJob(jobId, 'done'); setExtractProgress(undefined);
+      setExtractionDraft({ kind: task.kind, revision: task.revision, ...draft });
+      finishJob(jobId, 'done');
+      toast.success(`已提取${extractKindLabel(task.kind)}资产，请审核结果后写入资产库。`);
     } catch (error) {
       finishJob(jobId, controller.signal.aborted ? 'canceled' : 'failed', error instanceof ApiError ? error.code : undefined);
-      setExtractFailure(controller.signal.aborted ? new Error('取消只停止等待，服务商可能已受理并计费。') : error);
-      setExtractProgress(previous => previous && { ...previous, stage: controller.signal.aborted ? '已取消' : '失败' });
-    } finally { setExtracting(false); extractAbort.current = undefined; }
+      toast.error(controller.signal.aborted ? '取消只停止等待，服务商可能已受理并计费。' : errorMessage(error));
+    } finally { setExtracting(false); }
   };
   const saveExtraction = () => {
-    if (!extractionDraft || !extraction) return;
+    if (!extractionDraft) return;
     const live = getStudio().projects.find(p => p.id === project.id);
-    if (!live || live.revision !== extraction.revision) { toast.error('剧本或资产已修改，本次提取结果未写入。'); setExtractionDraft(undefined); return; }
+    if (!live || live.revision !== extractionDraft.revision) { toast.error('剧本或资产已修改，本次提取结果未写入。'); clearExtractionDraft(); return; }
     updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: extractionDraft.assets, shots: extractionDraft.shots }), true);
-    const scope = extractionDraft.assets.filter(asset => asset.kind === extraction.kind);
+    const scope = extractionDraft.assets.filter(asset => asset.kind === extractionDraft.kind);
     const added = scope.filter(asset => !project.assets.some(old => old.id === asset.id)).length;
-    toast.success(`已写入 ${added} 项新${extractKindLabel(extraction.kind)}资产，其余沿用原有固定短语。`);
-    setExtraction(undefined); setExtractionDraft(undefined);
+    toast.success(`已写入 ${added} 项新${extractKindLabel(extractionDraft.kind)}资产，其余沿用原有固定短语。`);
+    clearExtractionDraft();
   };
   const parseAssetImport = () => {
     const text = importText.trim();
@@ -463,12 +453,6 @@ function AssetEditor({ project, navigate }: PageProps) {
     else toast.success(`已导入 ${saved} 张设定图。`);
   };
   const visible = project.assets.filter(a => a.kind === kind);
-  const imageSamples = durationSamples('image');
-  const imageAverage = averageDuration('image');
-  const imageRemaining = imageSamples >= 2 && imageAverage ? Math.max(5000, Math.round(imageAverage / 5000) * 5000) : undefined;
-  const speechSamples = durationSamples('speech');
-  const speechAverage = averageDuration('speech');
-  const speechRemaining = speechSamples >= 2 && speechAverage ? Math.max(5000, Math.round(speechAverage / 5000) * 5000) : undefined;
   const missing = visible.filter(asset => !asset.imageId);
   const kindName = kinds.find(k => k.id === kind)?.name ?? '资产';
   const assetLabel = kind === 'character' ? '角色' : kindName;
@@ -486,13 +470,12 @@ function AssetEditor({ project, navigate }: PageProps) {
         name: `${baseInfo.base} · 新形态`,
         description: `${prefix}新形态：保持五官、发型与配色一致，需要变化的部分：`,
         lock: base.lock || seed,
-        imageId: base.imageId,
         voiceAssetId: base.voiceAssetId,
         referenceAssetId: base.imageId ? base.id : undefined,
       },
       revision: project.revision, isNew: true,
     });
-    if (base.imageId) toast.info('新形态已继承当前设定图与固定短语，并把基础形态的当前设定图挂为参考图；可在表格「参考图」格里换成其他资产。');
+    if (base.imageId) toast.info('新形态已沿用固定短语，并把基础形态的当前设定图挂为参考图；图片位置留空，点生成后再出图。');
   };
   const exportAssets = () => {
     const rows = groups.flatMap(group => [group.base, ...group.forms]);
@@ -513,8 +496,6 @@ function AssetEditor({ project, navigate }: PageProps) {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [focused?.id, visible.map(asset => asset.id).join('|')]);
-  const batchDone = batch?.items.filter(item => item.status === 'done').length ?? 0;
-  const batchFailedCount = batch?.items.filter(item => item.status === 'failed').length ?? 0;
   const batchFailed = batch?.items.filter(item => item.status === 'failed').map(item => project.assets.find(asset => asset.id === item.id)).filter((asset): asset is Asset => !!asset) ?? [];
   const imageChannel = settings.endpoints.find(endpoint => endpoint.id === settings.imageProvider)?.name ?? '未选择端点';
   const imageModel = modelFor(settings, settings.imageProvider, 'image');
@@ -524,6 +505,8 @@ function AssetEditor({ project, navigate }: PageProps) {
     const isOpen = expandedForms.has(group.key);
     const usages = assetUsage(project, asset.id);
     const descOpen = openDesc.has(asset.id);
+    // 只锁正在处理的那一行：单个任务或批量里正在跑的这张图。
+    const rowBusy = busyAssetId === asset.id || (!!batch?.running && batch.items.some(item => item.id === asset.id && (item.status === 'queued' || item.status === 'running')));
     return <tr className={`asset-row ${isBase ? '' : 'is-form'}`.trim()} key={asset.id}>
       <td className="asset-form-cell"><div className="asset-form">
         {isBase && group.forms.length > 0 ? <button type="button" className="form-toggle" aria-expanded={isOpen} aria-label={`${isOpen ? '收起' : '展开'}${group.key}的形态`} onClick={() => toggleForm(group.key)}><ChevronRight size={14} /></button> : <span className="form-toggle-space" />}
@@ -551,9 +534,9 @@ function AssetEditor({ project, navigate }: PageProps) {
       <td>{asset.kind === 'voice' ? <span className="muted">—</span> : <button type="button" className="asset-table-thumb" aria-label={`查看${asset.name}图片`} draggable={!!asset.imageId} onDragStart={event => { if (!asset.imageId) { event.preventDefault(); return; } event.dataTransfer.setData(ASSET_DRAG_TYPE, asset.id); event.dataTransfer.effectAllowed = 'copy'; }} onClick={() => setFocusedId(asset.id)}><AssetImage asset={asset} /></button>}</td>
       <td><div className="asset-row-actions">
         {asset.kind === 'voice' ? <>
-          <Button variant="ghost" size="sm" aria-label={`API试听${asset.name}`} disabled={busy} onClick={() => prepareSpeech(asset, false)}><Volume2 size={14} /></Button>
-          <Button variant="ghost" size="sm" aria-label={`本机试听${asset.name}`} disabled={busy} onClick={() => prepareSpeech(asset, true)}><Play size={14} /></Button>
-        </> : <Button variant="ghost" size="sm" aria-label={`生成${asset.name}图片`} disabled={busy} onClick={() => { void prepareImage(asset); }}><Sparkles size={14} /></Button>}
+          <Button variant="ghost" size="sm" aria-label={`API试听${asset.name}`} disabled={rowBusy} onClick={() => prepareSpeech(asset, false)}><Volume2 size={14} /></Button>
+          <Button variant="ghost" size="sm" aria-label={`本机试听${asset.name}`} disabled={rowBusy} onClick={() => prepareSpeech(asset, true)}><Play size={14} /></Button>
+        </> : <Button variant="ghost" size="sm" aria-label={`生成${asset.name}图片`} disabled={rowBusy} onClick={() => { void prepareImage(asset); }}><Sparkles size={14} /></Button>}
         {isBase && asset.kind !== 'voice' && <Button variant="ghost" size="sm" aria-label={`为${group.key}新增形态`} onClick={() => addForm(group.base)}><Plus size={14} /></Button>}
         <Button variant="ghost" size="sm" aria-label={`编辑${asset.name}`} onClick={() => edit(asset)}><Pencil size={14} /></Button>
         <Button variant="ghost" size="sm" aria-label={`删除${asset.name}`} onClick={() => setDeleting(asset)}><Trash2 size={14} /></Button>
@@ -574,7 +557,7 @@ function AssetEditor({ project, navigate }: PageProps) {
       {kind === 'voice' && <Button variant="ghost" disabled={voicesBusy} onClick={loadVoices}>{voicesBusy ? '正在获取…' : '获取 MiniMax 音色库'}</Button>}
       {kind === 'voice' && <Button variant="ghost" onClick={() => navigate('settings')}>设置语音服务</Button>}
       {kind === 'voice' && <Button variant="ghost" onClick={() => { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); }}>停止本机试听</Button>}
-      {kind !== 'voice' && <SearchSelect label="生图模型" disabled={busy} value={`${settings.imageProvider}:${imageModel}`} onChange={value => { const cut = value.indexOf(':'); const provider = value.slice(0, cut); const model = value.slice(cut + 1); setSettings({ ...settings, imageProvider: provider, models: { ...settings.models, [provider]: { ...settings.models[provider], image: model } } }); }} options={endpointsFor(settings, 'image').flatMap(endpoint => modelOptions(settings, endpoint.id, 'image').map(option => ({ value: `${endpoint.id}:${option.id}`, label: option.name, hint: `${option.id} · ${option.description}`, group: endpoint.name })))} />}
+      {kind !== 'voice' && <SearchSelect label="生图模型" value={`${settings.imageProvider}:${imageModel}`} onChange={value => { const cut = value.indexOf(':'); const provider = value.slice(0, cut); const model = value.slice(cut + 1); setSettings({ ...settings, imageProvider: provider, models: { ...settings.models, [provider]: { ...settings.models[provider], image: model } } }); }} options={endpointsFor(settings, 'image').flatMap(endpoint => modelOptions(settings, endpoint.id, 'image').map(option => ({ value: `${endpoint.id}:${option.id}`, label: option.name, hint: `${option.id} · ${option.description}`, group: endpoint.name })))} />}
       {kind !== 'voice' && <HelpPopover label="生图模型说明" title="生图模型与渠道"><p>选择的厂商和模型会随确认任务实际提交。Seedream 需要火山方舟 Key，试用额度由服务商决定。</p><p className="mt-2">当前生图渠道：{imageChannel} · {imageModel}。免费兜底暂未配置，失败不会自动切换到其他收费渠道。</p></HelpPopover>}
       {kind !== 'voice' && <div className="asset-concurrency"><span className="small muted">并发数</span><select aria-label="并发数" value={imageConcurrency(settings)} onChange={event => setSettings({ ...settings, imageConcurrency: Number(event.target.value) })}>{[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value}</option>)}</select></div>}
     </div>
@@ -590,6 +573,13 @@ function AssetEditor({ project, navigate }: PageProps) {
       <div className="row wrap">{extractKinds.map(item => <Button key={item.id} variant="secondary" disabled={!project.shots.length || extracting} onClick={() => prepareExtraction(item.id)}><Sparkles size={16} />AI 提取{item.label}（先确认）</Button>)}<HelpPopover title="提取规则"><p>读取分镜的 {project.shots.length} 个镜头，提取人物、场景、道具与逐镜关联。只提取、不重写剧情、对白与时长。</p><p className="mt-2">三类分开识别，各用各的提示词、各自一次调用：人物看说话人与台词，场景按空间归组，道具只看动作摘要。已有资产的固定短语原样保留（逐字沿用）；只有仍是空白的占位人物才会被补全。提取结果必须先预览再写入。</p></HelpPopover></div>
       <p className="small muted">{project.shots.length ? `将读取 ${project.shots.length} 镜 · ${settings.scriptProvider === 'gemini' ? 'Gemini' : 'DeepSeek'} ${settings.models[settings.scriptProvider]}` : '请先在「导演分镜」步骤用大模型把剧本结构化成镜头'}</p>
     </Fold>
+    {extractionDraft && <section className="panel stack" aria-label="提取结果待写入">
+      <div className="section-title"><h3>提取结果预览 · {extractKindLabel(extractionDraft.kind)}</h3><span className="tag">{extractionScope.length} 项资产</span></div>
+      {(extractionDraft.warnings ?? []).map(note => <p className="small" key={note}>{note}</p>)}
+      {extractionScope.map(asset => <p key={asset.id}><strong>{kinds.find(k => k.id === asset.kind)?.name}「{asset.name}」</strong>：{asset.lock || asset.description}{project.assets.some(old => old.id === asset.id) ? '（沿用）' : '（新增）'}</p>)}
+      <p className="small muted">写入后需要人工审核固定短语，并逐镜确认关联。本次只写入{extractKindLabel(extractionDraft.kind)}资产，其它两类不受影响。</p>
+      <div className="toolbar"><Button onClick={saveExtraction}>确认写入资产库</Button><Button variant="ghost" onClick={clearExtractionDraft}>丢弃这次结果</Button></div>
+    </section>}
     {focused && <Modal wide open onClose={() => setFocusedId(undefined)} title={`${focused.name} · 资产详情`} description="查看完整设定、固定短语与关联镜头，或管理设定图。"><div className="stack media-detail">
       <div className="row between"><span className="small muted">{focusIndex + 1} / {visible.length} · {kinds.find(k => k.id === focused.kind)?.name}</span><div className="row"><Button variant="ghost" aria-label="上一张" disabled={visible.length < 2} onClick={() => moveFocus(-1)}><ChevronLeft size={16} />上一张</Button><Button variant="ghost" aria-label="下一张" disabled={visible.length < 2} onClick={() => moveFocus(1)}>下一张<ChevronRight size={16} /></Button></div></div>
       <div className="lightbox">
@@ -602,15 +592,15 @@ function AssetEditor({ project, navigate }: PageProps) {
           {focused.kind === 'character' && <p className="muted">角色音色：{project.assets.find(a => a.id === focused.voiceAssetId)?.name || '未关联'}</p>}
           <Field label="完整图片提示词"><textarea rows={6} readOnly value={imagePrompt(project, focused, settings.promptTemplates)} /></Field>
           <div className="generation-actions"><Button variant="secondary" onClick={() => copyText(focused.description)}><Copy size={14} />复制描述</Button><Button variant="secondary" onClick={() => copyText(fixedDescription(focused))}><Copy size={14} />复制固定短语</Button><Button variant="secondary" onClick={() => copyText(imagePrompt(project, focused, settings.promptTemplates))}><Copy size={14} />复制图片提示词</Button></div>
-          <Field label="上传设定图（PNG / JPEG / WebP，≤5MB）"><input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e => { void upload(focused, e.target.files?.[0]); e.target.value = ''; }} /></Field>
-          <div className="toolbar"><Button variant="secondary" disabled={busy} onClick={() => { setFocusedId(undefined); void prepareImage(focused); }}><Sparkles size={16} />生成设定图</Button>{focused.imageId && <Button variant="ghost" disabled={busy} onClick={() => { setFocusedId(undefined); setRemovingImage(focused); }}><ImagePlus size={16} />移除图片</Button>}</div>
+          <Field label="上传设定图（PNG / JPEG / WebP，≤5MB）"><input type="file" accept="image/png,image/jpeg,image/webp" disabled={uploading} onChange={e => { void upload(focused, e.target.files?.[0]); e.target.value = ''; }} /></Field>
+          <div className="toolbar"><Button variant="secondary" onClick={() => { setFocusedId(undefined); void prepareImage(focused); }}><Sparkles size={16} />生成设定图</Button>{focused.imageId && <Button variant="ghost" onClick={() => { setFocusedId(undefined); setRemovingImage(focused); }}><ImagePlus size={16} />移除图片</Button>}</div>
           <div className="toolbar"><Button variant="outline" aria-label={`${focused.locked ? '解锁并编辑' : '编辑'}${focused.name}`} onClick={() => { setFocusedId(undefined); edit(focused); }}><Pencil size={16} />{focused.locked ? '解锁并编辑' : '编辑资产'}</Button><Button variant="ghost" aria-label={`删除${focused.name}`} onClick={() => { setFocusedId(undefined); setDeleting(focused); }}><Trash2 size={16} />删除资产</Button></div>
         </div>
       </div>
     </div></Modal>}
     <div className="toolbar"><Button variant="outline" onClick={() => navigate('director')}>返回导演分镜</Button><Button onClick={() => confirmAssets(true)}>确认并进入下一步</Button></div>
-    <Modal open={!!extraction} onClose={() => { if (!extracting) { setExtraction(undefined); setExtractionDraft(undefined); setExtractFailure(undefined); setExtractProgress(undefined); } }} title={`确认 AI 提取${extraction ? extractKindLabel(extraction.kind) : ''}资产`} description="只从现有剧本提取本类资产与逐镜关联，不重写剧情。确认后调用付费剧本模型；结果仍需预览再写入。">
-      {extraction && <div className="stack"><p>{extraction.provider} · {extraction.model} · {project.shots.length} 镜</p><Field label={`即将发送的${extractKindLabel(extraction.kind)}提取提示词`} hint="可直接修改，只影响本次请求；模板不会被改写。"><textarea rows={12} value={extraction.prompt} disabled={extracting} onChange={e => setExtraction(previous => previous && { ...previous, prompt: e.target.value })} /></Field><Button variant="ghost" size="sm" disabled={extracting} onClick={() => setExtraction(previous => previous && { ...previous, prompt: previous.defaultPrompt })}>恢复默认提示词</Button>{extractProgress && <ProgressPanel title={`AI 提取${extractKindLabel(extraction.kind)}资产`} stage={extractProgress.stage} startedAt={extractProgress.startedAt} detail="服务商不返回进度，按已用时等待" onCancel={extracting ? () => extractAbort.current?.abort() : undefined} cancelLabel="取消等待" />}{extractFailure !== undefined && <ErrorNote error={extractFailure} action={errorAction(extractFailure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setExtraction(undefined); setExtractFailure(undefined); setExtractProgress(undefined); navigate('settings'); }}>去设置</Button> : errorAction(extractFailure) === 'retry' ? <Button variant="secondary" size="sm" disabled={extracting} onClick={() => void runExtraction()}>重试</Button> : undefined} />}{extractionDraft && <div className="panel stack"><div className="section-title"><h3>提取结果预览 · {extractKindLabel(extraction.kind)}</h3><span className="tag">{extractionScope.length} 项资产</span></div>{(extractionDraft.warnings ?? []).map(note => <p className="small" key={note}>{note}</p>)}{extractionScope.map(asset => <p key={asset.id}><strong>{kinds.find(k => k.id === asset.kind)?.name}「{asset.name}」</strong>：{asset.lock || asset.description}{project.assets.some(old => old.id === asset.id) ? '（沿用）' : '（新增）'}</p>)}<p className="small muted">写入后需要人工审核固定短语，并逐镜确认关联。本次只写入{extractKindLabel(extraction.kind)}资产，其它两类不受影响。</p><div className="toolbar"><Button onClick={saveExtraction}>确认写入资产库</Button><Button variant="ghost" onClick={() => setExtractionDraft(undefined)}>重新提取</Button></div></div>}{!extractionDraft && <div className="toolbar"><Button disabled={extracting || !extraction.prompt.trim()} onClick={() => void runExtraction()}>{extracting ? '正在提取…' : `确认发送并提取${extractKindLabel(extraction.kind)}资产`}</Button><Button variant="ghost" disabled={extracting} onClick={() => { setExtraction(undefined); setExtractProgress(undefined); }}>取消</Button></div>}</div>}
+    <Modal open={!!extraction} onClose={() => { if (!extracting) setExtraction(undefined); }} title={`确认 AI 提取${extraction ? extractKindLabel(extraction.kind) : ''}资产`} description="只从现有剧本提取本类资产与逐镜关联，不重写剧情。提交后可以关掉弹窗去做别的事：进度在右下角任务里，结果跑完回来审核。">
+      {extraction && <div className="stack"><p>{extraction.provider} · {extraction.model} · {project.shots.length} 镜</p><Field label={`即将发送的${extractKindLabel(extraction.kind)}提取提示词`} hint="可直接修改，只影响本次请求；模板不会被改写。"><textarea rows={12} value={extraction.prompt} disabled={extracting} onChange={e => setExtraction(previous => previous && { ...previous, prompt: e.target.value })} /></Field><Button variant="ghost" size="sm" disabled={extracting} onClick={() => setExtraction(previous => previous && { ...previous, prompt: previous.defaultPrompt })}>恢复默认提示词</Button><div className="toolbar"><Button disabled={extracting || !extraction.prompt.trim()} onClick={() => void runExtraction()}>{extracting ? '正在提取…' : `确认发送并提取${extractKindLabel(extraction.kind)}资产`}</Button><Button variant="ghost" disabled={extracting} onClick={() => setExtraction(undefined)}>取消</Button></div></div>}
     </Modal>
     <Modal open={importOpen} onClose={() => { setImportOpen(false); setImportPreview(undefined); }} title="批量导入资产" description="每行一条：类型：名称：描述。支持人物 / 场景 / 道具，先预览再写入。">
       <div className="stack"><Field label="粘贴资产清单"><textarea rows={6} value={importText} placeholder={'人物：阿青：十六岁少年，黑短发，青色布衣\n场景：山门：黑色石阶，薄雾\n道具：断剑：红绳剑柄，斜断口'} onChange={e => { setImportText(e.target.value); setImportPreview(undefined); }} /></Field><Field label="或上传 UTF-8 的 .txt / .md（≤1MB）"><input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={async e => { const file = e.target.files?.[0]; e.target.value = ''; if (!file) return; try { if (file.size > 1024 * 1024) throw new Error('清单文件请小于1MB。'); setImportText(await file.text()); setImportPreview(undefined); } catch (error) { toast.error(errorMessage(error)); } }} /></Field><div className="toolbar"><Button variant="secondary" onClick={parseAssetImport}>解析并预览</Button><Button variant="ghost" onClick={() => { setImportOpen(false); setImportPreview(undefined); }}>取消</Button></div>{importPreview && <div className="stack"><p className="small muted">共 {importPreview.assets.length} 项：新增 {importPreview.added}，沿用 {importPreview.reused}。</p><div className="stack">{importPreview.assets.map(asset => <div className="row between" key={asset.id}><span>{kinds.find(k => k.id === asset.kind)?.name}「{asset.name}」</span><StatusChip tone={project.assets.some(old => old.id === asset.id) ? 'neutral' : 'success'}>{project.assets.some(old => old.id === asset.id) ? '沿用' : '新增'}</StatusChip></div>)}</div><Button onClick={saveAssetImport}>确认导入</Button></div>}</div>
@@ -629,11 +619,11 @@ function AssetEditor({ project, navigate }: PageProps) {
         <div className="toolbar"><Button disabled={batchPlan.assets.some(asset => !batchPlan.prompts[asset.id]?.trim())} onClick={() => { const plan = batchPlan; setBatchPlan(undefined); void executeBatch(plan.assets, plan.prompts); }}>确认并开始生成（{batchPlan.assets.length}）</Button><Button variant="ghost" onClick={() => setBatchPlan(undefined)}>取消</Button></div>
       </div>}
     </Modal>
-    <Modal open={!!batch} onClose={() => { if (!batch?.running) setBatch(undefined); }} title="批量生成设定图" description="每张图独立提交，单张失败不影响其他。取消只停止等待，服务商可能已受理并计费。">
+    <Modal open={!!batch} onClose={() => setBatch(undefined)} title="批量生成设定图" description="每张图独立提交，单张失败不影响其他。进度在右下角任务里，关闭这个窗口不影响生成；取消请用任务里的取消。">
       {batch && <div className="stack">
-        <ProgressPanel title={`生图并发 ${imageConcurrency(settings)}`} stage={batch.running ? '生成中' : '已结束'} startedAt={batch.startedAt} done={batchDone} total={batch.items.length} failed={batchFailedCount} detail="取消只停止等待，服务商可能已受理并计费。" onCancel={batch.running ? () => batchAbort.current?.abort() : undefined} cancelLabel="全部取消" />
+        <p className="small muted">{batch.running ? `生成中 · 并发 ${imageConcurrency(settings)} · 可以关掉这个窗口去做别的事` : '已结束'}</p>
         <div className="stack">{batch.items.map(item => <div className="stack" key={item.id}><div className="row between"><span>{item.name}</span><span className="row"><Elapsed since={item.status === 'running' ? item.startedAt : undefined} /><StatusChip tone={batchTones[item.status]}>{batchLabels[item.status]}</StatusChip></span></div>{item.status === 'failed' && <span className="small muted">{errorMessage(item.error)}</span>}</div>)}</div>
-        <div className="toolbar">{!batch.running && batchFailed.length > 0 && <Button variant="secondary" onClick={() => void executeBatch(batchFailed, batch.prompts)}>重试失败项（{batchFailed.length}）</Button>}<Button variant="ghost" disabled={batch.running} onClick={() => setBatch(undefined)}>关闭</Button></div>
+        <div className="toolbar">{!batch.running && batchFailed.length > 0 && <Button variant="secondary" onClick={() => void executeBatch(batchFailed, batch.prompts)}>重试失败项（{batchFailed.length}）</Button>}<Button variant="ghost" onClick={() => setBatch(undefined)}>关闭</Button></div>
       </div>}
     </Modal>
     <Modal open={!!editing} onClose={() => setEditing(undefined)} title={`${editing?.isNew ? '新建' : '编辑'}${kinds.find(k => k.id === editing?.asset.kind)?.name || '资产'}`} description="保存后会使相关下游制作结果标为待更新。固定短语会原样用于后续生成。">
@@ -646,8 +636,8 @@ function AssetEditor({ project, navigate }: PageProps) {
     </Modal>
     <Modal open={!!deleting} onClose={() => setDeleting(undefined)} title={`删除「${deleting?.name || ''}」？`} description="会解除镜头资产、参考图、台词说话者和人物音色关联。台词文字保留，但需重新选择人物。此操作不能撤销。"><div className="stack"><p>引用位置：{deleting ? assetUsage(project, deleting.id).join('、') || '未被引用' : ''}</p><div className="toolbar"><Button onClick={() => { if (deleting) updateProject(project.id, p => removeAsset(p, deleting.id), true); setDeleting(undefined); }}>确认删除并解除关联</Button><Button variant="ghost" onClick={() => setDeleting(undefined)}>取消</Button></div></div></Modal>
     <Modal open={!!removingImage} onClose={() => setRemovingImage(undefined)} title="移除图片及引用？" description="保留资产文字设定，但解除所有镜头对此图片的参考附件关联。"><div className="toolbar"><Button onClick={() => { if (removingImage) updateProject(project.id, p => ({ ...p, storyboardReady: false, assets: p.assets.map(a => a.id === removingImage.id ? { ...a, imageId: undefined } : a), shots: p.shots.map(s => ({ ...s, references: s.references.filter(r => r.assetId !== removingImage.id) })) }), true); setRemovingImage(undefined); }}>确认移除图片</Button><Button variant="ghost" onClick={() => setRemovingImage(undefined)}>取消</Button></div></Modal>
-    <Modal open={!!pending} onClose={() => { if (!busy) { setPending(undefined); setFailure(undefined); setProgress(undefined); } }} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。'}>
-      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.providerName} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p>{pending.reference ? <div className="reference-preview"><img src={pending.reference} alt={`参考图来源「${pending.referenceName}」的当前设定图`} /><p className="small muted">「{pending.referenceName}」的当前设定图将作为本次生成的参考图发送。</p>{!supportsImageReference(pending.provider, pending.model) && <p className="small">当前渠道不支持参考图：提交会被拒绝，请先换用支持图生图的端点或模型。</p>}</div> : pending.referenceWarning ? <div className="alert" role="alert">{pending.referenceWarning}</div> : null}<Field label="即将发送的完整图片提示词" hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={12} value={pending.prompt} disabled={busy} onChange={e => setPending(previous => previous && { ...previous, prompt: e.target.value })} /></Field>{pending.prompt !== pending.defaultPrompt && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setPending(previous => previous && previous.kind === 'image' ? { ...previous, prompt: previous.defaultPrompt } : previous)}>恢复默认提示词</Button>}</> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} disabled={busy} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}{progress && <ProgressPanel title={pending.kind === 'image' ? '生成设定图' : '试听'} stage={progress.stage} startedAt={progress.startedAt} remainingMs={pending.kind === 'image' ? imageRemaining : speechRemaining} detail={pending.kind === 'image' ? '服务商不返回进度，按已用时等待' : '服务商不返回进度'} onCancel={busy ? () => abortRef.current?.abort() : undefined} cancelLabel="取消等待" />}{failure !== undefined && <ErrorNote error={failure} action={errorAction(failure) === 'settings' ? <Button variant="secondary" size="sm" onClick={() => { setPending(undefined); setFailure(undefined); navigate('settings'); }}>去设置</Button> : errorAction(failure) === 'retry' ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void execute()}>重试</Button> : undefined} />}<div className="toolbar"><Button disabled={busy} onClick={execute}>{busy ? '处理中，请勿重复提交…' : pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button>{pending.kind === 'image' && <Button variant="ghost" onClick={() => { setPending(undefined); location.hash = `/settings/templates?kind=image&sub=${pending.asset.kind === 'voice' ? 'character' : pending.asset.kind}&scope=project`; }}>编辑模板</Button>}<Button variant="ghost" disabled={busy} onClick={() => setPending(undefined)}>取消</Button></div></div>}
+    <Modal open={!!pending} onClose={() => setPending(undefined)} title={pending?.kind === 'image' ? '确认图片生成任务' : '确认试听短句'} description={pending?.kind === 'speech' && pending.local ? '仅使用本机系统声音，不代表MiniMax音色，不会生成或保存可导出音轨。提交后可以关掉弹窗，进度在右下角任务里。' : '确认后才会请求服务商，可能产生费用。请检查模型、内容与目标资产。提交后可以关掉弹窗去做别的事。'}>
+      {pending && <div className="stack"><p>资产：{pending.asset.name}</p>{pending.kind === 'image' ? <><p>服务：{pending.providerName} · {pending.model}。生成后替换当前设定图，原引用会使用新图。</p>{pending.reference ? <div className="reference-preview"><img src={pending.reference} alt={`参考图来源「${pending.referenceName}」的当前设定图`} /><p className="small muted">「{pending.referenceName}」的当前设定图将作为本次生成的参考图发送。</p>{!supportsImageReference(pending.provider, pending.model) && <p className="small">当前渠道不支持参考图：提交会被拒绝，请先换用支持图生图的端点或模型。</p>}</div> : pending.referenceWarning ? <div className="alert" role="alert">{pending.referenceWarning}</div> : null}<Field label="即将发送的完整图片提示词" hint="可直接修改，只影响本次请求；模板与资产固定短语不会被改写。"><textarea rows={12} value={pending.prompt} onChange={e => setPending(previous => previous && { ...previous, prompt: e.target.value })} /></Field>{pending.prompt !== pending.defaultPrompt && <Button variant="ghost" size="sm" onClick={() => setPending(previous => previous && previous.kind === 'image' ? { ...previous, prompt: previous.defaultPrompt } : previous)}>恢复默认提示词</Button>}</> : <><p>{pending.local ? '本机 speechSynthesis 系统语音' : `MiniMax · ${pending.model} · 音色ID ${pending.asset.voiceId}`}<br />语速：{pending.asset.speed ?? 1}×</p><Field label="试听短句（1–120字）"><textarea rows={3} maxLength={120} value={speechText} onChange={e => setSpeechText(e.target.value)} /></Field><p className="muted">{speechText.length} / 120 字。试听不创建镜头配音轨。</p></>}<div className="toolbar"><Button onClick={execute}>{pending.kind === 'image' ? '确认发送并生成图片' : pending.local ? '确认本机试听' : '确认付费 API 试听'}</Button>{pending.kind === 'image' && <Button variant="ghost" onClick={() => { setPending(undefined); location.hash = `/settings/templates?kind=image&sub=${pending.asset.kind === 'voice' ? 'character' : pending.asset.kind}&scope=project`; }}>编辑模板</Button>}<Button variant="ghost" onClick={() => setPending(undefined)}>取消</Button></div></div>}
     </Modal>
   </div>;
 }
