@@ -22,6 +22,7 @@ const messages: Record<string, string> = {
   invalid_screenplay: '剧本结构或时长不符合要求（需要四部分结构、每个动作与对白块都标注【镜头】和时长），请修改主题或原文后重新生成。',
   invalid_director: '导演分镜结构不完整，请检查后重试，或改用本地补全。',
   invalid_assets: '资产提取结果或逐镜关联不完整，现有剧本与资产未被修改。',
+  invalid_chat: '模型这次没有返回可用文本（可能被内容策略拦截或输出被截断）。请改一句说法再试，这次不计入作品内容。',
   submission_unknown: '未收到服务商明确结果，请先检查已有任务，避免重复付费。',
   media_unavailable: '暂时无法下载这段素材，请从原平台下载后重新导入。',
   invalid_input: '请求参数不符合模型要求，请检查时长、模型和参考图。',

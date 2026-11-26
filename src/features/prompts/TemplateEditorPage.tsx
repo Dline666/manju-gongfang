@@ -7,9 +7,10 @@ import { findUnknownVariables } from '../../lib/promptTemplates';
 import { KIND_LABELS, PROMPT_KINDS, builtinBlocksFor, dataSourcesFor, factoryBlockText, findSkill, skillsForKind, type ExtractCategory } from '../../lib/promptBlocks';
 import { builtinSkillText, skills as builtinSkillList } from '../../lib/skills';
 import { directorSpec, extractCharactersSpec, extractPropsSpec, extractScenesSpec, imageSpec, scriptSpec, videoSpec } from '../../lib/prompts';
-import { overridesOf } from '../../lib/promptScope';
-import { setSettings, updateProject, useStudio } from '../../store/studio';
+import { overridesOf, type PromptOwner } from '../../lib/promptScope';
+import { setSettings, updateSeries, useStudio } from '../../store/studio';
 import { makeShot, uid, defaultPromptTemplates, type Asset, type Project, type PromptBlockPlan, type PromptKindId, type PromptTemplatePlan, type PromptTemplateSet, type SkillSpec, type StyleSpec } from '../../domain/types';
+import type { Series } from '../../domain/series';
 
 const styleLabels: Record<'medium' | 'line' | 'palette' | 'face' | 'light', string> = {
   medium: '介质', line: '线条', palette: '配色', face: '面部渲染', light: '光线',
@@ -89,7 +90,8 @@ const cloneSkills = (skills: SkillSpec[] | undefined): SkillSpec[] => (skills ??
  * 模板里只有用户写的块，作品数据由系统在渲染时固定附带，不在这里编辑。
  */
 export default function TemplateEditorPage({ project, initialScope = 'global', initialKind = 'script', initialSub }: {
-  project?: Project; initialScope?: TemplateScope; initialKind?: TemplateTab; initialSub?: string;
+  /** 系列（作品）才是模板覆盖层的归属者：一个系列的所有集共用一份覆盖。 */
+  project?: Series; initialScope?: TemplateScope; initialKind?: TemplateTab; initialSub?: string;
 }) {
   const state = useStudio();
   const settings = state.settings;
@@ -117,7 +119,7 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
       style: overrides && 'style' in overrides ? cleanStyle(overrides.style) : undefined,
       templates: cloneTemplates(overrides?.templates),
     });
-  }, [project?.id, project?.revision]);
+  }, [project?.id, project?.updatedAt]);
 
   const subs = SUB_TABS[tab];
   const subId = subs ? (subs.some(item => item.id === sub[tab]) ? sub[tab] : subs[0].id) : '';
@@ -152,9 +154,19 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     return count;
   }, [tab, scope, globalDraft, projectDraft, savedGlobal]);
 
-  const sampleProject = useMemo<Project>(() => project ?? {
-    id: 'preview-project', name: '示例作品', theme: '示例主题', style: '东方玄幻水墨风，冷灰 + 金色灵光',
-    createdAt: '', updatedAt: '', revision: 0, skills: ['script'], shots: [], assets: [], source: 'empty', storyboardReady: false,
+  // 预览样本：系列本身没有镜头与资产，取它的第一集来拼预览；
+  // 覆盖层仍然来自系列（这才是保存的落点）。
+  const sampleProject = useMemo<Project>(() => {
+    const first = project?.episodes[0];
+    return {
+      id: project?.id ?? 'preview-project',
+      name: project?.name ?? '示例作品',
+      theme: first?.theme || '示例主题',
+      style: project?.style || '东方玄幻水墨风，冷灰 + 金色灵光',
+      createdAt: project?.createdAt ?? '', updatedAt: project?.updatedAt ?? '', revision: first?.revision ?? 0,
+      skills: first?.skills ?? ['script'], shots: first?.shots ?? [], assets: first?.assets ?? [],
+      source: first?.source ?? 'empty', storyboardReady: first?.storyboardReady ?? false,
+    };
   }, [project]);
   const previewProject = useMemo<Project>(() => {
     if (scope === 'global') return { ...sampleProject, promptConfig: undefined };
@@ -164,8 +176,10 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   }, [scope, sampleProject, projectDraft]);
   const previewGlobal = scope === 'global' ? globalDraft : savedGlobal;
   const imageCategory = (tab === 'image' ? subId : 'character') as 'character' | 'scene' | 'prop';
-  const imageAsset = useMemo<Asset>(() => project?.assets.find(asset => asset.kind === imageCategory) ?? IMAGE_SAMPLES[imageCategory], [project?.assets, imageCategory]);
-  const previewShot = useMemo(() => project?.shots[0] ?? { ...makeShot(1), visual: '示例画面：人物走上石阶', start: '示例开场', action: '示例动作', end: '示例终点' }, [project?.shots]);
+  const sampleAssets = project?.episodes[0]?.assets;
+  const sampleShots = project?.episodes[0]?.shots;
+  const imageAsset = useMemo<Asset>(() => sampleAssets?.find(asset => asset.kind === imageCategory) ?? IMAGE_SAMPLES[imageCategory], [sampleAssets, imageCategory]);
+  const previewShot = useMemo(() => sampleShots?.[0] ?? { ...makeShot(1), visual: '示例画面：人物走上石阶', start: '示例开场', action: '示例动作', end: '示例终点' }, [sampleShots]);
 
   const previewSpecs = useMemo(() => {
     // 资产三类与设定图三类各看各的：当前在看哪个板块，就只预览那一个
@@ -246,13 +260,18 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     const kinds = skill.kinds.includes(target) ? skill.kinds.filter(item => item !== target) : [...skill.kinds, target];
     updateSkill(id, { kinds });
   };
-  // ── 内置 Skill：正文可改副本，改坏了能恢复出厂文案 ──
+  // ── 内置 Skill：正文可改副本，改坏了能恢复出厂文案；也能临时关掉（不删除） ──
   const builtinOverrides = globalDraft.builtinSkills ?? {};
+  const disabledBuiltins = globalDraft.disabledBuiltinSkills ?? [];
   const updateBuiltinSkill = (id: string, text: string | undefined) => setGlobalDraft(previous => {
     const builtinSkills = { ...(previous.builtinSkills ?? {}) };
     if (text === undefined) delete builtinSkills[id];
     else builtinSkills[id] = text;
     return { ...previous, builtinSkills };
+  });
+  const toggleBuiltinSkill = (id: string) => setGlobalDraft(previous => {
+    const disabled = previous.disabledBuiltinSkills ?? [];
+    return { ...previous, disabledBuiltinSkills: disabled.includes(id) ? disabled.filter(item => item !== id) : [...disabled, id] };
   });
   const insertBuiltin = () => {
     const found = builtinBlocksFor(kind).find(item => item.id === builtinChoice);
@@ -306,17 +325,21 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
     setProjectDraft(previous => { const next = { ...previous }; delete next.style; return next; });
     toast.success('风格设定已恢复跟随全局模板。');
   };
-  /** 把这部作品自己管的模板一次性提到全局，方便从旧作品迁到新结构。 */
+  /** 把本系列自己管的模板一次性提到全局，方便从旧作品迁到新结构。 */
   const promoteToGlobal = () => {
     if (!project) return;
     const own = overridesOf(project);
-    if (!own || (!own.templates && !own.style)) { toast.error('本作品还没有独立管理的模板。'); return; }
-    if (!window.confirm('把本作品独立管理的模板复制为全局默认？全局改动会影响所有跟随全局的作品，本作品已有的覆盖层不受影响。')) return;
+    if (!own || (!own.templates && !own.style)) { toast.error('本系列还没有独立管理的模板。'); return; }
+    if (!window.confirm('把本系列独立管理的模板复制为全局默认？全局改动会影响所有跟随全局的系列，本系列已有的覆盖层不受影响。')) return;
     setSettings({
       ...settings,
       promptTemplates: {
+        // 只覆盖「这一步归本系列管」的部分，全局的 Skill 库、内置 Skill 正文与开关原样留住。
         style: own.style ?? savedGlobal?.style,
         templates: { ...(savedGlobal?.templates ?? {}), ...cloneTemplates(own.templates) },
+        skills: savedGlobal?.skills,
+        builtinSkills: savedGlobal?.builtinSkills,
+        disabledBuiltinSkills: savedGlobal?.disabledBuiltinSkills,
       },
     });
     toast.success('已复制为全局默认模板。');
@@ -325,15 +348,15 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   const save = () => {
     if (blockingIssues.length || overLimit) return;
     if (scope === 'global') {
-      setSettings({ ...settings, promptTemplates: { style: cleanStyle(draft.style), templates: cloneTemplates(draft.templates), skills: cloneSkills(globalDraft.skills), builtinSkills: { ...(globalDraft.builtinSkills ?? {}) } } });
+      setSettings({ ...settings, promptTemplates: { style: cleanStyle(draft.style), templates: cloneTemplates(draft.templates), skills: cloneSkills(globalDraft.skills), builtinSkills: { ...(globalDraft.builtinSkills ?? {}) }, disabledBuiltinSkills: [...(globalDraft.disabledBuiltinSkills ?? [])] } });
       toast.success('全局模板、Skill 库与内置 Skill 已保存，所有跟随全局的作品立即生效。');
       return;
     }
     if (!project) return;
     const overrides: PromptTemplateSet = { templates: cloneTemplates(draft.templates) };
     if (draft.style) overrides.style = draft.style;
-    updateProject(project.id, { promptConfig: { v: 3, overrides } }, false);
-    toast.success('本作品的模板覆盖已保存。');
+    updateSeries(project.id, { promptConfig: { v: 3, overrides } });
+    toast.success('本系列的模板覆盖已保存。');
   };
 
   const builtinOptions = builtinBlocksFor(kind).filter(item => !blocks.some(block => block.id === item.id));
@@ -433,20 +456,30 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
             {findUnknownVariables(skill.template).length > 0 && <small className="text-[#e88b93]">未知变量：{findUnknownVariables(skill.template).map(item => `{{${item}}}`).join('、')}</small>}
           </section>)}
           <section className="panel stack">
-            <div className="section-title"><h3>内置 Skill</h3><span className="small muted">系统自带的 4 份配方，正文可以直接改；改坏了能一键恢复出厂文案</span></div>
+            <div className="section-title"><h3>内置 Skill</h3><span className="small muted">系统自带的 {builtinSkillList.length} 份配方，正文可以直接改；改坏了能一键恢复出厂文案，也能临时关掉（不删除）</span></div>
             {scope === 'project' && <p className="small muted">内置 Skill 是全局的，所有作品共用。切到「全局模板（默认）」里管理。</p>}
             {builtinSkillList.map(skill => {
               const override = builtinOverrides[skill.id];
               const current = override ?? builtinSkillText(skill.id);
               const changed = override !== undefined && override !== builtinSkillText(skill.id);
-              return <section className="panel stack" key={skill.id}>
+              const off = disabledBuiltins.includes(skill.id);
+              return <section className={`panel stack${off ? ' is-off' : ''}`} key={skill.id}>
                 <div className="section-title skill-head">
                   <strong>{skill.name}</strong>
                   <span className="small muted">{skill.description}</span>
+                  {skill.required && <span className="tag">必需 · 影响分镜 JSON 导入</span>}
                   {changed && <span className="tag">已修改</span>}
+                  {off && <span className="tag subtle">已关闭</span>}
                   <Button variant="ghost" size="sm" aria-label={`恢复默认 ${skill.name}`} disabled={scope !== 'global' || !changed} onClick={() => updateBuiltinSkill(skill.id, undefined)}>恢复默认</Button>
+                  <Button
+                    variant="ghost" size="sm"
+                    aria-label={`${off ? '重新启用' : '关闭'} ${skill.name}`}
+                    disabled={scope !== 'global' || skill.required}
+                    title={skill.required ? '这份 Skill 决定分镜 JSON 能不能导进来，不能关闭' : undefined}
+                    onClick={() => toggleBuiltinSkill(skill.id)}
+                  >{off ? '重新启用' : '关闭'}</Button>
                 </div>
-                <Field label="正文" hint="作品页勾选这个 Skill 时，这段正文会一起发给模型。">
+                <Field label="正文" hint={skill.required ? '聊天室里选它时，这段正文会一起发给模型；关闭会破坏导入格式，所以不允许关闭。' : '在聊天室里选它时，这段正文会一起发给模型。'}>
                   <textarea rows={5} value={current} disabled={scope !== 'global'} onChange={event => updateBuiltinSkill(skill.id, event.target.value)} />
                 </Field>
               </section>;

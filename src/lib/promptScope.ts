@@ -3,9 +3,12 @@
 // 没有的键跟随全局模板，两边都没有就是空（只剩系统自动附带的作品数据）。
 import type { PromptBlockPlan, PromptConfigV3, PromptKindId, PromptTemplateSet, Project, StyleSpec } from '../domain/types';
 
-/** 作品自己的覆盖层（只有 v3 才有覆盖层）。 */
-export function overridesOf(project: Project): PromptTemplateSet | undefined {
-  const config = project.promptConfig;
+/** 只要求「能提供提示词覆盖层」：旧的作品与新的系列都满足。 */
+export type PromptOwner = { promptConfig?: Project['promptConfig'] };
+
+/** 作品（现在可以是系列）自己的覆盖层（只有 v3 才有覆盖层）。 */
+export function overridesOf(owner: PromptOwner): PromptTemplateSet | undefined {
+  const config = owner.promptConfig;
   return config?.v === 3 ? config.overrides : undefined;
 }
 
@@ -24,18 +27,18 @@ export function visibleBlocks(blocks: PromptBlockPlan[]): PromptBlockPlan[] {
 }
 
 /** 本作品在这一步是不是自己管的。 */
-export function ownsKind(project: Project, kind: PromptKindId): boolean {
+export function ownsKind(project: PromptOwner, kind: PromptKindId): boolean {
   return overridesOf(project)?.templates?.[kind] !== undefined;
 }
 
 /** 本作品的风格是不是自己管的。 */
-export function ownsStyle(project: Project): boolean {
+export function ownsStyle(project: PromptOwner): boolean {
   const overrides = overridesOf(project);
   return !!overrides && 'style' in overrides;
 }
 
 /** 生效的块计划：作品覆盖优先，其次全局，最后空。 */
-export function effectivePlan(project: Project, kind: PromptKindId, global?: PromptTemplateSet): PromptBlockPlan[] {
+export function effectivePlan(project: PromptOwner, kind: PromptKindId, global?: PromptTemplateSet): PromptBlockPlan[] {
   const own = overridesOf(project)?.templates?.[kind];
   if (own) return visibleBlocks(own.blocks ?? []);
   const shared = global?.templates?.[kind];
@@ -44,7 +47,7 @@ export function effectivePlan(project: Project, kind: PromptKindId, global?: Pro
 }
 
 /** 生效的风格：作品覆盖优先，其次全局，最后空（系统不预置任何画风文案）。 */
-export function effectiveStyle(project: Project, global?: PromptTemplateSet): StyleSpec {
+export function effectiveStyle(project: PromptOwner, global?: PromptTemplateSet): StyleSpec {
   const overrides = overridesOf(project);
   if (overrides && 'style' in overrides) return overrides.style ?? {};
   if (global?.style) return global.style;
@@ -56,7 +59,7 @@ export function effectiveStyle(project: Project, global?: PromptTemplateSet): St
  * 规则跟块计划一样：作品覆盖层里有这一步就归作品管（选没选 Skill 都算作品的意思），
  * 没有的键跟随全局模板，两边都没选就没有 Skill。
  */
-export function effectiveSkillId(project: Project, kind: PromptKindId, global?: PromptTemplateSet): string | undefined {
+export function effectiveSkillId(project: PromptOwner, kind: PromptKindId, global?: PromptTemplateSet): string | undefined {
   const own = overridesOf(project)?.templates?.[kind];
   if (own) return own.skill;
   const shared = global?.templates?.[kind];
@@ -65,7 +68,7 @@ export function effectiveSkillId(project: Project, kind: PromptKindId, global?: 
 }
 
 /** 整份生效的模板：作品覆盖的 kind 盖住全局，其余沿用全局。 */
-export function effectiveTemplateSet(project: Project, global?: PromptTemplateSet): PromptTemplateSet {
+export function effectiveTemplateSet(project: PromptOwner, global?: PromptTemplateSet): PromptTemplateSet {
   const overrides = overridesOf(project);
   return {
     style: effectiveStyle(project, global),

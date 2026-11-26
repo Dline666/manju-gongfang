@@ -1,25 +1,128 @@
 import { useState } from 'react';
-import { ArrowUpRight, Plus, Copy, Pencil, Trash2, Film, Clock3, Sparkles, ArrowRight, BookOpen, Shapes, Clapperboard } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Clapperboard, Film, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { createProject, deleteProject, duplicateProject, projectProgress, selectProject, updateProject, useStudio } from '../../store/studio';
-import { getVideo, releaseVideos, setVideo, useMediaUrl } from '../../store/media';
-import { Button, Field, Modal } from '../../components/Ui';
-import type { Project, Stage } from '../../domain/types';
-function ProjectCard({ project, onOpen, onRename, onDelete }: { project: Project; onOpen: () => void; onRename: () => void; onDelete: () => void }) {
-  const cover = useMediaUrl(project.assets.find(a => a.imageId)?.imageId);
-  const progress = projectProgress(project);
-  function copy() { const duplicated = duplicateProject(project.id); if (duplicated) project.shots.forEach((s, index) => { const video = getVideo(project.id, s.id); if (video) setVideo(duplicated.id, duplicated.shots[index].id, video.blob); }); toast.success('作品已复制，副本可以独立编辑'); }
-  return <article className="project-card"><button className="project-cover" onClick={onOpen} aria-label={`打开 ${project.name}`}>{cover ? <img src={cover} alt="作品资产预览"/> : <><Film size={38} strokeWidth={1}/><span>你的故事，正在成形</span></>}<span className="cover-badge">{project.source === 'template' ? '模板演练' : progress === 100 ? '素材已齐' : '创作中'}</span><span className="cover-arrow"><ArrowUpRight size={20}/></span></button><div className="project-info"><button className="text-button project-title" onClick={onOpen}>{project.name}</button><p className="muted truncate">{project.theme || '还没有填写主题'}</p><div className="row between small muted"><span><Clock3 size={13}/> {new Date(project.updatedAt).toLocaleDateString('zh-CN')}</span><span>{progress}%</span></div><div className="progress-track"><span style={{width: `${progress}%`}}/></div><div className="row between card-bottom"><span className="small muted">{project.shots.length} 个镜头 · {project.shots.reduce((a,s)=>a+s.duration,0)} 秒</span><div className="row tight"><button className="icon-button" title="重命名" aria-label={`重命名 ${project.name}`} onClick={onRename}><Pencil size={15}/></button><button className="icon-button" title="复制作品" aria-label={`复制 ${project.name}`} onClick={copy}><Copy size={15}/></button><button className="icon-button" title="删除作品" aria-label={`删除 ${project.name}`} onClick={onDelete}><Trash2 size={15}/></button></div></div></div></article>;
-}
-export default function ProjectsPage({ navigate }: { navigate: (stage: Stage) => void }) {
-  const { projects } = useStudio(); const [theme, setTheme] = useState('');
-  const [dialog, setDialog] = useState<'new' | 'rename' | 'delete' | null>(null); const [selected, setSelected] = useState<Project>(); const [name, setName] = useState('');
-  function start() { if (!theme.trim()) { setDialog('new'); setName(''); return; } const p = createProject(theme.trim().slice(0,18),theme.trim()); selectProject(p.id); navigate('script'); }
-  const steps = [{icon: BookOpen, name:'写剧本',text:'一句话，展开你的故事'}, {icon:Shapes,name:'拆镜头',text:'把剧本变成可拍的镜头'}, {icon:Clapperboard,name:'建资产',text:'让人物与世界保持一致'}, {icon:Film,name:'出视频',text:'配上声音，故事就此上映'}];
-  return <div className="stack library-page"><div className="page-heading"><div><h1>好故事，从一个念头开始<span className="accent">。</span></h1><p className="muted">不用学专业软件，把你的灵感一步步变成漫剧。</p></div></div>
-    <section className="idea-panel"><div className="row"><span className="spark-badge"><Sparkles size={18}/></span><h2>今天，想讲一个什么故事？</h2></div><textarea className="idea-input" aria-label="一句话故事主题" placeholder="例如：玄幻修仙，少年碎灵后捡到一把断剑……" value={theme} onChange={e=>setTheme(e.target.value)} maxLength={2000}/><div className="row between wrap"><div className="row wrap"><span className="tag"><span className="gold-dot"/>东方玄幻水墨</span><span className="tag">完整漫剧剧本 · 逐镜分镜</span></div><Button onClick={start} className="primary-action">开始创作 <ArrowRight size={17}/></Button></div></section>
-    {!projects.length && <div className="workflow-overview">{steps.map((step,index)=><div className="workflow-card" key={step.name}><div className="workflow-icon"><step.icon size={21} strokeWidth={1.5}/></div><div><span className="small muted">0{index+1}</span><h3>{step.name}</h3><p>{step.text}</p></div>{index<3&&<ArrowRight size={15} className="flow-arrow"/>}</div>)}</div>}
-    <section><div className="section-title"><div className="row"><h2>我的作品</h2><span className="count-badge">{projects.length}</span></div><Button variant="ghost" onClick={()=>{setName('');setDialog('new');}}><Plus size={16}/> 新建作品</Button></div><div className="project-grid"><button className="new-project-card" onClick={()=>{setName('');setDialog('new');}}><span className="new-project-icon"><Plus size={26}/></span><strong>创建你的第一部{projects.length ? '新' : ''}作品</strong><span>一个灵感，就是故事的开始</span><span className="new-project-bottom">新建空白作品 <ArrowUpRight size={15}/></span></button>{projects.map(project=><ProjectCard key={project.id} project={project} onOpen={()=>{selectProject(project.id);navigate('script');}} onRename={()=>{setSelected(project);setName(project.name);setDialog('rename');}} onDelete={()=>{setSelected(project);setDialog('delete');}}/>)}</div></section>
-    <Modal open={!!dialog} onClose={()=>setDialog(null)} title={dialog==='delete'?'删除作品':dialog==='rename'?'重命名作品':'新建作品'} description={dialog==='delete'?'只删除此浏览器中的作品，不会取消已提交给模型的任务。此操作无法撤销。':'给你的故事起个名字，之后随时可以修改。'}>{dialog==='delete'?<><p>确定删除「{selected?.name}」？</p><div className="row end"><Button variant="secondary" onClick={()=>setDialog(null)}>保留作品</Button><Button variant="destructive" onClick={()=>{if(selected){deleteProject(selected.id);releaseVideos(selected.id);}setDialog(null);}}>确认删除</Button></div></>:<form className="stack" onSubmit={e=>{e.preventDefault();if(!name.trim())return;if(dialog==='rename'&&selected)updateProject(selected.id,{name:name.trim()});else {createProject(name.trim(),theme.trim());navigate('script');}setDialog(null);}}><Field label="作品名称"><input autoFocus value={name} onChange={e=>setName(e.target.value)} maxLength={60} placeholder="给这个故事一个名字" required/></Field><Button type="submit">{dialog==='rename'?'保存名称':'进入创作'}</Button></form>}</Modal>
+import type { Series } from '../../domain/series';
+import { EPISODE_STATUS_LABEL, episodeStatus, episodeDuration } from '../../domain/series';
+import { addEpisode, createSeries, deleteSeries, selectSeries, useStudio } from '../../store/studio';
+import { releaseVideos, useMediaUrl } from '../../store/media';
+import { Button, Empty, Field, Modal, StatusChip } from '../../components/Ui';
+
+/**
+ * 作品集：作品 = 系列，系列下是集数。
+ *
+ * 这一页只做两件事：把系列摆清楚、把某一集送进分镜表。
+ * 资产不在这里管——资产属于每一集，在剧集页的「剧集资产」里。
+ */
+export default function ProjectsPage({ navigate }: { navigate: (route: string) => void }) {
+  const { series } = useStudio();
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState('');
+  const [deleting, setDeleting] = useState<Series>();
+  const [addingTo, setAddingTo] = useState<Series>();
+  const [episodeTitle, setEpisodeTitle] = useState('');
+
+  const sorted = [...series].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  function start() {
+    const created = createSeries(name.trim() || '未命名系列');
+    selectSeries(created.id);
+    setName('');
+    setCreating(false);
+    navigate(`library/${created.id}`);
+  }
+
+  return <div className="stack library-page">
+    <header className="page-heading">
+      <div className="page-heading-title">
+        <h1>作品集<span className="accent">。</span></h1>
+        <p className="muted">一个作品是一部系列，系列下按集排。每一集各自有剧本、分镜和资产。</p>
+      </div>
+      <Button onClick={() => { setName(''); setCreating(true); }}><Plus size={16} /> 新建系列</Button>
+    </header>
+
+    {sorted.length === 0
+      ? <Empty title="还没有作品" text="新建一个系列，再到聊天室写第一集的小说。">
+        <Button onClick={() => { setName(''); setCreating(true); }}><Plus size={16} /> 新建系列</Button>
+      </Empty>
+      : <div className="series-grid">{sorted.map(item => <SeriesCard key={item.id} series={item}
+          onOpen={() => { selectSeries(item.id); navigate(`library/${item.id}`); }}
+          onDelete={() => setDeleting(item)} />)}</div>}
+
+    <Modal open={creating} onClose={() => setCreating(false)} title="新建系列" description="系列定画幅与分辨率，之后每一集都沿用。">
+      <form className="stack" onSubmit={event => { event.preventDefault(); start(); }}>
+        <Field label="系列名称" hint="例如：断剑归门。之后可以改。">
+          <input autoFocus value={name} maxLength={60} onChange={event => setName(event.target.value)} placeholder="给这部系列起个名字" />
+        </Field>
+        <p className="small muted">新建时会自动建好第 1 集。画幅默认 9:16、分辨率 720p，可在系列页改。</p>
+        <div className="row end">
+          <Button type="button" variant="secondary" onClick={() => setCreating(false)}>取消</Button>
+          <Button type="submit">创建并打开</Button>
+        </div>
+      </form>
+    </Modal>
+
+    <Modal open={!!deleting} onClose={() => setDeleting(undefined)} title="删除系列" description="只删除此浏览器中的这整部系列，包含它所有的集数、分镜与资产。此操作无法撤销。">
+      <p>确定删除「{deleting?.name}」？它的 {deleting?.episodes.length} 集内容都会一起消失。</p>
+      <div className="row end">
+        <Button variant="secondary" onClick={() => setDeleting(undefined)}>保留</Button>
+        <Button variant="destructive" onClick={() => {
+          if (!deleting) return;
+          for (const episode of deleting.episodes) releaseVideos(episode.id);
+          deleteSeries(deleting.id);
+          setDeleting(undefined);
+          toast.success('系列已删除');
+        }}>确认删除</Button>
+      </div>
+    </Modal>
+
+    <Modal open={!!addingTo} onClose={() => setAddingTo(undefined)} title="新增集数" description="新集会顺延集号，不会复用已删掉的号。">
+      <form className="stack" onSubmit={event => {
+        event.preventDefault();
+        if (!addingTo) return;
+        const episode = addEpisode(addingTo.id, episodeTitle.trim());
+        setAddingTo(undefined);
+        setEpisodeTitle('');
+        if (episode) { toast.success(`已新增第${episode.number}集`); navigate(`library/${addingTo.id}/${episode.id}`); }
+      }}>
+        <Field label="集标题" hint="可留空，之后在分镜表顶栏改。">
+          <input autoFocus value={episodeTitle} maxLength={60} onChange={event => setEpisodeTitle(event.target.value)} placeholder="例如：雪夜归人" />
+        </Field>
+        <div className="row end">
+          <Button type="button" variant="secondary" onClick={() => setAddingTo(undefined)}>取消</Button>
+          <Button type="submit">新增集数</Button>
+        </div>
+      </form>
+    </Modal>
   </div>;
 }
+
+function SeriesCard({ series, onOpen, onDelete }: { series: Series; onOpen: () => void; onDelete: () => void }) {
+  const cover = useMediaUrl(series.episodes.flatMap(episode => episode.assets).find(asset => asset.imageId)?.imageId);
+  const shots = series.episodes.reduce((total, episode) => total + episode.shots.length, 0);
+  const seconds = series.episodes.reduce((total, episode) => total + episodeDuration(episode), 0);
+  const generated = series.episodes.filter(episode => episodeStatus(episode) === 'generated').length;
+  return <article className="series-card">
+    <button className="project-cover" onClick={onOpen} aria-label={`打开系列 ${series.name}`}>
+      {cover ? <img src={cover} alt="系列资产预览" /> : <><Film size={38} strokeWidth={1} /><span>你的故事，正在成形</span></>}
+      <span className="cover-badge">{generated > 0 ? `${generated} 集已生成` : shots > 0 ? `${shots} 个镜头` : '待起步'}</span>
+      <span className="cover-arrow"><ArrowUpRight size={20} /></span>
+    </button>
+    <div className="project-info">
+      <button className="text-button project-title" onClick={onOpen} title={series.name}>{series.name}</button>
+      <p className="small muted">{series.aspect} · {series.resolution} · {series.episodes.length} 集</p>
+      <div className="row between small muted">
+        <span><Clapperboard size={13} /> {shots} 个镜头</span>
+        <span>{seconds > 0 ? `${Math.round(seconds)} 秒` : '尚无分镜'}</span>
+      </div>
+      <div className="row between card-bottom">
+        <span className="small muted">{new Date(series.updatedAt).toLocaleDateString('zh-CN')}</span>
+        <div className="row tight">
+          <button className="icon-button" title="删除系列" aria-label={`删除系列 ${series.name}`} onClick={onDelete}><Trash2 size={15} /></button>
+          <Button variant="ghost" size="sm" onClick={onOpen}>打开 <ArrowRight size={14} /></Button>
+        </div>
+      </div>
+    </div>
+  </article>;
+}
+
+export { EPISODE_STATUS_LABEL, StatusChip };

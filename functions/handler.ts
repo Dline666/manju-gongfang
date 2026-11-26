@@ -39,6 +39,7 @@ const MEDIA_HOSTS: Record<VideoProvider, readonly string[]> = {
 };
 const ACTION_FIELDS: Record<string, readonly string[]> = {
   contracts: ["for"],
+  chat: ["provider", "key", "model", "prompt", "baseUrl"],
   screenplay: ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
   director: ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
   "extract-characters": ["provider", "key", "model", "prompt", "baseUrl", "jsonMode"],
@@ -840,6 +841,38 @@ export function createHandler(dependencies: Dependencies = {}) {
       const provider = input.provider;
 
       const textAction = textActions[action];
+      if (action === "chat") {
+        // 聊天室：与文本 action 共用上游通道，但**不强制 JSON**。
+        // 三个聊天 Skill 里有两个输出自然语言（小说、剧本），只有分镜 JSON 那份才是 JSON。
+        // 这里不注入固定 system instruction——Skill 全文由前端拼进 prompt，用户说了算。
+        requireValue(provider === "gemini" || provider === "deepseek" || provider === "openai-compatible", "invalid_provider");
+        const prompt = text(input.prompt, 64_000, "invalid_prompt");
+        if (provider === "gemini") {
+          const data = await upstream(request, ENDPOINTS.gemini, key, { paid: true, gemini: true, body: {
+            model: model(input.model, "gemini-4-hydrogen", /^gemini-[A-Za-z0-9._-]+$/),
+            input: prompt, store: false, stream: false,
+            response_format: { type: "text", mime_type: "text/plain" },
+          } });
+          return json({ text: geminiText(data, "invalid_chat") });
+        }
+        if (provider === "deepseek") {
+          const data = await upstream(request, ENDPOINTS.deepseek, key, { paid: true, body: {
+            model: model(input.model, "deepseek-flash", /^deepseek-[A-Za-z0-9._-]+$/), stream: false,
+            messages: [{ role: "user", content: prompt }],
+          } });
+          requireValue(Array.isArray(data.choices) && data.choices.length === 1, "invalid_chat", 502);
+          const choice = object(data.choices[0], "invalid_chat", 502);
+          return json({ text: text(object(choice.message, "invalid_chat", 502).content, LIMITS.json, "invalid_chat", 502) });
+        }
+        const base = await safeBaseUrl(input.baseUrl);
+        const data = await upstream(request, `${base}/chat/completions`, key, { paid: true, surfaceErrors: true, body: {
+          model: customModel(input.model), stream: false,
+          messages: [{ role: "user", content: prompt }],
+        } });
+        requireValue(Array.isArray(data.choices) && data.choices.length === 1, "invalid_chat", 502);
+        const choice = object(data.choices[0], "invalid_chat", 502);
+        return json({ text: text(object(choice.message, "invalid_chat", 502).content, LIMITS.json, "invalid_chat", 502) });
+      }
       if (textAction) {
         requireValue(provider === "gemini" || provider === "deepseek" || provider === "openai-compatible", "invalid_provider");
         const prompt = text(input.prompt, 32_000, "invalid_prompt");

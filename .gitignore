@@ -14,6 +14,7 @@ dist/
 .qoder-sites/
 .qoder-sites.json
 .claude/
+.dsh/
 .vscode/
 .idea/
 coverage/
