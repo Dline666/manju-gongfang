@@ -24,6 +24,7 @@ const messages: Record<string, string> = {
   invalid_assets: '资产提取结果或逐镜关联不完整，现有剧本与资产未被修改。',
   invalid_chat: '模型这次没有返回可用文本（可能被内容策略拦截或输出被截断）。请改一句说法再试，这次不计入作品内容。',
   submission_unknown: '未收到服务商明确结果，请先检查已有任务，避免重复付费。',
+  upstream_unreachable: '连不上模型服务商：请求没有发出。请检查网络，以及 .env 里配置的 HTTP_PROXY / HTTPS_PROXY 是否可用。',
   request_aborted: '请求已取消。这次可能已经送达并计费，重发前建议先去平台确认。',
   media_unavailable: '暂时无法下载这段素材，请从原平台下载后重新导入。',
   invalid_input: '请求参数不符合模型要求，请检查时长、模型和参考图。',
@@ -40,6 +41,7 @@ const hints = {
   model: '模型已下线或 ID 写错：换一个模型',
   unknown: '不确定是否已扣费：先查平台任务记录，别立刻重发',
   unavailable: '服务商暂时不可用：稍后重试',
+  network: '网络没通：检查网络与 .env 里的代理设置，再重发',
   route: '服务版本不一致：重启本地 Function 服务后再试',
 };
 export function hintFor(code: string, status = 0): string | undefined {
@@ -51,6 +53,8 @@ export function hintFor(code: string, status = 0): string | undefined {
   if (status === 402 || code === 'insufficient_balance') return hints.balance;
   if (status === 429 || code === 'rate_limited') return hints.rate;
   if (status === 404 || code === 'provider_not_found') return hints.model;
+  // 连不上服务商多半是本机代理的问题，让用户去查代理比「稍后再试」有用。
+  if (code === 'upstream_unreachable') return hints.network;
   if (status === 504 || code === 'submission_unknown') return hints.unknown;
   if (status >= 500 || code === 'upstream_unavailable') return hints.unavailable;
   return undefined;

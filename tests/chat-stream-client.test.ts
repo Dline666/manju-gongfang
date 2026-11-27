@@ -109,6 +109,23 @@ test('流式：用户取消时归到 request_aborted，不冒充「结果未知�
   } finally { globalThis.fetch = original; }
 });
 
+test('流式：连不上服务商时提示去查网络与代理，不说成「已扣费」', async () => {
+  seedKey();
+  const stubFetch = stub(() => Response.json({ ok: false, error: 'upstream_unreachable', detail: 'TypeError: fetch failed' }, { status: 502 }));
+  try {
+    await assert.rejects(
+      () => api.callApiStream('chat', { provider: 'deepseek', key: 'k', model: 'm', prompt: 'p' }, () => {}),
+      (error: unknown) => {
+        assert.ok(error instanceof api.ApiError);
+        assert.equal(error.code, 'upstream_unreachable');
+        assert.match(error.message, /连不上/, '要说清请求没有发出');
+        assert.doesNotMatch(error.message, /重复付费/, '请求没送达，不该提重复付费');
+        return true;
+      },
+    );
+  } finally { stubFetch.restore(); }
+});
+
 test('流式：流内断线按「可能已计费」报，不静默当成正常结束', async () => {
   seedKey();
   const original = globalThis.fetch;

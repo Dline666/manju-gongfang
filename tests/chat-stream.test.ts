@@ -163,6 +163,16 @@ test("chat 流式：累计正文超过 JSON 上限就停，不无限吃内存", 
   assert.equal(result.at(-1)?.error, "upstream_too_large");
 });
 
+test("chat 流式：fetch 根本没连上时报 upstream_unreachable，不能谎称「已计费」", async () => {
+  // 真实场景：.env 配了代理而代理软件没开，Deno 的 fetch 直接 TypeError: fetch failed。
+  // 请求压根没送达，报「结果未知、别重复付费」是在吓唬人。
+  const handle = createHandler({ fetch: async () => { throw new TypeError("fetch failed"); } });
+  const response = await handle(chat());
+  const body = await response.json();
+  assert.equal(body.error, "upstream_unreachable");
+  assert.match(String(body.detail), /fetch failed/, "要把底层原因带给用户，否则没法排查");
+});
+
 test("chat 流式：Gemini 那条通道保持一次性返回，前端会按 JSON 收下", async () => {
   const handle = createHandler({ fetch: async () => Response.json({
     status: "completed",

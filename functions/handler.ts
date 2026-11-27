@@ -846,8 +846,13 @@ export function createHandler(dependencies: Dependencies = {}) {
    * 流式上游：HEADERS 到达即算「已经开跑」，此后只受空闲超时约束。
    * 非流式那条路上 2 分钟总会把长篇砍断，而那时请求早已计费——于是只能报
    * 「未收到服务商明确结果」，既没用又吓人。这里让首块和空闲各管一段。
+   *
+   * 注意：**不要**把 request.signal 接到上游 controller 上。
+   * Deno 的 legacy 行为会让 request.signal 在「响应成功送达」时也 abort，
+   * 于是流刚开就被自己掐断，错误还会被误判成 submission_unknown。
+   * 这里只把 request.signal 当作「用户取消」的标志来读，不参与上游控制。
    */
-  async function upstreamStream(request: Request, url: string, key: string, options: {
+  async function upstreamStream(url: string, key: string, options: {
     body: ObjectValue; headers?: Record<string, string>;
   }): Promise<{ response: Response; timedOut: () => boolean; reset: () => void; wait: <T>(promise: Promise<T>) => Promise<T>; dispose: () => void }> {
     const controller = new AbortController();
@@ -867,11 +872,8 @@ export function createHandler(dependencies: Dependencies = {}) {
         reject(new Fault("endpoint_timeout", 504));
       }, ms);
     };
-    request.signal.addEventListener("abort", abort, { once: true });
-    if (request.signal.aborted) abort();
     let response: Response | undefined;
     try {
-      requireValue(!request.signal.aborted, "request_aborted", 408);
       bump(timeouts.firstByte);
       response = await fetcher(url, {
         method: "POST", redirect: "manual", credentials: "omit", cache: "no-store", signal: controller.signal,
@@ -880,7 +882,10 @@ export function createHandler(dependencies: Dependencies = {}) {
       });
       if (!response.ok) {
         // 还没开始流就失败：把服务商原文带回去，别一律说成「结果未知」。
-        const detail = await upstreamDetail(response, deadline(timeouts.query, request.signal, new Fault("upstream_timeout", 504)), key);
+        // 这里也不能借 request.signal：Deno 下它可能在响应送达时已经 abort，读详情会直接失败。
+        const scope = deadline(timeouts.query, new AbortController().signal, new Fault("upstream_timeout", 504));
+        let detail: string | undefined;
+        try { detail = await upstreamDetail(response, scope, key); } finally { scope.dispose(); }
         const fault = upstreamHttp(response.status, true, response.headers.get("retry-after") ?? undefined);
         throw new Fault(fault.code, fault.status, fault.retryAfter, detail);
       }
@@ -896,17 +901,18 @@ export function createHandler(dependencies: Dependencies = {}) {
         wait: <T>(promise: Promise<T>) => gate ? Promise.race([promise, gate.promise]) : promise,
         dispose: () => {
           if (timer !== undefined) clearTimeout(timer);
-          request.signal.removeEventListener("abort", abort);
         },
       };
     } catch (error) {
       if (timer !== undefined) clearTimeout(timer);
-      request.signal.removeEventListener("abort", abort);
       cancelBody(response?.body ?? null);
       if (error instanceof Fault) throw error;
-      if (request.signal.aborted) throw new Fault("request_aborted", 408);
       if (timedOut) throw new Fault("endpoint_timeout", 504);
-      throw new Fault("submission_unknown", 504);
+      // 连响应头都没拿到：请求根本没送达，谈不上「已计费、别重复付费」。
+      // 这里最常见的真实原因是本机代理不通（.env 里的 HTTP(S)_PROXY 在 fetch 层面生效），
+      // 所以要把底层原因带给用户，否则他只能看到一句没法行动的「结果未知」。
+      const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      throw new Fault("upstream_unreachable", 502, undefined, cause);
     }
   }
 
@@ -917,7 +923,7 @@ export function createHandler(dependencies: Dependencies = {}) {
    *   data: {"error":"code","detail":"..."} 失败（此时 HTTP 已是 200，错误只能走流里）
    * 顺带兼容两类不守规矩的中转站：说 stream 却回整段 JSON、以及中途夹 error 对象。
    */
-  function chatSse(request: Request, upstream: Awaited<ReturnType<typeof upstreamStream>>): Response {
+  function chatSse(upstream: Awaited<ReturnType<typeof upstreamStream>>): Response {
     const encoder = new TextEncoder();
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -932,7 +938,8 @@ export function createHandler(dependencies: Dependencies = {}) {
           // 有的中转站嘴上说 stream、实际回一整段 JSON：当成一次性增量，别报错。
           // 这条分支必须在取 reader 之前判断，否则 body 已被锁住，再读会抛「已锁定」。
           if (!/text\/event-stream/i.test(upstream.response.headers.get("Content-Type") ?? "")) {
-            const scope = deadline(timeouts.idle, request.signal, new Fault("endpoint_timeout", 504));
+            // 同样不借 request.signal：Deno 下它可能已经 abort。
+            const scope = deadline(timeouts.idle, new AbortController().signal, new Fault("endpoint_timeout", 504));
             let bytes: Uint8Array;
             try { bytes = await readBytes(upstream.response.body, upstream.response.headers, LIMITS.json, scope, new Fault("upstream_too_large", 502)); }
             finally { scope.dispose(); }
@@ -1046,13 +1053,13 @@ export function createHandler(dependencies: Dependencies = {}) {
           return json({ text: geminiText(data, "invalid_chat") });
         }
         const url = provider === "deepseek" ? ENDPOINTS.deepseek : `${await safeBaseUrl(input.baseUrl)}/chat/completions`;
-        const upstreamArgs = await upstreamStream(request, url, key, { body: {
+        const upstreamArgs = await upstreamStream(url, key, { body: {
           model: provider === "deepseek"
             ? model(input.model, "deepseek-flash", /^deepseek-[A-Za-z0-9._-]+$/)
             : customModel(input.model),
           messages: [{ role: "user", content: prompt }],
         } });
-        return chatSse(request, upstreamArgs);
+        return chatSse(upstreamArgs);
       }
       if (textAction) {
         requireValue(provider === "gemini" || provider === "deepseek" || provider === "openai-compatible", "invalid_provider");
