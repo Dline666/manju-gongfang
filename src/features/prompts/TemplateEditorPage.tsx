@@ -176,8 +176,10 @@ export default function TemplateEditorPage({ project, initialScope = 'global', i
   }, [scope, sampleProject, projectDraft]);
   const previewGlobal = scope === 'global' ? globalDraft : savedGlobal;
   const imageCategory = (tab === 'image' ? subId : 'character') as 'character' | 'scene' | 'prop';
-  const sampleAssets = project?.episodes[0]?.assets;
-  const sampleShots = project?.episodes[0]?.shots;
+  // 只有看「系列级覆盖」时才用这个系列的真实资产；全局模板的预览必须用示例资产，
+  // 否则在 A 系列里编辑全局模板，看到的是 A 的资产，会让人以为全局模板绑了具体作品。
+  const sampleAssets = scope === 'project' ? project?.episodes[0]?.assets : undefined;
+  const sampleShots = scope === 'project' ? project?.episodes[0]?.shots : undefined;
   const imageAsset = useMemo<Asset>(() => sampleAssets?.find(asset => asset.kind === imageCategory) ?? IMAGE_SAMPLES[imageCategory], [sampleAssets, imageCategory]);
   const previewShot = useMemo(() => sampleShots?.[0] ?? { ...makeShot(1), visual: '示例画面：人物走上石阶', start: '示例开场', action: '示例动作', end: '示例终点' }, [sampleShots]);
 

@@ -133,6 +133,23 @@ try {
     await page.locator('.generate-video').first().click();
     await page.getByText(/还没写固定描述/).first().waitFor({ timeout: 10000 });
 
+    // 7b) 三个资产入口各自落到对应分类；这一集只有人物与场景，道具分类该给空态。
+    for (const [label, expected, count] of [['角色设置', '人物', 1], ['场景设置', '场景', 1], ['道具设置', '道具', 0]]) {
+      await page.getByRole('button', { name: label, exact: true }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.locator('.chip.is-active').waitFor();
+      assert.equal(await dialog.locator('.chip.is-active').innerText(), expected, `${label} 应定位到「${expected}」`);
+      assert.equal(await dialog.locator('.asset-card').count(), count, `${label} 该显示 ${count} 个资产`);
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+    }
+    const imageCallsBefore = paidRequests;
+    await page.getByRole('button', { name: '角色设置', exact: true }).click();
+    await page.getByRole('button', { name: /生成设定图/ }).first().click();
+    await page.getByText(/还没有固定描述/).first().waitFor({ timeout: 8000 });
+    assert.equal(paidRequests, imageCallsBefore, '未锁定资产不该发出付费请求');
+    await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click();
+
     // 8) 系列页：集数表 + 剧集资产
     await page.goto(`http://127.0.0.1:5173/#/library/${seeded.seriesId}`);
     await page.locator('.episode-table tbody tr').first().waitFor();

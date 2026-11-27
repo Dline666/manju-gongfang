@@ -5,8 +5,9 @@ import type { Episode, Series } from '../../domain/series';
 import type { PromptTemplateSet } from '../../domain/types';
 import { getStudio, setAssetImage, updateEpisode } from '../../store/studio';
 import { releaseVideo, setVideo } from '../../store/media';
-import { ApiError, callApi, callBinary, credentials, errorMessage } from '../../lib/api';
-import { videoPrompt } from '../../lib/prompts';
+import { ApiError, callApi, callBinary, credentials, errorMessage, type ImageResult } from '../../lib/api';
+import { videoPrompt, imagePrompt, fixedDescription } from '../../lib/prompts';
+import { fixedHash, generatedImageBlob, validateImage } from '../../lib/imageFile';
 import { modelFor } from '../../lib/endpoints';
 import { validateProject } from '../../domain/validation';
 import { joinSpeech } from '../../lib/dubbing';
@@ -315,9 +316,63 @@ export function useEpisodeGeneration(series: Series, episode: Episode) {
     patchShot(seriesId, episodeId, shot.id, { video: undefined, task: undefined, stale: false });
   }
 
+  /**
+   * 给一个资产生设定图。跟视频一样先查内容再查 Key：
+   * 固定描述为空时，生出来的图这一镜用不了，先说这件事。
+   */
+  async function generateAssetImage(assetId: string, promptText?: string) {
+    const state = getStudio();
+    const series = state.series.find(item => item.id === seriesId);
+    const live = series?.episodes.find(item => item.id === episodeId);
+    const asset = live?.assets.find(item => item.id === assetId);
+    if (!asset) { toast.error('资产已不存在，本次不生成。'); return; }
+    if (!(promptText ?? '').trim() && !asset.lock.trim() && !asset.description.trim()) {
+      toast.error(`「${asset.name}」还没有固定描述，先生成会得到一张对不上后续镜头的图。请先补上。`);
+      return;
+    }
+    try {
+      const provider = state.settings.imageProvider;
+      const auth = credentials(provider, 'image');
+      const prompt = (promptText ?? '').trim() || imagePrompt(live!, asset, state.settings.promptTemplates);
+      if (!prompt.trim()) throw new Error('图片提示词不能为空：请在提示词设置里补充内容。');
+      // 记下提交时的模型与固定描述：中途被改掉就把结果丢掉，不能悄悄写进存档。
+      const hash = fixedHash(fixedDescription(asset));
+      const model = auth.model;
+      const controller = new AbortController();
+      const jobId = startJob({ kind: 'image', label: `生成「${asset.name}」设定图`, cancel: () => controller.abort() });
+      try {
+        updateJob(jobId, { detail: '生成图片中' });
+        const result = await callApi<ImageResult>('image', { provider: auth.provider, key: auth.key, model: auth.model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}), prompt }, controller.signal);
+        const after = getStudio().series.find(item => item.id === seriesId)?.episodes.find(item => item.id === episodeId);
+        const nowAsset = after?.assets.find(item => item.id === assetId);
+        if (!nowAsset) throw new Error('资产已删除，本次结果不写入。');
+        if (fixedHash(fixedDescription(nowAsset)) !== hash) throw new Error('固定描述已修改，本次结果不写入。请重新生成。');
+        if (getStudio().settings.imageProvider !== provider || modelFor(getStudio().settings, provider, 'image') !== model) throw new Error('图片模型设置已改变，请重新确认。');
+        const imageId = await putMedia(await generatedImageBlob(result));
+        setAssetImage(seriesId, episodeId, assetId, imageId);
+        finishJob(jobId, 'done');
+        toast.success(`「${asset.name}」的设定图已保存。`);
+      } catch (error) {
+        finishJob(jobId, 'failed', error instanceof ApiError ? error.code : undefined);
+        throw error;
+      }
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  }
+
+  function uploadAssetImage(assetId: string, file: File) {
+    if (!file.type.startsWith('image/')) { toast.error('请选择图片文件。'); return; }
+    void validateImage(file)
+      .then(() => putMedia(file))
+      .then(imageId => setAssetImage(seriesId, episodeId, assetId, imageId))
+      .catch(error => toast.error(errorMessage(error)));
+  }
+
   return {
     batch, busy, queryError,
     setBatch, prepare, run, uploadVideo, uploadAudio, retrieve, removeVideo,
+    generateAssetImage, uploadAssetImage,
     updatePrompt: (id: string, value: string) => setBatch(previous => previous && previous.kind === 'video' ? { ...previous, prompts: { ...previous.prompts, [id]: value } } : previous),
     resetPrompt: (id: string) => {
       const shot = episode.shots.find(item => item.id === id);

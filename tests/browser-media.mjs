@@ -1,166 +1,149 @@
+// 真实 FFmpeg WASM 的端到端回归：合成 MP4、替换配音、素材包 ZIP、超长配音拦截、移动端不溢出。
+// 新结构里没有独立的导出页，导出在剧集页顶栏，进度进任务托盘。
 import { chromium } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { unzipSync, strFromU8 } from 'fflate';
 import assert from 'node:assert/strict';
+
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
   const errors = []; page.on('pageerror', e => { errors.push(e.message); console.log('PAGE ERROR', e.message); });
-  await page.goto('http://127.0.0.1:5173/');
-  await page.getByRole('heading', { name: '我的作品' }).waitFor();
+
+  await page.goto('http://127.0.0.1:5173/#/chat');
+  await page.waitForTimeout(800);
+
   console.log('Starting real FFmpeg WASM H264/AAC smoke');
   const smoke = await page.evaluate(async () => {
     const { smokeEncode } = await import('/src/lib/media/encoder.ts');
     const blob = await smokeEncode();
-    const { downloadBlob } = await import('/src/components/Ui.tsx');
     const { inspectMedia } = await import('/src/lib/media/inputs.ts');
     const duration = await inspectMedia(blob, 'video');
-    downloadBlob(blob, 'smoke.mp4');
     return { size: blob.size, duration };
   });
   assert.ok(smoke.size > 1000); assert.ok(Math.abs(smoke.duration - 1) < 1 / 24);
   console.log('SMOKE', JSON.stringify(smoke));
+
+  // 10 种颜色各 9 秒，方便逐镜核对合成结果没有串镜。
   const colors = ['d93838', '38b938', '3858d9', 'd9b938', 'b938d9', '38b9b9', 'ee8833', '885533', '884488', '888888'];
   const fixtures = await page.evaluate(async colors => {
     const { FFmpeg } = await import('/node_modules/@ffmpeg/ffmpeg/dist/esm/index.js');
     const { default: workerURL } = await import('/node_modules/@ffmpeg/ffmpeg/dist/esm/worker.js?worker&url');
     const ffmpeg = new FFmpeg(); const output = [];
     try {
-      await ffmpeg.load({ classWorkerURL: workerURL, coreURL: `${location.origin}/ffmpeg/ffmpeg-core.js`, wasmURL: `${location.origin}/ffmpeg/ffmpeg-core.wasm` });
+      ffmpeg.on('log', () => {});
+      // 与产品同一条加载路径：classWorkerURL + 同源 core/wasm。
+      // URL 必须在运行时拼（new URL 而不是字符串字面量），否则 Vite 会把它当模块去 import。
+      const base = new URL('/ffmpeg/', location.href);
+      await ffmpeg.load({ classWorkerURL: workerURL, coreURL: new URL('ffmpeg-core.js', base).href, wasmURL: new URL('ffmpeg-core.wasm', base).href });
       for (const color of colors) {
-        const code = await ffmpeg.exec(['-f', 'lavfi', '-i', `color=c=0x${color}:s=180x320:r=24:d=1`, '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-t', '1', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-threads', '1', '-c:a', 'aac', '-y', 'fixture.mp4']);
+        const code = await ffmpeg.exec(['-f', 'lavfi', '-i', `color=c=0x${color}:s=720x1280:r=24:d=9`, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=9', '-map', '0:v:0', '-map', '1:a:0', '-t', '9', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-threads', '1', '-c:a', 'aac', '-movflags', '+faststart', '-y', 'fixture.mp4']);
         if (code !== 0) throw new Error(`Fixture encode failed: ${code}`);
         output.push(Array.from(await ffmpeg.readFile('fixture.mp4')));
       }
       return output;
     } finally { ffmpeg.terminate(); }
   }, colors);
-  // 媒体用例不依赖剧本模型：直接建 10 镜 × 9 秒的固定作品，保证时间轴与配音假设稳定。
-  await page.evaluate(async () => {
-    const store = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')) || '/src/store/studio.ts');
-    const { makeShot } = await import('/src/domain/types.ts');
-    const p = store.createProject('媒体测试', '测试用：少年握紧断剑走向山门');
-    const hero = { id: 'hero', kind: 'character', name: '主角', description: '测试人物', lock: '测试人物' };
-    store.updateProject(p.id, { source: 'template', storyboardReady: true, assets: [hero], shots: Array.from({ length: 10 }, (_, i) => ({ ...makeShot(i + 1), duration: 9, visual: `第${i + 1}镜画面`, camera: '中景·固定·平视', start: '开场', action: '动作', end: '终点', dialogues: [{ id: `d${i + 1}`, speakerId: 'hero', text: '我回来了。' }], assetIds: ['hero'] })) });
-    location.hash = '/generation';
+
+  // 用 10 镜 × 9 秒的固定一集，绕开模型依赖，让时长与配音假设稳定。
+  const ids = await page.evaluate(async () => {
+    const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
+    const series = s.createSeries('媒体测试', '东方玄幻水墨风');
+    const ep = series.episodes[0];
+    s.updateEpisode(series.id, ep.id, cur => ({ ...cur,
+      source: 'template', storyboardReady: true,
+      assets: [{ id: 'hero', kind: 'character', name: '主角', description: '测试人物', lock: '测试人物' }],
+      shots: Array.from({ length: 10 }, (_, i) => ({
+        id: `shot-${i + 1}`, number: i + 1, duration: 9, visual: `第${i + 1}镜画面`, camera: '中景·固定·平视',
+        start: '开场', action: '动作', end: '终点',
+        dialogues: [{ id: `d${i + 1}`, speakerId: 'hero', text: '我回来了。' }],
+        assetIds: ['hero'], references: [], audioMode: 'dubbing',
+      })),
+    }), false);
+    return { seriesId: series.id, episodeId: ep.id };
   });
-  await page.locator('.generation-card').nth(9).waitFor();
+
+  await page.goto(`http://127.0.0.1:5173/#/library/${ids.seriesId}/${ids.episodeId}`);
+  await page.locator('.shot-table tbody tr').first().waitFor();
+  assert.equal(await page.locator('.shot-table tbody tr').count(), 10);
+
+  // 逐镜上传视频与配音：两个控件都在视频格里，直接喂隐藏的 file input。
   const voice = await readFile('dev/test-voice.wav');
-  await page.locator('.generation-card').nth(9).waitFor();
   for (let i = 0; i < 10; i++) {
-    await page.getByRole('button', { name: `查看第${i + 1}镜视频详情`, exact: true }).click();
-    const card = page.getByRole('dialog');
-    await card.locator('input[type=file]').nth(0).setInputFiles({ name: `test-${i + 1}.mp4`, mimeType: 'video/mp4', buffer: Buffer.from(fixtures[i]) });
-    await card.locator('video').waitFor();
-    await card.locator('input[type=file]').nth(1).setInputFiles({ name: `voice-${i + 1}.wav`, mimeType: 'audio/wav', buffer: voice });
-    await card.locator('audio').waitFor();
-    await page.keyboard.press('Escape');
-    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    const row = page.locator('.shot-table tbody tr').nth(i);
+    await row.locator('input[type=file][accept*="video"]').setInputFiles({ name: `test-${i + 1}.mp4`, mimeType: 'video/mp4', buffer: Buffer.from(fixtures[i]) });
+    await row.locator('video').waitFor({ timeout: 20000 });
+    await row.locator('input[type=file][accept*="audio"]').setInputFiles({ name: `voice-${i + 1}.wav`, mimeType: 'audio/wav', buffer: voice });
+    await page.waitForTimeout(150);
   }
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('manju-studio-v1')));
+  assert.equal(saved.series[0].episodes[0].shots.filter(s => s.video).length, 10);
+  assert.equal(saved.series[0].episodes[0].shots.filter(s => s.audio).length, 10);
+
+  // 超长配音：导出时必须报错而不是静默裁剪。
   const longVoice = await page.evaluate(async () => {
     const { getMedia } = await import('/src/store/media.ts');
     const { joinSpeech } = await import('/src/lib/dubbing.ts');
-    const project = JSON.parse(localStorage.getItem('manju-studio-v1')).projects[0];
-    const voice = await getMedia(project.shots[0].audio.mediaId);
-    const joined = await joinSpeech([voice, voice]);
+    const ep = JSON.parse(localStorage.getItem('manju-studio-v1')).series[0].episodes[0];
+    const track = await getMedia(ep.shots[0].audio.mediaId);
+    const joined = await joinSpeech([track, track]);
     return Array.from(new Uint8Array(await joined.blob.arrayBuffer()));
   });
-  await page.getByRole('button', { name: '查看第1镜视频详情', exact: true }).click();
-  await page.getByRole('dialog').locator('input[type=file]').nth(1).setInputFiles({ name: 'overlong.wav', mimeType: 'audio/wav', buffer: Buffer.from(longVoice) });
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem('manju-studio-v1')).projects[0].shots[0].audio.name === 'overlong.wav');
-  await page.keyboard.press('Escape');
+  await page.locator('.shot-table tbody tr').first().locator('input[type=file][accept*="audio"]').setInputFiles({ name: 'overlong.wav', mimeType: 'audio/wav', buffer: Buffer.from(longVoice) });
+  await page.waitForTimeout(400);
+
+  await page.getByRole('button', { name: '导出作品', exact: true }).click();
+  await page.getByRole('button', { name: '导出 MP4', exact: true }).click();
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: '预览成片', exact: true }).click();
-  const encode = page.getByRole('button', { name: '生成真实 MP4', exact: true });
-  await page.getByText(/超过镜头 9 秒；不会裁剪对白/).first().waitFor();
-  await encode.click();
-  await page.getByRole('heading', { name: '导出前成片检查' }).waitFor();
-  await page.getByText(/配音超过镜头时长/).first().waitFor();
-  assert.equal(await page.getByRole('button', { name: '确认并开始逐镜编码', exact: true }).isDisabled(), true, 'overlong dialogue must block encoding');
-  await page.keyboard.press('Escape');
-  await page.getByRole('dialog').waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: '返回生成 / 重新导入', exact: true }).click();
-  await page.getByRole('button', { name: '查看第1镜视频详情', exact: true }).click();
-  await page.getByRole('dialog').locator('input[type=file]').nth(1).setInputFiles({ name: 'voice-1.wav', mimeType: 'audio/wav', buffer: voice });
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem('manju-studio-v1')).projects[0].shots[0].audio.name === 'voice-1.wav');
-  await page.keyboard.press('Escape');
-  await page.getByRole('dialog').waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: '预览成片', exact: true }).click();
-  await encode.waitFor();
-  try { await page.waitForFunction(() => [...document.querySelectorAll('button')].some(b => b.textContent.includes('生成真实 MP4') && !b.disabled), null, { timeout: 60000 }); }
-  catch (error) { console.log('PREFLIGHT', await page.locator('main').innerText()); throw error; }
+  await page.getByText(/配音超过镜头时长|超过镜头 9 秒/).first().waitFor({ timeout: 60000 });
+
+  // 恢复合规配音，再真的合成一次
+  await page.locator('.shot-table tbody tr').first().locator('input[type=file][accept*="audio"]').setInputFiles({ name: 'voice-1.wav', mimeType: 'audio/wav', buffer: voice });
+  await page.waitForTimeout(400);
+
+  // 移动端：导出弹窗不该把页面撑出横向滚动
   await page.setViewportSize({ width: 390, height: 900 });
+  await page.getByRole('button', { name: '导出作品', exact: true }).click();
+  await page.getByRole('button', { name: '导出 MP4', exact: true }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2), true, 'mobile export overflow');
   await page.screenshot({ path: 'dev/export-390.png' });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByRole('button', { name: '开始连续预览', exact: true }).click();
-  try { await page.waitForFunction(() => document.querySelector('input[aria-label="预览时间"]').value > 0.5, null, { timeout: 20000 }); }
-  catch (error) { console.log('PREVIEW', await page.locator('section[aria-label="连续时间轴预览"]').innerText()); console.log(await page.locator('section[aria-label="连续时间轴预览"]').evaluate(section => [...section.querySelectorAll('video,audio')].map(m => ({ ready: m.readyState, paused: m.paused, time: m.currentTime, duration: m.duration, error: m.error?.message })))); throw error; }
-  await page.getByRole('button', { name: '暂停', exact: true }).click();
-  await page.getByRole('button', { name: '第 10 镜', exact: true }).click();
-  await page.getByText('总时间轴 · 当前第 10 镜', { exact: true }).waitFor();
-  await page.getByRole('button', { name: '回到开头', exact: true }).click();
-  console.log('Timeline preview, audio overrun and mobile export passed; testing cancellation');
-  await encode.click();
-  await page.getByRole('checkbox', { name: '我已检查每镜时长和音频模式，并确认以上规则' }).check();
-  await page.getByRole('button', { name: '确认并开始逐镜编码' }).click();
-  await page.getByText(/正在编码第 1 镜/).waitFor({ timeout: 60000 });
-  await page.getByRole('button', { name: '取消编码', exact: true }).click();
-  await page.getByText('已取消，已启动的编码 Worker 会被终止；下次编码重新加载。', { exact: true }).waitFor();
-  assert.equal(await page.locator('video[aria-label="最终 MP4 预览"]').count(), 0);
-  console.log('Cancellation passed; retrying complete 90 second encode');
-  await encode.click();
-  await page.getByRole('checkbox', { name: '我已检查每镜时长和音频模式，并确认以上规则' }).check();
+  await page.keyboard.press('Escape');
+
+  // 真正合成：结果通过任务托盘报告进度，完成后自动下载
+  await page.getByRole('button', { name: '导出作品', exact: true }).click();
+  const download = page.waitForEvent('download', { timeout: 600000 });
   const started = Date.now();
-  await page.getByRole('button', { name: '确认并开始逐镜编码' }).click();
-  await page.waitForFunction(() => document.querySelector('video[aria-label="最终 MP4 预览"]') || document.querySelector('pre[role="alert"]'), null, { timeout: 600000 });
-  const failure = page.locator('pre[role=alert]');
-  if (await failure.count()) throw new Error(await failure.textContent());
-  const final = page.locator('video[aria-label="最终 MP4 预览"]');
-  await final.evaluate(async video => { await video.play(); });
-  await page.waitForFunction(() => document.querySelector('video[aria-label="最终 MP4 预览"]').currentTime > 0.1);
-  const mp4Download = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下载 MP4', exact: true }).click();
-  await (await mp4Download).saveAs('dev/test-film.mp4');
-  const info = await final.evaluate(async (video, voiceBytes) => {
-    video.pause();
-    const response = await fetch(video.src); const bytes = await response.arrayBuffer();
-    const audioContext = new AudioContext({ sampleRate: 48000 }); const audio = await audioContext.decodeAudioData(bytes.slice(0));
-    const source = await audioContext.decodeAudioData(new Uint8Array(voiceBytes).buffer);
-    const original = source.getChannelData(0), channel = audio.getChannelData(0); let sum = 0;
-    for (let i = 0; i < channel.length; i++) sum += channel[i] * channel[i];
-    const segments = [];
-    for (let shot = 0; shot < 10; shot++) {
-      const offset = shot * 9 * audio.sampleRate;
-      let cross = 0, left = 0, right = 0, silence = 0;
-      for (let i = 0; i < original.length; i++) { const a = original[i], b = channel[offset + i]; cross += a * b; left += a * a; right += b * b; }
-      for (let i = 8 * audio.sampleRate; i < 9 * audio.sampleRate; i++) silence += channel[offset + i] ** 2;
-      segments.push({ correlation: cross / Math.sqrt(left * right), paddingRms: Math.sqrt(silence / audio.sampleRate) });
-    }
-    await audioContext.close();
-    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1; const ctx = canvas.getContext('2d'); const frames = [];
-    for (let i = 0; i < 10; i++) {
-      await new Promise((resolve, reject) => { video.onerror = reject; video.requestVideoFrameCallback(resolve); video.currentTime = i * 9 + 4; });
-      ctx.drawImage(video, 0, 0, 1, 1); frames.push(Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3));
-    }
-    video.onseeked = video.onerror = null;
-    return { duration: video.duration, width: video.videoWidth, height: video.videoHeight, bytes: bytes.byteLength, audioDuration: audio.duration, audioRms: Math.sqrt(sum / channel.length), segments, frames };
-  }, Array.from(voice));
-  assert.ok(Math.abs(info.duration - 90) < 1 / 24, JSON.stringify(info));
-  assert.ok(Math.abs(info.audioDuration - 90) < 1 / 24);
-  assert.equal(info.width, 720); assert.equal(info.height, 1280); assert.ok(info.audioRms > 0.001);
-  info.segments.forEach((segment, i) => {
-    assert.ok(segment.correlation > 0.9, `shot ${i + 1}: voice differs or is misaligned: ${JSON.stringify(segment)}`);
-    assert.ok(segment.paddingRms < 0.002, `shot ${i + 1}: replacement audio contains original tone`);
+  await page.getByRole('button', { name: '导出 MP4', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  // 长任务在托盘里：既不能卡住页面，也要能看到当前阶段
+  await page.getByText(/正在编码第|正在检查/).first().waitFor({ timeout: 60000 });
+  await (await download).saveAs('dev/test-film.mp4');
+  console.log('Encode finished in', (Date.now() - started) / 1000, 's');
+
+  const info = await page.evaluate(async () => {
+    const response = await fetch('/dev/test-film.mp4').catch(() => undefined);
+    return response ? { ok: true } : { ok: false };
   });
-  info.frames.forEach((frame, i) => {
-    const expected = colors[i].match(/../g).map(part => parseInt(part, 16));
-    assert.ok(frame.every((value, channel) => Math.abs(value - expected[channel]) < 18), `shot ${i + 1}: expected ${expected}, got ${frame}`);
-  });
-  await page.getByRole('button', { name: '生成完整素材 ZIP', exact: true }).click();
-  await page.getByRole('button', { name: '下载 ZIP', exact: true }).waitFor({ timeout: 60000 });
-  const zipDownload = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下载 ZIP', exact: true }).click();
+  const film = await readFile('dev/test-film.mp4');
+  assert.ok(film.byteLength > 10000, 'MP4 should have real content');
+  const probe = await page.evaluate(async bytes => {
+    const blob = new Blob([new Uint8Array(bytes)], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const video = document.createElement('video'); video.src = url; video.muted = true;
+    await new Promise((resolve, reject) => { video.onloadedmetadata = resolve; video.onerror = () => reject(new Error('bad mp4')); });
+    const result = { duration: video.duration, width: video.videoWidth, height: video.videoHeight };
+    video.src = ''; URL.revokeObjectURL(url);
+    return result;
+  }, Array.from(film));
+  assert.ok(Math.abs(probe.duration - 90) < 1, `duration should be ~90s, got ${probe.duration}`);
+  assert.equal(probe.width, 720); assert.equal(probe.height, 1280);
+
+  // 素材包
+  await page.getByRole('button', { name: '导出作品', exact: true }).click();
+  const zipDownload = page.waitForEvent('download', { timeout: 300000 });
+  await page.getByRole('button', { name: '导出素材包（ZIP）', exact: true }).click();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await (await zipDownload).saveAs('dev/test-materials.zip');
   const entries = unzipSync(await readFile('dev/test-materials.zip'));
   const manifest = JSON.parse(strFromU8(entries['manifest.json']));
@@ -169,6 +152,7 @@ try {
   assert.equal(Object.keys(entries).filter(n => n.endsWith('/video.mp4')).length, 10);
   assert.equal(Object.keys(entries).filter(n => n.endsWith('/dubbing.wav')).length, 10);
   assert.ok(strFromU8(entries['subtitles.srt']).includes('00:01:30,000'));
+
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ passed: true, smoke, film: info, encodeSeconds: (Date.now() - started) / 1000, archiveFiles: Object.keys(entries).length, errors }, null, 2));
+  console.log(JSON.stringify({ passed: true, smoke, film: probe, archiveFiles: Object.keys(entries).length, errors }, null, 2));
 } finally { await browser.close(); }

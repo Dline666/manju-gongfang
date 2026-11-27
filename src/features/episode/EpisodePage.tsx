@@ -1,13 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft, ChevronDown, Copy, Film, Layers, ListChecks, Maximize2,
-  MoreHorizontal, Plus, Settings2, Sparkles, Trash2, Upload, Wand2,
+  MoreHorizontal, Plus, Settings2, Sparkles, Trash2, Upload, Wand2, Mic,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Asset, Shot } from '../../domain/types';
 import { speakerName, uid } from '../../domain/types';
 import { episodeLabel, type Episode, type Series } from '../../domain/series';
 import { updateEpisode, updateSeries, useStudio } from '../../store/studio';
+import { finishJob, startJob, updateJob } from '../../store/jobs';
 import { useMediaUrl, useVideo } from '../../store/media';
 import { modelOptions } from '../../lib/models';
 import { modelFor } from '../../lib/endpoints';
@@ -33,6 +34,8 @@ export default function EpisodePage({ series, episode, navigate }: { series: Ser
   const [styleOpen, setStyleOpen] = useState(false);
   const [promptOpen, setPromptOpen] = useState(false);
   const [assetsOpen, setAssetsOpen] = useState(false);
+  const [assetKind, setAssetKind] = useState<'character' | 'scene' | 'prop'>('character');
+  const openAssets = (kind: 'character' | 'scene' | 'prop') => { setAssetKind(kind); setAssetsOpen(true); };
   const [modelsOpen, setModelsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -83,7 +86,10 @@ export default function EpisodePage({ series, episode, navigate }: { series: Ser
         <Button variant="ghost" size="sm" onClick={() => navigate(`library/${series.id}`)}><ArrowLeft size={14} /> 返回作品</Button>
         <Button variant="ghost" size="sm" onClick={() => setStyleOpen(true)}><Wand2 size={14} /> 风格设置</Button>
         <Button variant="ghost" size="sm" onClick={() => setPromptOpen(true)}><ListChecks size={14} /> 提示词设置</Button>
-        <Button variant="ghost" size="sm" onClick={() => setAssetsOpen(true)}><Layers size={14} /> 角色/场景/道具设置</Button>
+        {/* 三个入口各自落到对应分类：点「场景设置」就该直接看到场景，不该再让人找一次。 */}
+        <Button variant="ghost" size="sm" onClick={() => openAssets('character')}><Layers size={14} /> 角色设置</Button>
+        <Button variant="ghost" size="sm" onClick={() => openAssets('scene')}><Film size={14} /> 场景设置</Button>
+        <Button variant="ghost" size="sm" onClick={() => openAssets('prop')}><Layers size={14} /> 道具设置</Button>
         <Button variant="ghost" size="sm" onClick={() => setImporting(true)}><Upload size={14} /> 导入分镜</Button>
         <Button variant="ghost" size="sm" onClick={() => setModelsOpen(true)}><Settings2 size={14} /> 模型插件</Button>
         <Button variant="ghost" size="sm" onClick={() => setMoreOpen(true)}><MoreHorizontal size={14} /> 更多<ChevronDown size={12} /></Button>
@@ -124,7 +130,7 @@ export default function EpisodePage({ series, episode, navigate }: { series: Ser
     <DialogueDialog open={showDialogue} episode={episode} onClose={() => setShowDialogue(false)} />
     <StyleDialog open={styleOpen} series={series} onClose={() => setStyleOpen(false)} />
     <PromptSettingsDialog open={promptOpen} onClose={() => setPromptOpen(false)} navigate={navigate} />
-    <AssetsDialog open={assetsOpen} episode={episode} onClose={() => setAssetsOpen(false)} onPatch={patchAsset} />
+    <AssetsDialog open={assetsOpen} episode={episode} initialKind={assetKind} generation={generation} navigate={navigate} onClose={() => setAssetsOpen(false)} onPatch={patchAsset} />
     <ModelsDialog open={modelsOpen} onClose={() => setModelsOpen(false)} navigate={navigate} />
     <SettingsDialog open={settingsOpen} series={series} onClose={() => setSettingsOpen(false)} navigate={navigate} />
     <MoreDialog open={moreOpen} onClose={() => setMoreOpen(false)} navigate={navigate} episode={episode} />
@@ -172,35 +178,54 @@ function EpisodeTopBar({ series, episode, navigate, onImport, onSettings, onDial
   </section>;
 }
 
-/** 导出并入顶栏：成片与素材包都在这里，不再单开一页。 */
+/** 导出并入顶栏：成片与素材包都在这里，不再单开一页。
+ *  合成是长任务，所以放进任务托盘：进度、取消都在那儿，弹窗关掉也不影响。 */
 function ExportMenu({ series, episode }: { series: Series; episode: Episode }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const { settings } = useStudio();
   async function run(kind: 'mp4' | 'zip') {
     setBusy(true);
+    const controller = new AbortController();
+    const jobId = startJob({
+      kind: 'export',
+      label: kind === 'mp4' ? `合成 ${series.name} ${episodeLabel(episode)} 成片` : `打包 ${episodeLabel(episode)} 素材`,
+      // 取消只停止本地合成，不涉及任何计费。
+      cancel: () => controller.abort(),
+    });
+    // 提交后立刻关掉弹窗：进度看任务托盘，页面其余操作不受影响。
+    setOpen(false);
     try {
       if (kind === 'mp4') {
         const { renderProject } = await import('../../lib/media/encoder');
-        const blob = await renderProject(episode, () => {}, undefined);
+        const blob = await renderProject(episode, progress => {
+          // 不编造总体百分比：只报当前阶段与第几镜，进度条由托盘按已用时长走。
+          updateJob(jobId, {
+            detail: progress.shot ? `${progress.message}（${progress.shot}/${episode.shots.length}）` : progress.message,
+          });
+        }, controller.signal);
+        finishJob(jobId, 'done');
         downloadBlob(blob, `${series.name}-${episodeLabel(episode)}.mp4`);
         toast.success('MP4 已生成，请查看下载');
       } else {
+        updateJob(jobId, { detail: '正在打包剧本、分镜与素材' });
         const { buildMaterialZip } = await import('../../lib/media/archive');
-        const blob = await buildMaterialZip(episode, () => {}, undefined, settings.promptTemplates);
+        const blob = await buildMaterialZip(episode, progress => updateJob(jobId, { detail: progress.message }), controller.signal, settings.promptTemplates);
+        finishJob(jobId, 'done');
         downloadBlob(blob, `${series.name}-${episodeLabel(episode)}-素材.zip`);
         toast.success('素材包已生成');
       }
-      setOpen(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '导出未完成');
+      // 用户自己取消的不算失败，托盘里也不该显示成错误。
+      if (controller.signal.aborted) finishJob(jobId, 'canceled');
+      else { finishJob(jobId, 'failed'); toast.error(error instanceof Error ? error.message : '导出未完成'); }
     } finally {
       setBusy(false);
     }
   }
   return <>
     <Button variant="ghost" size="sm" onClick={() => setOpen(true)}><Film size={14} /> 导出作品</Button>
-    <Modal open={open} onClose={() => setOpen(false)} title="导出这一集" description="导出在当前浏览器本地完成，视频文件不会上传。">
+    <Modal open={open} onClose={() => setOpen(false)} title="导出这一集" description="导出在当前浏览器本地完成，视频文件不会上传。合成进度在任务托盘里。">
       <div className="stack">
         <p className="small muted">当前 {episode.shots.length} 镜，共 {episode.shots.reduce((total, shot) => total + shot.duration, 0).toFixed(1)} 秒。缺素材的镜头会被跳过或留黑，导出前请先核对。</p>
         <div className="row end">
@@ -302,12 +327,17 @@ function ShotRow({ series, episode, shot, selected, onSelect, onPatch, generatio
         {/* 终态也必须看得见：提交中断、生成失败都要留在这一格，不能只活在任务托盘里。 */}
         {shot.task && !running && <StatusChip tone={shot.task.status === 'failed' ? 'danger' : shot.task.status === 'unknown' ? 'warning' : 'success'}>{taskLabels[shot.task.status]}</StatusChip>}
         <div className="row tight">
-          <label className="text-button small row tight"><Upload size={12} /> 上传
+          <label className="text-button small row tight"><Upload size={12} /> 视频
             <input type="file" accept="video/mp4,video/webm,video/quicktime" hidden aria-label={`上传第${shot.number}镜视频`} onChange={event => { const picked = event.target.files?.[0]; event.target.value = ''; if (picked) void generation.uploadVideo(shot, picked); }} />
+          </label>
+          {/* 配音也要能手动导入：生成失败或已有成片时，这是唯一补救路径。 */}
+          <label className="text-button small row tight dialogue-attach"><Mic size={12} /> 配音
+            <input type="file" accept="audio/wav,audio/mpeg,audio/mp3,audio/aac,audio/m4a" hidden aria-label={`上传第${shot.number}镜配音`} onChange={event => { const picked = event.target.files?.[0]; event.target.value = ''; if (picked) void generation.uploadAudio(shot, picked); }} />
           </label>
           {shot.task?.status === 'succeeded' && !video && <button className="text-button small" onClick={() => void generation.retrieve(shot)}>取回</button>}
           {shot.video && <button className="text-button small" onClick={() => generation.removeVideo(shot)}>移除</button>}
         </div>
+        {shot.audio && <div className="small muted">配音：{shot.audio.name} · {shot.audio.duration.toFixed(1)}s</div>}
         <div className="video-frames small muted">首帧 · 起始帧</div>
       </div>
     </td>
@@ -361,19 +391,42 @@ function PromptSettingsDialog({ open, onClose, navigate }: { open: boolean; onCl
   </Modal>;
 }
 
-function AssetsDialog({ open, episode, onClose, onPatch }: { open: boolean; episode: Episode; onClose: () => void; onPatch: (id: string, patch: Partial<Asset>) => void }) {
+function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation, navigate }: {
+  open: boolean; episode: Episode; onClose: () => void; onPatch: (id: string, patch: Partial<Asset>) => void;
+  initialKind: 'character' | 'scene' | 'prop'; generation: ReturnType<typeof useEpisodeGeneration>;
+  navigate: (route: string) => void;
+}) {
+  // 工具栏的「角色/场景/道具设置」要能直接落到对应分类，否则三个按钮长得一模一样。
+  // Modal 是常驻挂载的，所以每次打开都要跟一次 initialKind，不能只靠 useState 初值。
+  const [kind, setKind] = useState<'character' | 'scene' | 'prop'>(initialKind);
+  useEffect(() => { if (open) setKind(initialKind); }, [open, initialKind]);
+  const assets = episode.assets.filter(asset => asset.kind !== 'voice' && asset.kind === kind);
   return <Modal open={open} onClose={onClose} wide title="角色 / 场景 / 道具设置" description="资产按集存放。固定描述会逐字进入提示词，改了要让相关镜头重新生成。">
-    {episode.assets.length === 0 ? <p className="muted">这一集还没有资产。导入分镜时会自动建好。</p> : <div className="asset-grid">
-      {episode.assets.filter(asset => asset.kind !== 'voice').map(asset => <article key={asset.id} className="asset-card">
+    <div className="row wrap" role="group" aria-label="资产分类">
+      {(Object.keys(assetKindLabel) as Array<keyof typeof assetKindLabel>).filter(value => value !== 'voice').map(value =>
+        <button key={value} className={`chip ${kind === value ? 'is-active' : ''}`} onClick={() => setKind(value)}>{assetKindLabel[value]}</button>)}
+    </div>
+    {assets.length === 0 ? <p className="muted">这一集还没有{assetKindLabel[kind]}资产。导入分镜时会自动建好。</p> : <div className="asset-grid">
+      {assets.map(asset => <article key={asset.id} className="asset-card">
         <AssetThumb asset={asset} />
         <div className="min-w-0 stack-tight">
           <div className="row tight"><strong className="truncate">{asset.name}</strong><span className="tag subtle">{assetKindLabel[asset.kind]}</span></div>
           <Field label="固定描述" hint="逐字复用，不随镜变化。"><textarea rows={3} value={asset.lock || asset.description} onChange={event => onPatch(asset.id, { lock: event.target.value, description: event.target.value })} /></Field>
           {!asset.lock.trim() && <span className="tag warning">未锁定 · 生成视频前必须补上</span>}
+          <div className="row tight">
+            <button className="text-button small" onClick={() => void generation.generateAssetImage(asset.id)}><Sparkles size={12} /> 生成设定图</button>
+            <label className="text-button small row tight"><Upload size={12} /> 上传
+              <input type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={`上传「${asset.name}」设定图`} onChange={event => { const picked = event.target.files?.[0]; event.target.value = ''; if (picked) generation.uploadAssetImage(asset.id, picked); }} />
+            </label>
+          </div>
         </div>
       </article>)}
     </div>}
-    <div className="row end"><Button variant="secondary" onClick={onClose}>关闭</Button></div>
+    {/* 从这里直接进「生图」模板的对应品类段，省掉「设置 → 模板 → 找品类」三跳。 */}
+    <div className="row end">
+      <Button variant="secondary" onClick={() => { onClose(); navigate(`settings/templates?kind=image&sub=${kind}&scope=project`); }}>编辑{assetKindLabel[kind]}模板</Button>
+      <Button variant="secondary" onClick={onClose}>关闭</Button>
+    </div>
   </Modal>;
 }
 

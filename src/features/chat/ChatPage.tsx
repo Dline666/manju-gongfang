@@ -71,6 +71,8 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
     const target = session;
     appendMessage(target.id, { role: 'user', text: body, ...(skill ? { skill } : {}) });
     setDraft('');
+    // 发失败就把原文放回输入框：这段可能是几百字的设定，丢了要重写一遍。
+    const restore = () => setDraft(current => current.trim() ? current : body);
     // 上下文只取最近 6 条，避免长会话把提示词撑爆；本轮用户消息已经在 messages 里，跳过最后一条。
     const history = target.messages.slice(-6).map(message => `${message.role === 'user' ? '用户' : '助手'}：${message.text.slice(0, 4000)}`).join('\n\n');
     const block = chatSkillBlock(skill, overrides, disabled);
@@ -80,6 +82,7 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
     if (!studio.keys[provider]) {
       setFailure({ message: '还没有可用的剧本端点。', hint: '请先到设置页填写剧本服务的 API Key（Gemini 首选 / DeepSeek 备选）。' });
       appendMessage(target.id, { role: 'assistant', text: '这次没有发出去：还没有填写剧本服务的 API Key。请先到设置页配置，再回来发送。', error: true });
+      restore();
       return;
     }
     setBusy(true);
@@ -99,6 +102,7 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
       const message = errorMessage(error);
       setFailure({ message, hint: error.hint });
       appendMessage(target.id, { role: 'assistant', text: `这次生成没有完成：${message}`, error: true, ...(skill ? { skill } : {}) });
+      restore();
       finishJob(jobId, control.signal.aborted ? 'canceled' : 'failed', error.code);
     } finally {
       if (controller.current === control) controller.current = undefined;
