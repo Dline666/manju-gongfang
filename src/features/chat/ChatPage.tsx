@@ -3,9 +3,9 @@ import { ArrowUpRight, Check, Copy, FileJson, MessageSquarePlus, MessagesSquare,
 import { toast } from 'sonner';
 import type { SkillId } from '../../domain/types';
 import { useStudio } from '../../store/studio';
-import { appendMessage, createSession, deleteSession, ensureSession, openSession, setSessionSkill, useChat, type ChatMessage, type ChatSession } from '../../store/chat';
+import { appendMessage, clearDraft, commitDraft, createSession, deleteSession, ensureSession, getDraft, openSession, removeMessage, setDraft as setStreamDraft, setSessionSkill, useChat, useDraft, type ChatMessage, type ChatSession } from '../../store/chat';
 import { chatSkillBlock, chatSkills } from '../../lib/skills';
-import { ApiError, callApi, credentials, errorMessage } from '../../lib/api';
+import { ApiError, callApiStream, credentials, errorMessage } from '../../lib/api';
 import { Button, Empty, ErrorNote, copyText } from '../../components/Ui';
 import { finishJob, startJob, updateJob } from '../../store/jobs';
 import { modelFor } from '../../lib/endpoints';
@@ -46,6 +46,9 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
   const studio = useStudio();
   const session = chat.sessions.find(item => item.id === chat.activeId) ?? ensureSession();
   const [draft, setDraft] = useState('');
+  // 只在草稿属于当前会话时渲染，切到别的会话不会看到别人的半截回答。
+  const pending = useDraft();
+  const streaming = pending && pending.sessionId === session.id ? pending : undefined;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ message: string; hint?: string }>();
   const [importing, setImporting] = useState<{ text: string; sessionId: string }>();
@@ -92,16 +95,26 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
     try {
       const auth = credentials(provider, 'script');
       if (jobId) updateJob(jobId, { detail: `模型 ${modelFor(studio.settings, provider, 'script')} 正在生成` });
-      const data = await callApi<{ text: string }>('chat', { ...auth, prompt }, control.signal);
+      // 先占一条空的助手消息，流式过程中往它身上补字；中途刷新不会留下半句话（草稿不落盘）。
+      const placeholder = appendMessage(target.id, { role: 'assistant', text: '', ...(skill ? { skill } : {}) });
+      let started = false;
+      const data = await callApiStream('chat', { ...auth, prompt }, text => {
+        if (!started) { started = true; if (jobId) updateJob(jobId, { detail: '已收到首段，正在续写' }); }
+        setStreamDraft(target.id, placeholder.id, text);
+      }, control.signal);
       const reply = (data.text ?? '').trim();
-      if (!reply) throw new ApiError('invalid_chat');
-      appendMessage(target.id, { role: 'assistant', text: reply, ...(skill ? { skill } : {}) });
+      if (!reply) { removeMessage(target.id, placeholder.id); throw new ApiError('invalid_chat'); }
+      commitDraft(target.id, placeholder.id, reply);
       finishJob(jobId, 'done');
     } catch (caught) {
       const error = caught instanceof ApiError ? caught : new ApiError('internal_error', 0, undefined, errorMessage(caught));
       const message = errorMessage(error);
       setFailure({ message, hint: error.hint });
-      appendMessage(target.id, { role: 'assistant', text: `这次生成没有完成：${message}`, error: true, ...(skill ? { skill } : {}) });
+      // 已经流出来的半截内容比错误信息有用，留下它并在后面说明没写完。
+      const partial = getDraft()?.text ?? '';
+      if (partial.trim()) appendMessage(target.id, { role: 'assistant', text: `${partial.trim()}\n\n（输出中断：${message}）`, error: true, ...(skill ? { skill } : {}) });
+      else appendMessage(target.id, { role: 'assistant', text: `这次生成没有完成：${message}`, error: true, ...(skill ? { skill } : {}) });
+      clearDraft();
       restore();
       finishJob(jobId, control.signal.aborted ? 'canceled' : 'failed', error.code);
     } finally {
@@ -150,12 +163,13 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
                 </button>)}
               </div>
             </div>
-            : session.messages.map(message => <MessageBubble key={message.id} message={message}
-                onCopy={() => void copyText(message.text)}
-                onSave={message.role === 'assistant' && !message.error ? () => setSaving(message) : undefined}
-                onImport={classifyReply(message) === 'json' ? () => setImporting({ text: message.text, sessionId: session.id }) : undefined}
-                invalidJson={classifyReply(message) === 'invalid-json'} />)}
-          {busy && <div className="chat-thinking" role="status"><span className="animate-pulse">模型正在写…</span><small className="muted">{activeSkill ? `Skill：${activeSkill.name}` : '自由对话'}</small></div>}
+            : session.messages.map(message => <MessageBubble key={message.id} message={streaming?.messageId === message.id ? { ...message, text: streaming.text } : message}
+                streaming={streaming?.messageId === message.id}
+                onCopy={() => void copyText(streaming?.messageId === message.id ? streaming.text : message.text)}
+                onSave={message.role === 'assistant' && !message.error && streaming?.messageId !== message.id ? () => setSaving(message) : undefined}
+                onImport={streaming?.messageId === message.id ? undefined : classifyReply(message) === 'json' ? () => setImporting({ text: message.text, sessionId: session.id }) : undefined}
+                invalidJson={streaming?.messageId === message.id ? false : classifyReply(message) === 'invalid-json'} />)}
+          {busy && !streaming && <div className="chat-thinking" role="status"><span className="animate-pulse">模型正在写…</span><small className="muted">{activeSkill ? `Skill：${activeSkill.name}` : '自由对话'}</small></div>}
           <div ref={bottom} />
         </div>
 
@@ -198,8 +212,9 @@ export default function ChatPage({ navigate }: { navigate: (route: string) => vo
   </div>;
 }
 
-function MessageBubble({ message, onCopy, onSave, onImport, invalidJson }: {
+function MessageBubble({ message, streaming, onCopy, onSave, onImport, invalidJson }: {
   message: ChatMessage;
+  streaming?: boolean;
   onCopy: () => void;
   onSave?: () => void;
   onImport?: () => void;
@@ -215,7 +230,7 @@ function MessageBubble({ message, onCopy, onSave, onImport, invalidJson }: {
     return outcome.ok ? previewImport(outcome.result) : undefined;
   }, [message.text, onImport, invalidJson]);
 
-  return <article className={`chat-msg ${isUser ? 'is-user' : 'is-assistant'} ${message.error ? 'is-error' : ''}`}>
+  return <article className={`chat-msg ${isUser ? 'is-user' : 'is-assistant'} ${message.error ? 'is-error' : ''} ${streaming ? 'is-streaming' : ''}`}>
     <div className="chat-msg-meta">
       <span>{isUser ? '我' : '模型'}</span>
       {skill && <span className="tag subtle">{skill.name}</span>}

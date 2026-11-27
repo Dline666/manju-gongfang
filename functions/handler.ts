@@ -11,7 +11,7 @@ type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 type Dependencies = {
   fetch?: Fetcher;
   resolveHost?: (host: string) => Promise<string[]>;
-  timeouts?: { body?: number; generation?: number; query?: number; media?: number };
+  timeouts?: { body?: number; generation?: number; query?: number; media?: number; firstByte?: number; idle?: number };
 };
 
 const MiB = 1024 * 1024;
@@ -488,6 +488,39 @@ function geminiText(value: ObjectValue, code: string): string {
   return last.content.filter((part) => isObject(part) && part.type === "text")
     .map((part) => text((part as ObjectValue).text, LIMITS.json, code, 502)).join("");
 }
+/**
+ * 从 OpenAI 兼容的流式块里取增量正文：`choices[0].delta.content`，老格式是 `delta.text`。
+ * 空增量（只带 role 的首块、只带 finish_reason 的尾块）返回 ""，调用方应跳过；
+ * 结构完全不对才返回 undefined，由调用方决定报错还是忽略。
+ */
+function openAiDelta(value: ObjectValue): string | undefined {
+  if (!Array.isArray(value.choices)) return undefined;
+  if (value.choices.length === 0) return "";
+  const choice = value.choices[0];
+  if (!isObject(choice)) return undefined;
+  const delta = choice.delta;
+  if (!isObject(delta)) {
+    // 非流式整段返回：content 在 message 里，这里顺带兼容。
+    const message = choice.message;
+    if (isObject(message) && typeof message.content === "string") return message.content;
+    return undefined;
+  }
+  if (typeof delta.content === "string") return delta.content;
+  if (typeof delta.text === "string") return delta.text;
+  return "";
+}
+/** 流内错误统一成前端认识的码：额度、鉴权、限流、内容策略各有各的说法。 */
+function streamError(value: unknown): string {
+  const message = typeof value === "string" ? value : isObject(value) && typeof value.message === "string" ? value.message : "";
+  const code = isObject(value) && typeof value.code === "string" ? value.code : "";
+  const probe = `${code} ${message}`.toLowerCase();
+  if (/insufficient|balance|quota|余额/.test(probe)) return "insufficient_balance";
+  if (/unauthorized|invalid.*key|api.?key|鉴权|密钥/.test(probe)) return "provider_auth_failed";
+  if (/rate.?limit|too many|频繁|限流/.test(probe)) return "rate_limited";
+  if (/forbidden|permission|权限/.test(probe)) return "provider_forbidden";
+  if (/content|policy|safety|审核|敏感/.test(probe)) return "provider_rejected";
+  return "upstream_error";
+}
 function base64(value: unknown, max: number, code: string, status: number): string {
   const result = text(value, max, code, status);
   requireValue(result.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(result), code, status);
@@ -614,7 +647,9 @@ export function createHandler(dependencies: Dependencies = {}) {
   // 运行时能不能做 DNS 判定：能就要求解析出的地址全是公网 IP，不能就退回字符串判定。
   const dnsAvailable = dependencies.resolveHost !== undefined ||
     Boolean((globalThis as typeof globalThis & { Deno?: { resolveDns?: unknown } }).Deno?.resolveDns);
-  const timeouts = { body: 15_000, generation: 120_000, query: 20_000, media: 90_000, ...dependencies.timeouts };
+  // 流式聊天不能用「总时长」当上限：一篇小说本来就写得久。
+  // firstByte 管「多久没开始回话」，idle 管「中途卡住多久算断」。
+  const timeouts = { body: 15_000, generation: 120_000, query: 20_000, media: 90_000, firstByte: 120_000, idle: 90_000, ...dependencies.timeouts };
 
   /**
    * 自定义端点的 Base URL：字符串判定 + DNS 判定，两层都过才放行。
@@ -807,6 +842,158 @@ export function createHandler(dependencies: Dependencies = {}) {
     }
   }
 
+  /**
+   * 流式上游：HEADERS 到达即算「已经开跑」，此后只受空闲超时约束。
+   * 非流式那条路上 2 分钟总会把长篇砍断，而那时请求早已计费——于是只能报
+   * 「未收到服务商明确结果」，既没用又吓人。这里让首块和空闲各管一段。
+   */
+  async function upstreamStream(request: Request, url: string, key: string, options: {
+    body: ObjectValue; headers?: Record<string, string>;
+  }): Promise<{ response: Response; timedOut: () => boolean; reset: () => void; wait: <T>(promise: Promise<T>) => Promise<T>; dispose: () => void }> {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    let timedOut = false;
+    // 读流时用一个「计时器到点就 reject」的闸门，因为 reader.read() 不吃 AbortSignal。
+    let gate: { promise: Promise<never>; reject: (error: Fault) => void } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bump = (ms: number) => {
+      if (timer !== undefined) clearTimeout(timer);
+      let reject: (error: Fault) => void = () => {};
+      const promise = new Promise<never>((_, fail) => { reject = fail; });
+      gate = { promise, reject };
+      timer = setTimeout(() => {
+        timedOut = true;
+        abort();
+        reject(new Fault("endpoint_timeout", 504));
+      }, ms);
+    };
+    request.signal.addEventListener("abort", abort, { once: true });
+    if (request.signal.aborted) abort();
+    let response: Response | undefined;
+    try {
+      requireValue(!request.signal.aborted, "request_aborted", 408);
+      bump(timeouts.firstByte);
+      response = await fetcher(url, {
+        method: "POST", redirect: "manual", credentials: "omit", cache: "no-store", signal: controller.signal,
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${key}`, ...(options.headers ?? {}) },
+        body: JSON.stringify({ ...options.body, stream: true }),
+      });
+      if (!response.ok) {
+        // 还没开始流就失败：把服务商原文带回去，别一律说成「结果未知」。
+        const detail = await upstreamDetail(response, deadline(timeouts.query, request.signal, new Fault("upstream_timeout", 504)), key);
+        const fault = upstreamHttp(response.status, true, response.headers.get("retry-after") ?? undefined);
+        throw new Fault(fault.code, fault.status, fault.retryAfter, detail);
+      }
+      requireValue(!response.redirected, "invalid_upstream_response", 502);
+      requireValue(response.body, "invalid_upstream_response", 502);
+      bump(timeouts.idle);
+      return {
+        response,
+        timedOut: () => timedOut,
+        // 每收到一块就重置空闲计时，长文才不会因为「写得慢但没停」被砍。
+        reset: () => bump(timeouts.idle),
+        // 让「读」和「超时闸门」赛跑：reader.read() 本身不响应 abort。
+        wait: <T>(promise: Promise<T>) => gate ? Promise.race([promise, gate.promise]) : promise,
+        dispose: () => {
+          if (timer !== undefined) clearTimeout(timer);
+          request.signal.removeEventListener("abort", abort);
+        },
+      };
+    } catch (error) {
+      if (timer !== undefined) clearTimeout(timer);
+      request.signal.removeEventListener("abort", abort);
+      cancelBody(response?.body ?? null);
+      if (error instanceof Fault) throw error;
+      if (request.signal.aborted) throw new Fault("request_aborted", 408);
+      if (timedOut) throw new Fault("endpoint_timeout", 504);
+      throw new Fault("submission_unknown", 504);
+    }
+  }
+
+  /**
+   * 把上游 SSE 转成前端只认的最少格式：
+   *   data: {"delta":"..."}  增量正文
+   *   data: {"done":true}    正常结束
+   *   data: {"error":"code","detail":"..."} 失败（此时 HTTP 已是 200，错误只能走流里）
+   * 顺带兼容两类不守规矩的中转站：说 stream 却回整段 JSON、以及中途夹 error 对象。
+   */
+  function chatSse(request: Request, upstream: Awaited<ReturnType<typeof upstreamStream>>): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        let closed = false;
+        const send = (payload: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+        const finish = () => { if (closed) return; closed = true; send({ done: true }); controller.close(); };
+        const fail = (code: string, detail?: string) => {
+          if (closed) return; closed = true; send({ error: code, ...(detail ? { detail } : {}) }); controller.close();
+        };
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+        try {
+          // 有的中转站嘴上说 stream、实际回一整段 JSON：当成一次性增量，别报错。
+          // 这条分支必须在取 reader 之前判断，否则 body 已被锁住，再读会抛「已锁定」。
+          if (!/text\/event-stream/i.test(upstream.response.headers.get("Content-Type") ?? "")) {
+            const scope = deadline(timeouts.idle, request.signal, new Fault("endpoint_timeout", 504));
+            let bytes: Uint8Array;
+            try { bytes = await readBytes(upstream.response.body, upstream.response.headers, LIMITS.json, scope, new Fault("upstream_too_large", 502)); }
+            finally { scope.dispose(); }
+            const data = object(parseJson(bytes, "invalid_chat", 502), "invalid_chat", 502);
+            const whole = openAiDelta(data);
+            if (!whole) { fail("invalid_chat"); return; }
+            send({ delta: whole });
+            finish();
+            return;
+          }
+          reader = upstream.response.body?.getReader();
+          requireValue(reader, "invalid_upstream_response", 502);
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let bytes = 0;
+          while (true) {
+            // reader.read() 不受 AbortSignal 约束：上游一声不响地挂着时，
+            // 光靠 controller.abort() 是叫不醒它的，必须让「超时」和「读」赛跑。
+            const { done, value } = await upstream.wait(reader.read());
+            if (done) break;
+            upstream.reset();
+            buffer += decoder.decode(value, { stream: true });
+            let newline = buffer.indexOf("\n");
+            while (newline >= 0) {
+              const line = buffer.slice(0, newline).replace(/\r$/, "");
+              buffer = buffer.slice(newline + 1);
+              newline = buffer.indexOf("\n");
+              // 只认 data: 行；event: / id: / 注释行（: keep-alive）跳过。
+              if (!line.startsWith("data:")) continue;
+              const raw = line.slice(5).trim();
+              if (!raw) continue;
+              if (raw === "[DONE]") { finish(); return; }
+              let chunk: unknown;
+              try { chunk = JSON.parse(raw); } catch { fail("invalid_chat"); return; }
+              const piece = object(chunk, "invalid_chat", 502);
+              // 上游把错误塞进流里（额度不足、内容策略拦截）：别当空正文静默结束。
+              if (piece.error) { fail(streamError(piece.error)); return; }
+              const delta = openAiDelta(piece);
+              if (!delta) continue;
+              bytes += encoder.encode(delta).byteLength;
+              // LIMITS.json 是字节上限；只数字符会让中文被低估约三倍，长文能撑到几十 MB。
+              if (bytes > LIMITS.json) { fail("upstream_too_large"); return; }
+              send({ delta });
+            }
+          }
+          // 读完却没有 [DONE]：多数上游仍算正常结束，按完成收尾，不误报付费状态。
+          finish();
+        } catch (error) {
+          const fault = error instanceof Fault ? error : new Fault(upstream.timedOut() ? "endpoint_timeout" : "invalid_chat", 502);
+          fail(fault.code, fault.detail);
+        } finally {
+          upstream.dispose();
+          void reader?.cancel().catch(() => {});
+        }
+      },
+      cancel() { upstream.dispose(); cancelBody(upstream.response.body ?? null); },
+    });
+    // 一旦开始流，HTTP 状态已经发出；错误只能写在流里。这里只保证不缓存、不被网关缓冲。
+    return new Response(body, { status: 200, headers: { ...HEADERS, "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" } });
+  }
+
   return async function handle(request: Request): Promise<Response> {
     try {
       const params = new URL(request.url).searchParams;
@@ -848,6 +1035,9 @@ export function createHandler(dependencies: Dependencies = {}) {
         requireValue(provider === "gemini" || provider === "deepseek" || provider === "openai-compatible", "invalid_provider");
         const prompt = text(input.prompt, 64_000, "invalid_prompt");
         if (provider === "gemini") {
+          // Gemini 走的是 interactions 接口（steps/model_output），不是 OpenAI 的 choices/delta。
+          // 没有可依据的流式格式就不猜：保持一次性返回，前端按「整段到达」处理。
+          // 它的字段少、单次很快，先不加流式；宁可慢一点，也不要编一个可能解析错的协议。
           const data = await upstream(request, ENDPOINTS.gemini, key, { paid: true, gemini: true, body: {
             model: model(input.model, "gemini-4-hydrogen", /^gemini-[A-Za-z0-9._-]+$/),
             input: prompt, store: false, stream: false,
@@ -855,23 +1045,14 @@ export function createHandler(dependencies: Dependencies = {}) {
           } });
           return json({ text: geminiText(data, "invalid_chat") });
         }
-        if (provider === "deepseek") {
-          const data = await upstream(request, ENDPOINTS.deepseek, key, { paid: true, body: {
-            model: model(input.model, "deepseek-flash", /^deepseek-[A-Za-z0-9._-]+$/), stream: false,
-            messages: [{ role: "user", content: prompt }],
-          } });
-          requireValue(Array.isArray(data.choices) && data.choices.length === 1, "invalid_chat", 502);
-          const choice = object(data.choices[0], "invalid_chat", 502);
-          return json({ text: text(object(choice.message, "invalid_chat", 502).content, LIMITS.json, "invalid_chat", 502) });
-        }
-        const base = await safeBaseUrl(input.baseUrl);
-        const data = await upstream(request, `${base}/chat/completions`, key, { paid: true, surfaceErrors: true, body: {
-          model: customModel(input.model), stream: false,
+        const url = provider === "deepseek" ? ENDPOINTS.deepseek : `${await safeBaseUrl(input.baseUrl)}/chat/completions`;
+        const upstreamArgs = await upstreamStream(request, url, key, { body: {
+          model: provider === "deepseek"
+            ? model(input.model, "deepseek-flash", /^deepseek-[A-Za-z0-9._-]+$/)
+            : customModel(input.model),
           messages: [{ role: "user", content: prompt }],
         } });
-        requireValue(Array.isArray(data.choices) && data.choices.length === 1, "invalid_chat", 502);
-        const choice = object(data.choices[0], "invalid_chat", 502);
-        return json({ text: text(object(choice.message, "invalid_chat", 502).content, LIMITS.json, "invalid_chat", 502) });
+        return chatSse(request, upstreamArgs);
       }
       if (textAction) {
         requireValue(provider === "gemini" || provider === "deepseek" || provider === "openai-compatible", "invalid_provider");

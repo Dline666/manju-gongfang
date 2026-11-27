@@ -24,6 +24,7 @@ const messages: Record<string, string> = {
   invalid_assets: '资产提取结果或逐镜关联不完整，现有剧本与资产未被修改。',
   invalid_chat: '模型这次没有返回可用文本（可能被内容策略拦截或输出被截断）。请改一句说法再试，这次不计入作品内容。',
   submission_unknown: '未收到服务商明确结果，请先检查已有任务，避免重复付费。',
+  request_aborted: '请求已取消。这次可能已经送达并计费，重发前建议先去平台确认。',
   media_unavailable: '暂时无法下载这段素材，请从原平台下载后重新导入。',
   invalid_input: '请求参数不符合模型要求，请检查时长、模型和参考图。',
   upstream_error: '模型服务返回异常，请检查配置后再试。', service_unavailable: '生成服务暂不可用，请稍后重试。',
@@ -138,6 +139,65 @@ export async function callApi<T>(action: string, payload: object, signal?: Abort
     recordStatus('available');
     return result.data as T;
   } catch (error) { recordStatus('failed', error); throw error; }
+}
+/**
+ * 流式调用：只在 `chat` 上用。
+ * 返回的 `text` 每次都是累计值（不是增量），调用方直接覆盖着渲染，不会漏块也不会重块。
+ * onDelta 抛异常等于取消：用于「用户关掉页面」这类主动放弃。
+ */
+export async function callApiStream(
+  action: string, payload: object, onDelta: (textSoFar: string) => void, signal?: AbortSignal,
+): Promise<{ text: string }> {
+  const recordStatus = providerCallStatus(action, payload);
+  try {
+    const response = await request(action, payload, signal);
+    const type = response.headers.get('Content-Type') ?? '';
+    // 后端可能因为我们把 chat 当流式而返回一次性 JSON（比如 Gemini 那条通道），两种都收。
+    if (!type.includes('text/event-stream')) {
+      const result = await response.json().catch(() => null);
+      if (!result || result.ok !== true) throw new ApiError(result?.error || 'submission_unknown');
+      const text = String(result.data?.text ?? '');
+      onDelta(text);
+      recordStatus('available');
+      return { text };
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new ApiError('invalid_chat');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let failed: ApiError | undefined;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        let event: { delta?: unknown; done?: unknown; error?: unknown; detail?: unknown };
+        try { event = JSON.parse(raw); } catch { continue; }
+        // 流已经开始（HTTP 200），错误只能写在流里：记住它，等流结束再抛。
+        if (typeof event.error === 'string') { failed = new ApiError(event.error, 502, undefined, typeof event.detail === 'string' ? event.detail : undefined); continue; }
+        if (typeof event.delta === 'string' && event.delta) { text += event.delta; onDelta(text); }
+        if (event.done === true) break;
+      }
+      if (failed) break;
+    }
+    void reader.cancel().catch(() => {});
+    if (failed) throw failed;
+    if (!text.trim()) throw new ApiError('invalid_chat');
+    recordStatus('available');
+    return { text };
+  } catch (error) {
+    const api = error instanceof ApiError ? error : new ApiError(signal?.aborted ? 'request_aborted' : 'submission_unknown', 0, undefined, errorMessage(error));
+    recordStatus('failed', api);
+    throw api;
+  }
 }
 export async function callBinary(action: string, payload: object, signal?: AbortSignal) {
   const recordStatus = providerCallStatus(action, payload);

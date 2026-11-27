@@ -140,12 +140,53 @@ export function appendMessage(id: string, message: Omit<ChatMessage, 'id' | 'cre
   return full;
 }
 
+/**
+ * 流式过程中的半截正文：只活在内存里，不写 localStorage。
+ * 逐字落盘会每一帧序列化整份会话，而且在生成中途刷新会留下半句话。
+ */
+let draft: { sessionId: string; messageId: string; text: string } | null = null;
+const draftListeners = new Set<() => void>();
+export function getDraft() { return draft; }
+export function subscribeDraft(listener: () => void) {
+  draftListeners.add(listener);
+  return () => { draftListeners.delete(listener); };
+}
+export function useDraft() {
+  return useSyncExternalStore(subscribeDraft, getDraft, getDraft);
+}
+export function setDraft(sessionId: string, messageId: string, text: string) {
+  draft = { sessionId, messageId, text };
+  draftListeners.forEach(listener => listener());
+}
+export function clearDraft() {
+  if (!draft) return;
+  draft = null;
+  draftListeners.forEach(listener => listener());
+}
+/** 流结束：把最终正文一次性写进会话并清掉草稿。 */
+export function commitDraft(sessionId: string, messageId: string, text: string, error = false) {
+  draft = null;
+  draftListeners.forEach(listener => listener());
+  updateMessage(sessionId, messageId, error ? { text, error: true } : { text });
+}
+
+/** 撤掉占位消息：生成彻底失败且一个字都没流出来时用，避免留下空气泡。 */
+export function removeMessage(sessionId: string, messageId: string) {
+  state = {
+    ...state,
+    sessions: state.sessions.map(session => session.id === sessionId
+      ? { ...session, messages: session.messages.filter(message => message.id !== messageId) }
+      : session),
+  };
+  emit();
+}
+
 /** 流式/追加更新最后一条助手消息（本次实现是一次性写入，保留这个口子便于以后接流式）。 */
 export function updateMessage(sessionId: string, messageId: string, patch: Partial<Pick<ChatMessage, 'text' | 'error'>>) {
   state = {
     ...state,
     sessions: state.sessions.map(session => session.id === sessionId
-      ? { ...session, messages: session.messages.map(message => message.id === messageId ? { ...message, ...patch, ...(patch.text ? { text: patch.text.slice(0, MESSAGE_LIMIT) } : {}) } : message) }
+      ? { ...session, messages: session.messages.map(message => message.id === messageId ? { ...message, ...patch, ...(patch.text !== undefined ? { text: patch.text.slice(0, MESSAGE_LIMIT) } : {}) } : message) }
       : session),
   };
   emit();
