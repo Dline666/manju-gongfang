@@ -282,6 +282,24 @@ details.alert.fold ul{margin-top:2px}
 .nav-item.nav-sub.active .episode-dot{background:var(--site-accent)}
 .local-status{display:flex;align-items:center;gap:7px;font-size:10px;color:var(--site-ink-whisper);padding:12px 15px 2px;border-top:1px solid #ffffff06;margin-top:8px}
 .version-label{margin-left:auto;font-size:9px;color:var(--site-ink-faintest)}
+/* 侧栏收起/展开：展开 240px，收起 64px 图标栏。逻辑同即梦：按钮文案随状态切换，收起后只留图标。 */
+.sidebar-head{flex-direction:row;align-items:center;gap:4px;padding-right:6px}
+.brand{flex:1;min-width:0;padding:28px 6px 29px 20px;align-items:center;gap:12px}
+.sidebar-toggle{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:28px;height:28px;border:0;border-radius:8px;background:none;color:var(--site-ink-quiet)}
+.sidebar-toggle:hover{background:#ffffff0a;color:var(--site-fg)}
+.sidebar-toggle:focus-visible{outline:2px solid var(--site-accent);outline-offset:2px}
+/* 文字瞬间切换，不等宽度动画走完——否则会被挤成一条竖线。 */
+.nav-item{overflow:hidden}
+.nav-label{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[data-slot=sidebar][data-collapsible=icon] .sidebar-head{flex-direction:column;gap:2px;padding:16px 0 4px}
+[data-slot=sidebar][data-collapsible=icon] .brand{flex:none;padding:0;justify-content:center;gap:0}
+[data-slot=sidebar][data-collapsible=icon] .brand-text,[data-slot=sidebar][data-collapsible=icon] .nav-label,[data-slot=sidebar][data-collapsible=icon] .nav-count,[data-slot=sidebar][data-collapsible=icon] .version-label,[data-slot=sidebar][data-collapsible=icon] .sidebar-section-label,[data-slot=sidebar][data-collapsible=icon] .sidebar-episode-list{display:none}
+[data-slot=sidebar][data-collapsible=icon] .nav-item{width:40px;height:40px;min-height:40px;margin:0 auto;padding:0;justify-content:center;gap:0}
+/* 内容区自带 16px 左右内边距，收起后必须让开，否则 40px 的图标块会顶出右边缘。 */
+[data-slot=sidebar][data-collapsible=icon] [data-slot=sidebar-content]{padding-left:0;padding-right:0}
+[data-slot=sidebar][data-collapsible=icon] [data-slot=sidebar-footer]{padding-left:0;padding-right:0}
+[data-slot=sidebar][data-collapsible=icon] [data-slot=sidebar-header]{padding-left:0;padding-right:0}
+[data-slot=sidebar][data-collapsible=icon] .local-status{display:none}
 .breadcrumb-root,.breadcrumb-project,.breadcrumb-series{color:var(--site-muted);font-size:12px}
 .breadcrumb-project:hover,.breadcrumb-series:hover{color:var(--site-accent)}
 

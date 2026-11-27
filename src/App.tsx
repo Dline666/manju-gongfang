@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type CSSProperties } from 'react';
-import { Clapperboard, FileText, FolderOpen, HardDrive, MessagesSquare, Settings2, ChevronRight } from 'lucide-react';
+import { Clapperboard, FileText, FolderOpen, HardDrive, MessagesSquare, Settings2, ChevronRight, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { Toaster } from 'sonner';
 import { SidebarProvider, Sidebar, SidebarContent, SidebarHeader, SidebarFooter, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import { useStudio, selectSeries, selectEpisode } from './store/studio';
@@ -41,7 +41,7 @@ function Studio() {
   const state = useStudio();
   const [route, setRoute] = useState<string>(readRoute);
   const parsed = parseRoute(route);
-  const { setOpenMobile } = useSidebar();
+  const { setOpenMobile, open: sidebarOpen, toggleSidebar } = useSidebar();
   const { jobs } = useJobs();
 
   const series = parsed.page === 'library' && parsed.seriesId
@@ -67,17 +67,27 @@ function Studio() {
       : series ? [series.name, ...(episode ? [episode.title || `第${episode.number}集`] : [])] : ['作品集'];
 
   return <>
-    <Sidebar>
-      <SidebarHeader>
-        <button className="brand" onClick={() => go('chat')}>
+    <Sidebar collapsible="icon">
+      <SidebarHeader className="sidebar-head">
+        <button className="brand" onClick={() => go('chat')} title={sidebarOpen ? undefined : '漫剧工坊'}>
           <span className="brand-mark"><Clapperboard size={24} strokeWidth={1.7} /></span>
-          <span>漫剧工坊<small>MANJU STUDIO</small></span>
+          <span className="brand-text">漫剧工坊<small>MANJU STUDIO</small></span>
+        </button>
+        {/* 收起后宽度只剩 64px，按钮收进图标栏里靠中放，和展开时贴右是同一套逻辑。 */}
+        <button
+          className="sidebar-toggle"
+          onClick={toggleSidebar}
+          aria-label={sidebarOpen ? '收起侧边栏' : '展开侧边栏'}
+          aria-expanded={sidebarOpen}
+          title={sidebarOpen ? '收起侧边栏' : '展开侧边栏'}
+        >
+          {sidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
         </button>
       </SidebarHeader>
       <SidebarContent>
         <div className="sidebar-section-label">创作空间</div>
-        {navigation.map(item => <button key={item.id} className={`nav-item ${parsed.page === item.id ? 'active' : ''}`} onClick={() => go(item.id)}>
-          <item.icon size={19} />{item.title}
+        {navigation.map(item => <button key={item.id} className={`nav-item ${parsed.page === item.id ? 'active' : ''}`} onClick={() => go(item.id)} title={sidebarOpen ? undefined : item.title}>
+          <item.icon size={19} /><span className="nav-label">{item.title}</span>
           {item.id === 'library' && <span className="nav-count">{state.series.length}</span>}
         </button>)}
         {series && <div className="sidebar-episode-list">
@@ -88,8 +98,8 @@ function Studio() {
         </div>}
       </SidebarContent>
       <SidebarFooter>
-        <button className={`nav-item ${settingsPage === 'models' ? 'active' : ''}`} onClick={() => go('settings')}><Settings2 size={18} />模型配置</button>
-        <button className={`nav-item ${settingsPage === 'templates' ? 'active' : ''}`} onClick={() => go('settings/templates')}><FileText size={18} />提示词模板</button>
+        <button className={`nav-item ${settingsPage === 'models' ? 'active' : ''}`} onClick={() => go('settings')} title={sidebarOpen ? undefined : '模型配置'}><Settings2 size={18} /><span className="nav-label">模型配置</span></button>
+        <button className={`nav-item ${settingsPage === 'templates' ? 'active' : ''}`} onClick={() => go('settings/templates')} title={sidebarOpen ? undefined : '提示词模板'}><FileText size={18} /><span className="nav-label">提示词模板</span></button>
         <div className="local-status"><span className="status-dot" /><span>本地创作空间</span><span className="version-label">BETA</span></div>
       </SidebarFooter>
     </Sidebar>
@@ -132,6 +142,15 @@ function Studio() {
   </>;
 }
 
+/**
+ * 侧栏收起状态要跨刷新保留：写 cookie 的是 SidebarProvider，读的得是我们自己。
+ * 没有记录时默认展开——新用户先看到完整导航，比先看到一排光秃秃的图标好。
+ */
+function sidebarStartsOpen(): boolean {
+  const entry = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith('sidebar_state='));
+  return entry ? entry.slice('sidebar_state='.length) !== 'false' : true;
+}
+
 export default function App() {
-  return <SidebarProvider style={{ '--sidebar-width': '240px' } as CSSProperties}><Studio /></SidebarProvider>;
+  return <SidebarProvider defaultOpen={sidebarStartsOpen()} style={{ '--sidebar-width': '240px', '--sidebar-width-icon': '64px' } as CSSProperties}><Studio /></SidebarProvider>;
 }

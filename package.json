@@ -15,7 +15,7 @@
     "dev:function": "node scripts/run-function.mjs",
     "check:function": "deno check functions/index.ts",
     "test": "tsx --test tests/*.test.ts",
-    "test:browser": "node tests/browser-flow.mjs && node tests/browser-recovery.mjs && node tests/browser-chat-stream.mjs",
+    "test:browser": "node tests/browser-flow.mjs && node tests/browser-recovery.mjs && node tests/browser-chat-stream.mjs && node tests/browser-sidebar.mjs",
     "test:media": "node tests/browser-media.mjs"
   },
   "dependencies": {
