@@ -850,7 +850,7 @@ export function createHandler(dependencies: Dependencies = {}) {
    * 注意：**不要**把 request.signal 接到上游 controller 上。
    * Deno 的 legacy 行为会让 request.signal 在「响应成功送达」时也 abort，
    * 于是流刚开就被自己掐断，错误还会被误判成 submission_unknown。
-   * 这里只把 request.signal 当作「用户取消」的标志来读，不参与上游控制。
+   * 流式路径干脆不读它：超时由 firstByte / idle 各自负责。
    */
   async function upstreamStream(url: string, key: string, options: {
     body: ObjectValue; headers?: Record<string, string>;
