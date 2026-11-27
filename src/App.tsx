@@ -41,7 +41,7 @@ function Studio() {
   const state = useStudio();
   const [route, setRoute] = useState<string>(readRoute);
   const parsed = parseRoute(route);
-  const { setOpenMobile, open: sidebarOpen, toggleSidebar } = useSidebar();
+  const { setOpenMobile, open: sidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { jobs } = useJobs();
 
   const series = parsed.page === 'library' && parsed.seriesId
@@ -69,20 +69,29 @@ function Studio() {
   return <>
     <Sidebar collapsible="icon">
       <SidebarHeader className="sidebar-head">
-        <button className="brand" onClick={() => go('chat')} title={sidebarOpen ? undefined : '漫剧工坊'}>
-          <span className="brand-mark"><Clapperboard size={24} strokeWidth={1.7} /></span>
+        {/* 收起后这个按钮就消失了：展开入口藏在品牌图标里，hover 才显形。 */}
+        <button
+          className="brand"
+          onClick={() => (!sidebarOpen && !isMobile ? toggleSidebar() : go('chat'))}
+          aria-label={sidebarOpen ? '漫剧工坊' : '展开侧边栏'}
+          aria-expanded={sidebarOpen}
+          title={sidebarOpen ? undefined : '展开侧边栏'}
+        >
+          <span className="brand-mark">
+            <Clapperboard size={24} strokeWidth={1.7} className="brand-glyph" />
+            <PanelLeftOpen size={17} className="brand-expand" />
+          </span>
           <span className="brand-text">漫剧工坊<small>MANJU STUDIO</small></span>
         </button>
-        {/* 收起后宽度只剩 64px，按钮收进图标栏里靠中放，和展开时贴右是同一套逻辑。 */}
-        <button
+        {sidebarOpen && <button
           className="sidebar-toggle"
           onClick={toggleSidebar}
-          aria-label={sidebarOpen ? '收起侧边栏' : '展开侧边栏'}
-          aria-expanded={sidebarOpen}
-          title={sidebarOpen ? '收起侧边栏' : '展开侧边栏'}
+          aria-label="收起侧边栏"
+          aria-expanded={true}
+          title="收起侧边栏"
         >
-          {sidebarOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
-        </button>
+          <PanelLeftClose size={17} />
+        </button>}
       </SidebarHeader>
       <SidebarContent>
         <div className="sidebar-section-label">创作空间</div>
