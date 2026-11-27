@@ -1,0 +1,163 @@
+// 资产弹窗：列表 → 详情（大图左 / 信息右）→ 翻页 → 回列表 → 分类切换。
+// 走真实路径造数据：新建系列 → 导入分镜 JSON → 打开「角色设置」。
+import { chromium } from '@playwright/test';
+import assert from 'node:assert/strict';
+
+// 连续性校验要求：上一镜的 end 必须等于下一镜的 start。
+const CHAIN = ['阿青站在石阶下', '阿青望向山口', '断剑落在石阶上', '阿青捡起断剑', '阿青把剑递给老剑师'];
+const shot = (number, extra = {}) => ({
+  number, scene: '山门', visual: '阿青站在山门前' + number, duration: 10,
+  shotSize: '中景', movement: '固定', angle: '平视',
+  start: CHAIN[number - 1], action: '抬头看', end: CHAIN[number],
+  ...extra,
+});
+
+const JSON_BODY = {
+  title: '测试集',
+  assets: [
+    { assetId: 'c1', kind: 'character', name: '阿青', description: '十六岁少年，黑短发，青色布衣' },
+    { assetId: 'c2', kind: 'character', name: '老剑师', description: '白发老者，灰袍，拄竹杖' },
+    { assetId: 's1', kind: 'scene', name: '山门', description: '黑色石阶，薄雾' },
+    { assetId: 'p1', kind: 'prop', name: '断剑', description: '红绳剑柄，斜断口' },
+  ],
+  shots: [
+    shot(1, { assets: [{ assetId: 'c1', role: 'subject' }, { assetId: 's1', role: 'background' }] }),
+    shot(2, { visual: '断剑特写', assets: [{ assetId: 'p1', role: 'prop' }] }),
+    shot(3, { visual: '老剑师登场', assets: [{ assetId: 'c2', role: 'subject' }] }),
+    shot(4, { visual: '阿青拾剑', assets: [{ assetId: 'c1', role: 'subject' }] }),
+  ],
+};
+
+const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', e => errors.push(e.message));
+const results = [];
+
+try {
+  await page.goto('http://127.0.0.1:5173/#/library');
+  await page.evaluate(() => localStorage.clear());
+  await page.goto('http://127.0.0.1:5173/#/library');
+  await page.waitForTimeout(1200);
+
+  await page.getByRole('button', { name: '新建系列' }).first().click();
+  await page.waitForTimeout(500);
+  await page.locator('.studio-dialog input').first().fill('资产测试系列');
+  await page.getByRole('button', { name: '创建并打开' }).click();
+  await page.waitForTimeout(1200);
+  const ids = await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('manju-studio-v1')).series[0]; return s.id + '/' + s.episodes[0].id; });
+  await page.goto('http://127.0.0.1:5173/#/library/' + ids);
+  await page.waitForTimeout(1400);
+
+  await page.getByRole('button', { name: /导入分镜/ }).first().click();
+  await page.waitForTimeout(600);
+  await page.getByLabel('分镜 JSON 正文').fill(JSON.stringify(JSON_BODY, null, 2));
+  await page.waitForTimeout(1200);
+  assert.match(await page.evaluate(() => document.querySelector('.studio-dialog')?.innerText ?? ''), /校验通过/, '送进去的分镜应能通过校验');
+  await page.getByRole('button', { name: '确认导入' }).click();
+  await page.waitForTimeout(1500);
+
+  // —— 列表 ——
+  await page.getByRole('button', { name: '角色设置' }).click();
+  await page.waitForTimeout(800);
+  const list = await page.evaluate(() => ({
+    cards: document.querySelectorAll('.asset-card-button').length,
+    textareas: document.querySelectorAll('.asset-card-button textarea').length,
+    names: [...document.querySelectorAll('.asset-card-button strong')].map(el => el.textContent),
+  }));
+  assert.equal(list.cards, 2, '角色应有 2 张卡');
+  assert.equal(list.textareas, 0, '列表里不该有内联输入框——编辑属于详情');
+  assert.deepEqual(list.names, ['阿青', '老剑师']);
+  results.push({ step: 'list', ...list });
+
+  // —— 详情 ——
+  await page.locator('.asset-card-button').first().click();
+  await page.waitForTimeout(600);
+  const detail = await page.evaluate(() => {
+    const media = document.querySelector('.lightbox-media');
+    const info = document.querySelector('.lightbox-info');
+    const box = el => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.x), w: Math.round(r.width) }; };
+    return {
+      hasLightbox: Boolean(document.querySelector('.lightbox')),
+      media: box(media), info: box(info),
+      counter: (document.querySelector('.media-detail .small.muted')?.textContent ?? '').trim(),
+      placeholder: Boolean(document.querySelector('.asset-detail-empty')),
+      readonlyPrompt: document.querySelectorAll('.lightbox-info textarea[readonly]').length,
+      hasUpload: Boolean(document.querySelector('.lightbox-info input[type=file]')),
+      hasSaveField: Boolean(document.querySelector('.lightbox-info textarea:not([readonly])')),
+      refs: [...document.querySelectorAll('.lightbox-info p')].map(p => p.textContent).find(t => t?.includes('关联镜头')) ?? '',
+    };
+  });
+  assert.equal(detail.hasLightbox, true, '应进入 lightbox 详情');
+  assert.ok(detail.media.x < detail.info.x, '大图应在左、信息在右');
+  assert.equal(detail.placeholder, true, '没有设定图时应有占位，不留白洞');
+  assert.equal(detail.readonlyPrompt, 1, '完整图片提示词应是只读一栏');
+  assert.equal(detail.hasUpload, true, '详情里应能上传设定图');
+  assert.equal(detail.hasSaveField, true, '详情里应能改固定描述');
+  assert.match(detail.counter, /1 \/ 2/, '计数器应为 1 / 2');
+  // 关联镜头要给人看的镜号，不是内部 id
+  assert.match(detail.refs, /第1镜/, `关联镜头应是镜号：${detail.refs}`);
+  assert.ok(!/[0-9a-f]{8}-[0-9a-f]{4}/.test(detail.refs), `关联镜头不该出现 UUID：${detail.refs}`);
+  results.push({ step: 'detail', counter: detail.counter, refs: detail.refs });
+
+  // —— 翻页 ——
+  await page.getByRole('button', { name: '下一张' }).click();
+  await page.waitForTimeout(500);
+  assert.match(await page.evaluate(() => (document.querySelector('.media-detail .small.muted')?.textContent ?? '').trim()), /2 \/ 2/);
+
+  // —— 回列表，换分类 ——
+  await page.getByRole('button', { name: '返回列表' }).click();
+  await page.waitForTimeout(500);
+  assert.equal(await page.locator('.asset-card-button').count(), 2, '应能回到列表');
+
+  await page.getByRole('button', { name: '场景', exact: true }).click();
+  await page.waitForTimeout(500);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.asset-card-button strong')].map(el => el.textContent)), ['山门']);
+
+  // 换分类应自动回列表，不能停在上一类的某张图上
+  await page.locator('.asset-card-button').first().click();
+  await page.waitForTimeout(400);
+  await page.getByRole('button', { name: '道具', exact: true }).click();
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => Boolean(document.querySelector('.lightbox'))), false, '换分类应回到列表');
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.asset-card-button strong')].map(el => el.textContent)), ['断剑']);
+
+  assert.deepEqual(errors, []);
+
+  // —— 窄屏：900px 断点下详情要单列堆叠，不许横向溢出 ——
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const mobile = await phone.newPage();
+  await mobile.goto('http://127.0.0.1:5173/#/library');
+  await mobile.evaluate(() => localStorage.clear());
+  await mobile.goto('http://127.0.0.1:5173/#/library');
+  await mobile.waitForTimeout(1200);
+  await mobile.getByRole('button', { name: '新建系列' }).first().click();
+  await mobile.waitForTimeout(500);
+  await mobile.locator('.studio-dialog input').first().fill('窄屏资产');
+  await mobile.getByRole('button', { name: '创建并打开' }).click();
+  await mobile.waitForTimeout(1200);
+  const mobileIds = await mobile.evaluate(() => { const s = JSON.parse(localStorage.getItem('manju-studio-v1')).series[0]; return s.id + '/' + s.episodes[0].id; });
+  await mobile.goto('http://127.0.0.1:5173/#/library/' + mobileIds);
+  await mobile.waitForTimeout(1400);
+  await mobile.getByRole('button', { name: /导入分镜/ }).first().click();
+  await mobile.waitForTimeout(600);
+  await mobile.getByLabel('分镜 JSON 正文').fill(JSON.stringify(JSON_BODY, null, 2));
+  await mobile.waitForTimeout(1200);
+  await mobile.getByRole('button', { name: '确认导入' }).click();
+  await mobile.waitForTimeout(1500);
+  await mobile.getByRole('button', { name: '角色设置' }).click();
+  await mobile.waitForTimeout(800);
+  await mobile.locator('.asset-card-button').first().click();
+  await mobile.waitForTimeout(700);
+  const mobileGeo = await mobile.evaluate(() => {
+    const media = document.querySelector('.lightbox-media').getBoundingClientRect();
+    const info = document.querySelector('.lightbox-info').getBoundingClientRect();
+    return { stacked: info.top >= media.bottom - 2, overflow: document.documentElement.scrollWidth - innerWidth };
+  });
+  assert.equal(mobileGeo.stacked, true, '窄屏详情应单列堆叠');
+  assert.ok(mobileGeo.overflow <= 2, `窄屏不该横向溢出：${mobileGeo.overflow}`);
+  results.push({ step: 'mobile', ...mobileGeo });
+  await phone.close();
+  console.log(JSON.stringify({ passed: true, results }, null, 2));
+} finally { await browser.close(); }

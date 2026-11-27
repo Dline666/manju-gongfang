@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ArrowLeft, ChevronDown, Copy, Film, Layers, ListChecks, Maximize2,
+  ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Copy, Film, Image as ImageIcon, Layers, ListChecks, Maximize2,
   MoreHorizontal, Plus, Settings2, Sparkles, Trash2, Upload, Wand2, Mic,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,6 +12,8 @@ import { finishJob, startJob, updateJob } from '../../store/jobs';
 import { useMediaUrl, useVideo } from '../../store/media';
 import { modelOptions } from '../../lib/models';
 import { modelFor } from '../../lib/endpoints';
+import { fixedDescription } from '../../lib/promptBlocks';
+import { imagePrompt } from '../../lib/prompts';
 import { validateProject } from '../../domain/validation';
 import { Button, Field, Modal, StatusChip, copyText, downloadBlob } from '../../components/Ui';
 import StoryboardImportDialog from './StoryboardImportDialog';
@@ -130,7 +132,7 @@ export default function EpisodePage({ series, episode, navigate }: { series: Ser
     <DialogueDialog open={showDialogue} episode={episode} onClose={() => setShowDialogue(false)} />
     <StyleDialog open={styleOpen} series={series} onClose={() => setStyleOpen(false)} />
     <PromptSettingsDialog open={promptOpen} onClose={() => setPromptOpen(false)} navigate={navigate} />
-    <AssetsDialog open={assetsOpen} episode={episode} initialKind={assetKind} generation={generation} navigate={navigate} onClose={() => setAssetsOpen(false)} onPatch={patchAsset} />
+    <AssetsDialog open={assetsOpen} episode={episode} initialKind={assetKind} generation={generation} navigate={navigate} series={series} onClose={() => setAssetsOpen(false)} onPatch={patchAsset} />
     <ModelsDialog open={modelsOpen} onClose={() => setModelsOpen(false)} navigate={navigate} />
     <SettingsDialog open={settingsOpen} series={series} onClose={() => setSettingsOpen(false)} navigate={navigate} />
     <MoreDialog open={moreOpen} onClose={() => setMoreOpen(false)} navigate={navigate} episode={episode} />
@@ -143,6 +145,13 @@ function currentShotIds(episode: Episode, assetId: string) {
   return episode.shots
     .filter(shot => shot.assetIds.includes(assetId) || shot.dialogues.some(line => line.speakerId === assetId))
     .map(shot => shot.id);
+}
+
+/** 关联镜头给「第N镜」，不给内部 id——id 只在代码里有意义。 */
+function currentShotNumbers(episode: Episode, assetId: string) {
+  return episode.shots
+    .filter(shot => shot.assetIds.includes(assetId) || shot.dialogues.some(line => line.speakerId === assetId))
+    .map(shot => `第${shot.number}镜`);
 }
 
 function EpisodeTopBar({ series, episode, navigate, onImport, onSettings, onDialogue, grid, onGrid, blocking, onBlocking }: {
@@ -359,6 +368,14 @@ function AssetThumb({ asset }: { asset: Asset }) {
   return <span className="asset-thumb-mini">{url ? <img src={url} alt={`${asset.name} 设定图`} /> : <span className="muted">{asset.name.slice(0, 1)}</span>}</span>;
 }
 
+/** 资产详情里的大图：没有设定图时给一块占位，别让左侧空成白洞。 */
+function AssetImage({ asset }: { asset: Asset }) {
+  const url = useMediaUrl(asset.imageId);
+  return url
+    ? <img className="asset-detail-image" src={url} alt={`${asset.name} 设定图`} />
+    : <div className="asset-detail-empty"><ImageIcon size={22} /><span className="small muted">还没有设定图</span></div>;
+}
+
 function DialogueDialog({ open, episode, onClose }: { open: boolean; episode: Episode; onClose: () => void }) {
   const lines = episode.shots.flatMap(shot => shot.dialogues.map(line => ({ shot, line })));
   return <Modal open={open} onClose={onClose} wide title="本集所有台词" description="按镜号列出。改台词请回到分镜表对应那一镜。">
@@ -391,42 +408,95 @@ function PromptSettingsDialog({ open, onClose, navigate }: { open: boolean; onCl
   </Modal>;
 }
 
-function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation, navigate }: {
+function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation, navigate, series }: {
   open: boolean; episode: Episode; onClose: () => void; onPatch: (id: string, patch: Partial<Asset>) => void;
   initialKind: 'character' | 'scene' | 'prop'; generation: ReturnType<typeof useEpisodeGeneration>;
-  navigate: (route: string) => void;
+  navigate: (route: string) => void; series: Series;
 }) {
+  const { settings } = useStudio();
   // 工具栏的「角色/场景/道具设置」要能直接落到对应分类，否则三个按钮长得一模一样。
   // Modal 是常驻挂载的，所以每次打开都要跟一次 initialKind，不能只靠 useState 初值。
   const [kind, setKind] = useState<'character' | 'scene' | 'prop'>(initialKind);
+  const [focusedId, setFocusedId] = useState<string | undefined>(undefined);
   useEffect(() => { if (open) setKind(initialKind); }, [open, initialKind]);
+  // 换分类或关窗时回列表：停在上一类的某张图上会让人以为点错了。
+  useEffect(() => { setFocusedId(undefined); }, [kind, open]);
   const assets = episode.assets.filter(asset => asset.kind !== 'voice' && asset.kind === kind);
-  return <Modal open={open} onClose={onClose} wide title="角色 / 场景 / 道具设置" description="资产按集存放。固定描述会逐字进入提示词，改了要让相关镜头重新生成。">
+  const focused = assets.find(asset => asset.id === focusedId);
+  const focusIndex = focused ? assets.indexOf(focused) : -1;
+  // 左右键翻页，但输入框里按键不该翻。
+  useEffect(() => {
+    if (!focused) return;
+    const handler = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      if (event.key === 'ArrowLeft') setFocusedId(assets[(focusIndex - 1 + assets.length) % assets.length]?.id);
+      if (event.key === 'ArrowRight') setFocusedId(assets[(focusIndex + 1) % assets.length]?.id);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focused?.id, kind, assets.length]);
+
+  const moveFocus = (step: number) => setFocusedId(assets[(focusIndex + step + assets.length) % assets.length]?.id);
+
+  return <Modal open={open} onClose={onClose} wide title="角色 / 场景 / 道具设置"
+    description="资产按集存放。固定描述会逐字进入提示词，改了要让相关镜头重新生成。">
     <div className="row wrap" role="group" aria-label="资产分类">
       {(Object.keys(assetKindLabel) as Array<keyof typeof assetKindLabel>).filter(value => value !== 'voice').map(value =>
         <button key={value} className={`chip ${kind === value ? 'is-active' : ''}`} onClick={() => setKind(value)}>{assetKindLabel[value]}</button>)}
     </div>
-    {assets.length === 0 ? <p className="muted">这一集还没有{assetKindLabel[kind]}资产。导入分镜时会自动建好。</p> : <div className="asset-grid">
-      {assets.map(asset => <article key={asset.id} className="asset-card">
-        <AssetThumb asset={asset} />
-        <div className="min-w-0 stack-tight">
-          <div className="row tight"><strong className="truncate">{asset.name}</strong><span className="tag subtle">{assetKindLabel[asset.kind]}</span></div>
-          <Field label="固定描述" hint="逐字复用，不随镜变化。"><textarea rows={3} value={asset.lock || asset.description} onChange={event => onPatch(asset.id, { lock: event.target.value, description: event.target.value })} /></Field>
-          {!asset.lock.trim() && <span className="tag warning">未锁定 · 生成视频前必须补上</span>}
-          <div className="row tight">
-            <button className="text-button small" onClick={() => void generation.generateAssetImage(asset.id)}><Sparkles size={12} /> 生成设定图</button>
-            <label className="text-button small row tight"><Upload size={12} /> 上传
-              <input type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={`上传「${asset.name}」设定图`} onChange={event => { const picked = event.target.files?.[0]; event.target.value = ''; if (picked) generation.uploadAssetImage(asset.id, picked); }} />
-            </label>
+    {assets.length === 0 ? <p className="muted">这一集还没有{assetKindLabel[kind]}资产。导入分镜时会自动建好。</p>
+      : !focused ? <div className="asset-grid">
+        {assets.map(asset => <button key={asset.id} className="asset-card asset-card-button" onClick={() => setFocusedId(asset.id)} aria-label={`查看${asset.name}详情`}>
+          <AssetThumb asset={asset} />
+          <div className="min-w-0 stack-tight">
+            <div className="row tight"><strong className="truncate">{asset.name}</strong><span className="tag subtle">{assetKindLabel[asset.kind]}</span></div>
+            <p className="small muted clamp-2">{fixedDescription(asset) || '尚未设置固定描述'}</p>
+            {!asset.lock.trim() && <span className="tag warning">未锁定 · 生成视频前必须补上</span>}
           </div>
-        </div>
-      </article>)}
-    </div>}
+        </button>)}
+      </div>
+        : <div className="stack media-detail">
+          <div className="row between">
+            <span className="small muted">{focusIndex + 1} / {assets.length} · {assetKindLabel[focused.kind]}</span>
+            <div className="row">
+              <Button variant="ghost" aria-label="返回列表" onClick={() => setFocusedId(undefined)}><ChevronLeft size={16} />列表</Button>
+              <Button variant="ghost" aria-label="上一张" disabled={assets.length < 2} onClick={() => moveFocus(-1)}><ChevronLeft size={16} />上一张</Button>
+              <Button variant="ghost" aria-label="下一张" disabled={assets.length < 2} onClick={() => moveFocus(1)}>下一张<ChevronRight size={16} /></Button>
+            </div>
+          </div>
+          <div className="lightbox">
+            <div className="lightbox-media"><AssetImage asset={focused} /></div>
+            <div className="stack lightbox-info">
+              <div><h3>描述</h3><p className="media-detail-text">{focused.description || '尚未填写描述'}</p></div>
+              <div className="panel"><h3>固定短语 · 逐字复用</h3><p className="media-detail-text">{fixedDescription(focused) || '尚未设置'}</p></div>
+              <Field label="固定描述" hint="逐字复用，不随镜变化。改了要让相关镜头重新生成。">
+                <textarea rows={3} value={focused.lock || focused.description} onChange={event => onPatch(focused.id, { lock: event.target.value, description: event.target.value })} />
+              </Field>
+              {!focused.lock.trim() && <span className="tag warning">未锁定 · 生成视频前必须补上</span>}
+              <p className="muted">关联镜头：{currentShotNumbers(episode, focused.id).join('、') || '未被引用'}</p>
+              <Field label="完整图片提示词"><textarea rows={6} readOnly value={imagePrompt(episode, focused, settings.promptTemplates)} /></Field>
+              <div className="row wrap">
+                <Button variant="secondary" size="sm" onClick={() => void copyText(fixedDescription(focused))}><Copy size={14} />复制固定短语</Button>
+                <Button variant="secondary" size="sm" onClick={() => void copyText(imagePrompt(episode, focused, settings.promptTemplates))}><Copy size={14} />复制图片提示词</Button>
+              </div>
+              <Field label="上传设定图（PNG / JPEG / WebP）">
+                <input type="file" accept="image/png,image/jpeg,image/webp" aria-label={`上传「${focused.name}」设定图`}
+                  onChange={event => { const picked = event.target.files?.[0]; event.target.value = ''; if (picked) generation.uploadAssetImage(focused.id, picked); }} />
+              </Field>
+              <div className="row wrap">
+                <Button variant="secondary" size="sm" onClick={() => void generation.generateAssetImage(focused.id)}><Sparkles size={14} />生成设定图</Button>
+                <Button variant="secondary" size="sm" onClick={() => { onClose(); navigate(`settings/templates?kind=image&sub=${focused.kind === 'voice' ? 'character' : focused.kind}&scope=project`); }}><Wand2 size={14} />编辑模板</Button>
+              </div>
+            </div>
+          </div>
+        </div>}
     {/* 从这里直接进「生图」模板的对应品类段，省掉「设置 → 模板 → 找品类」三跳。 */}
-    <div className="row end">
+    {!focused && <div className="row end">
       <Button variant="secondary" onClick={() => { onClose(); navigate(`settings/templates?kind=image&sub=${kind}&scope=project`); }}>编辑{assetKindLabel[kind]}模板</Button>
       <Button variant="secondary" onClick={onClose}>关闭</Button>
-    </div>
+    </div>}
+    {focused && <div className="row end"><Button variant="secondary" onClick={onClose}>关闭</Button></div>}
   </Modal>;
 }
 

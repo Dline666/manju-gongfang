@@ -145,6 +145,9 @@ try {
     }
     const imageCallsBefore = paidRequests;
     await page.getByRole('button', { name: '角色设置', exact: true }).click();
+    // 「生成设定图」现在在资产详情里：先点开一张卡，再生成。
+    await page.locator('.asset-card-button').first().click();
+    await page.locator('.lightbox').waitFor();
     await page.getByRole('button', { name: /生成设定图/ }).first().click();
     await page.getByText(/还没有固定描述/).first().waitFor({ timeout: 8000 });
     assert.equal(paidRequests, imageCallsBefore, '未锁定资产不该发出付费请求');
