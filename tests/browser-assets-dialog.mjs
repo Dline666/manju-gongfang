@@ -69,24 +69,26 @@ try {
       rows: document.querySelectorAll('.assets-dialog-table .asset-row').length,
       textareas: document.querySelectorAll('.assets-dialog-table textarea').length,
       names: [...document.querySelectorAll('.assets-dialog-table .asset-name')].map(el => el.textContent),
-      locked: [...document.querySelectorAll('.assets-dialog-table .asset-row')].map(row => row.querySelector('.tag')?.textContent),
+      locked: [...document.querySelectorAll('.assets-dialog-table .asset-row')].map(row => row.querySelector('.asset-name-cell .tag')?.textContent),
       thumbs: document.querySelectorAll('.assets-dialog-table .asset-table-thumb').length,
+      refCells: document.querySelectorAll('.assets-dialog-table .asset-reference-drop').length,
     };
   });
   assert.equal(list.hasTable, true, '列表应是表格，不是卡片网格');
-  assert.deepEqual(list.headers, ['名称', '固定描述', '关联镜头', '图片', '操作']);
+  assert.deepEqual(list.headers, ['形态', '名称', '固定描述', '关联镜头', '参考图', '图片', '操作']);
   assert.equal(list.rows, 2, '角色应有 2 行');
   assert.equal(list.textareas, 0, '表格里不该有内联输入框——编辑属于详情');
   assert.equal(list.thumbs, 2, '每行都要有缩略图');
+  assert.equal(list.refCells, 2, '每行都要有参考图格');
   assert.deepEqual(list.names, ['阿青', '老剑师']);
   // 锁定时长短语为空的那一行要露出来
   assert.deepEqual(list.locked, ['已锁定', '未锁定'], `锁定状态要一眼可见：${JSON.stringify(list.locked)}`);
   results.push({ step: 'list', ...list });
 
-  // 描述列要吃掉剩余宽度；否则旧表格的固定列宽会把空白摊到名称和图片列上。
+  // 描述列要吃掉剩余宽度；否则旧表格的固定列宽会把空白摊到别的列上。
   const widths = await page.evaluate(() => [...document.querySelectorAll('.assets-dialog-table thead th')].map(th => Math.round(th.getBoundingClientRect().width)));
-  assert.ok(widths[1] > widths[0] * 2, `描述列应最宽：${JSON.stringify(widths)}`);
-  assert.ok(widths[3] <= 110 && widths[4] <= 120, `图片与操作列应收紧：${JSON.stringify(widths)}`);
+  assert.ok(widths[2] > widths[1] * 1.8, `描述列应最宽：${JSON.stringify(widths)}`);
+  assert.ok(widths[5] <= 110 && widths[6] <= 130, `图片与操作列应收紧：${JSON.stringify(widths)}`);
   const noOverflow = await page.evaluate(() => {
     const wrap = document.querySelector('.assets-dialog-table').closest('.asset-table-wrap');
     return { inner: wrap.scrollWidth - wrap.clientWidth, page: document.documentElement.scrollWidth - innerWidth };
@@ -181,6 +183,16 @@ try {
   await mobile.waitForTimeout(1500);
   await mobile.getByRole('button', { name: '角色设置' }).click();
   await mobile.waitForTimeout(800);
+  // 窄屏列表变卡片：关联镜头留着，参考图藏掉（挂载靠拖，触摸屏用不了）。
+  const cardLayout = await mobile.evaluate(() => {
+    const row = document.querySelector('.assets-dialog-table tbody .asset-row');
+    const visible = index => { const cell = row.children[index]; return cell ? getComputedStyle(cell).display !== 'none' : false; };
+    return { shotRefVisible: visible(3), referenceVisible: visible(4), thumbVisible: visible(5), actionsVisible: visible(6) };
+  });
+  assert.equal(cardLayout.shotRefVisible, true, '窄屏应显示关联镜头');
+  assert.equal(cardLayout.referenceVisible, false, '窄屏藏掉参考图格');
+  assert.equal(cardLayout.thumbVisible, true, '窄屏应显示缩略图');
+  assert.equal(cardLayout.actionsVisible, true, '窄屏应显示操作');
   await mobile.locator('.assets-dialog-table .asset-name').first().click();
   await mobile.waitForTimeout(700);
   const mobileGeo = await mobile.evaluate(() => {

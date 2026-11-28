@@ -10,6 +10,7 @@ import { videoPrompt, imagePrompt, fixedDescription } from '../../lib/prompts';
 import { fixedHash, generatedImageBlob, validateImage } from '../../lib/imageFile';
 import { modelFor } from '../../lib/endpoints';
 import { validateProject } from '../../domain/validation';
+import { referenceAssetFor } from './assetForms';
 import { joinSpeech } from '../../lib/dubbing';
 import { putMedia, getMedia, blobDataUrl, mediaDuration } from '../../store/media';
 import { finishJob, startJob, updateJob } from '../../store/jobs';
@@ -342,7 +343,11 @@ export function useEpisodeGeneration(series: Series, episode: Episode) {
       const jobId = startJob({ kind: 'image', label: `生成「${asset.name}」设定图`, cancel: () => controller.abort() });
       try {
         updateJob(jobId, { detail: '生成图片中' });
-        const result = await callApi<ImageResult>('image', { provider: auth.provider, key: auth.key, model: auth.model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}), prompt }, controller.signal);
+        // 参考图按资产动态解析：来源资产换了设定图，引用它的形态也跟着用新图。
+        const source = referenceAssetFor(asset, live!.assets);
+        const sourceImage = source?.imageId ? await getMedia(source.imageId) : undefined;
+        const reference = sourceImage ? await blobDataUrl(sourceImage) : undefined;
+        const result = await callApi<ImageResult>('image', { provider: auth.provider, key: auth.key, model: auth.model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}), prompt, ...(reference ? { reference } : {}) }, controller.signal);
         const after = getStudio().series.find(item => item.id === seriesId)?.episodes.find(item => item.id === episodeId);
         const nowAsset = after?.assets.find(item => item.id === assetId);
         if (!nowAsset) throw new Error('资产已删除，本次结果不写入。');

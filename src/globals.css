@@ -209,11 +209,14 @@ details.alert.fold ul{margin-top:2px}
   .asset-table td:nth-child(1){grid-column:1;grid-row:1}
   .asset-table td:nth-child(2){grid-column:1;grid-row:2}
   .asset-table td:nth-child(3){grid-column:1 / -1;grid-row:3}
-  .asset-table td:nth-child(4),.asset-table td:nth-child(5){display:none}
+  /* 窄屏：关联镜头要留着（有用信息），参考图藏掉——挂载靠拖，触摸屏用不了。 */
+  .asset-table td:nth-child(4){grid-column:1;grid-row:4;font-size:11px}
+  .asset-table td:nth-child(5){display:none}
   .asset-table td:nth-child(6){grid-column:2;grid-row:1 / span 2;justify-self:end}
-  .asset-table td:nth-child(7){grid-column:1 / -1;grid-row:4;display:flex;justify-content:flex-end}
+  .asset-table td:nth-child(7){grid-column:1 / -1;grid-row:5;display:flex;justify-content:flex-end}
   .asset-table tr:hover{background:var(--site-surface)}
-  .asset-row.is-form{border-left:3px solid #2e594f}
+  /* 形态行靠缩进与底色区分，不用左侧竖条——竖条在卡片里像「被选中的 tab」。 */
+  .asset-row.is-form{background:#191a1d}
   .form-desc{min-width:0;max-width:none}
   .asset-table-thumb{width:56px;height:66px}
   .page-heading{gap:10px;flex-wrap:wrap}
@@ -445,14 +448,18 @@ details.alert.fold ul{margin-top:2px}
 .asset-thumb-mini img{width:100%;height:100%;object-fit:cover}
 .asset-mini-grid .asset-thumb-mini{width:28px;height:28px}
 /* 资产弹窗的表格只有 5 列，宽度规则得自己给——照搬 7 列的 nth-child 会错位。 */
-.asset-table.assets-dialog-table{min-width:720px}
-.asset-table.assets-dialog-table th:nth-child(1){width:170px}
-/* 描述列吃掉剩余宽度，否则旧规则的 130px 会让多余空间平摊到名称和图片列上。 */
-.asset-table.assets-dialog-table th:nth-child(2){width:auto}
-.asset-table.assets-dialog-table th:nth-child(3){width:120px}
-.asset-table.assets-dialog-table th:nth-child(4){width:92px}
-.asset-table.assets-dialog-table th:nth-child(5){width:100px}
+.asset-table.assets-dialog-table{min-width:860px}
+.asset-table.assets-dialog-table th:nth-child(1){width:120px}
+.asset-table.assets-dialog-table th:nth-child(2){width:150px}
+/* 描述列吃掉剩余宽度，否则旧规则的固定列宽会把多余空间平摊到别的列上。 */
+.asset-table.assets-dialog-table th:nth-child(3){width:auto}
+.asset-table.assets-dialog-table th:nth-child(4){width:110px}
+.asset-table.assets-dialog-table th:nth-child(5){width:88px}
+.asset-table.assets-dialog-table th:nth-child(6){width:88px}
+.asset-table.assets-dialog-table th:nth-child(7){width:96px}
 .asset-table-thumb .asset-thumb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;height:100%;background:#121416;font-size:12px;color:var(--site-ink-whisper)}
+/* 形态行的名称列跟着缩进，否则看不出它属于上一行。 */
+.assets-dialog-table .asset-row.is-form .asset-name-cell{padding-left:18px}
 /* 详情大图按 9:16 画幅留位，图和占位都撑满，避免左右两栏高矮跳。 */
 .asset-detail-image{display:block;width:100%;border:1px solid var(--site-border);border-radius:12px;background:#0d0f10;object-fit:contain;max-height:520px}
 .asset-detail-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:280px;border:1px solid var(--site-border);border-radius:12px;background:#121416;color:var(--site-ink-whisper)}

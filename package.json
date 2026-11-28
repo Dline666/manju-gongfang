@@ -17,7 +17,7 @@
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit && node scripts/build.mjs",
     "test:quick": "tsx --test tests/*.test.ts && node scripts/build.mjs",
-    "test:browser": "node tests/browser-flow.mjs && node tests/browser-recovery.mjs && node tests/browser-chat-stream.mjs && node tests/browser-sidebar.mjs && node tests/browser-assets-dialog.mjs",
+    "test:browser": "node tests/browser-flow.mjs && node tests/browser-recovery.mjs && node tests/browser-chat-stream.mjs && node tests/browser-sidebar.mjs && node tests/browser-assets-dialog.mjs && node tests/browser-asset-forms.mjs && node tests/browser-asset-reference.mjs",
     "test:media": "node tests/browser-media.mjs"
   },
   "dependencies": {

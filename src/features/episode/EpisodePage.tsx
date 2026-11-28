@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, Fragment, type DragEvent } from 'react';
 import {
-  ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Copy, Film, Image as ImageIcon, Layers, ListChecks, Maximize2,
-  MoreHorizontal, Plus, Settings2, Sparkles, Trash2, Upload, Wand2, Mic,
+  ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Copy, Film, Image as ImageIcon, ImagePlus, Layers, ListChecks, Maximize2,
+  MoreHorizontal, Plus, Settings2, Sparkles, Trash2, Upload, Wand2, Mic, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { Asset, Shot } from '../../domain/types';
@@ -17,7 +17,11 @@ import { imagePrompt } from '../../lib/prompts';
 import { validateProject } from '../../domain/validation';
 import { Button, Field, Modal, StatusChip, copyText, downloadBlob } from '../../components/Ui';
 import StoryboardImportDialog from './StoryboardImportDialog';
+import { groupAssets, referenceAssetFor, splitFormName } from './assetForms';
 import { taskLabels, useEpisodeGeneration } from './generation';
+
+/** 拖动资产图片时用的私有 MIME 类型：只在本页里认，避免接住从别处拖来的文件。 */
+const ASSET_DRAG_TYPE = 'application/x-manju-asset-id';
 
 const assetKindLabel = { character: '人物', scene: '场景', prop: '道具', voice: '音色' } as const;
 
@@ -50,6 +54,9 @@ export default function EpisodePage({ series, episode, navigate }: { series: Ser
 
   function patchShot(id: string, patch: Partial<Shot>) {
     updateEpisode(series.id, episode.id, current => ({ ...current, shots: current.shots.map(shot => shot.id === id ? { ...shot, ...patch } : shot) }), { only: [id], reason: '本镜的提示词或资产已改动' });
+  }
+  function addAsset(asset: Asset) {
+    updateEpisode(series.id, episode.id, current => ({ ...current, assets: [...current.assets, asset] }));
   }
   function patchAsset(id: string, patch: Partial<Asset>) {
     const related = currentShotIds(episode, id);
@@ -132,7 +139,7 @@ export default function EpisodePage({ series, episode, navigate }: { series: Ser
     <DialogueDialog open={showDialogue} episode={episode} onClose={() => setShowDialogue(false)} />
     <StyleDialog open={styleOpen} series={series} onClose={() => setStyleOpen(false)} />
     <PromptSettingsDialog open={promptOpen} onClose={() => setPromptOpen(false)} navigate={navigate} />
-    <AssetsDialog open={assetsOpen} episode={episode} initialKind={assetKind} generation={generation} navigate={navigate} series={series} onClose={() => setAssetsOpen(false)} onPatch={patchAsset} />
+    <AssetsDialog open={assetsOpen} episode={episode} initialKind={assetKind} generation={generation} navigate={navigate} series={series} onClose={() => setAssetsOpen(false)} onPatch={patchAsset} onAdd={addAsset} />
     <ModelsDialog open={modelsOpen} onClose={() => setModelsOpen(false)} navigate={navigate} />
     <SettingsDialog open={settingsOpen} series={series} onClose={() => setSettingsOpen(false)} navigate={navigate} />
     <MoreDialog open={moreOpen} onClose={() => setMoreOpen(false)} navigate={navigate} episode={episode} />
@@ -384,6 +391,37 @@ function AssetTableThumb({ asset }: { asset: Asset }) {
     : <span className="asset-thumb-empty"><ImageIcon size={16} /><span>{asset.name.slice(0, 1)}</span></span>;
 }
 
+/**
+ * 资产表里的「参考图」格：默认留空，把其他资产的图片拖进来即挂载。
+ * 挂载后显示来源资产当前的设定图；生成时会把它作为图生图参考发送。
+ */
+function AssetReference({ asset, source, onMount, onClear }: { asset: Asset; source?: Asset; onMount: (sourceId: string) => void; onClear: () => void }) {
+  const url = useMediaUrl(source?.imageId);
+  const [over, setOver] = useState(false);
+  const hasReference = !!source || (asset.referenceAssetId !== undefined && asset.referenceAssetId !== '');
+  const missing = hasReference && (!source || !source.imageId);
+  const accepts = (event: DragEvent<HTMLDivElement>) => event.dataTransfer.types.includes(ASSET_DRAG_TYPE);
+  return <div
+    className={`asset-reference-drop ${url ? 'has-image' : 'is-empty'}${over ? ' is-over' : ''}`}
+    role="group"
+    aria-label={hasReference ? `${asset.name}的参考图${source ? `来自「${source.name}」` : '来源已删除'}` : `为${asset.name}挂载参考图：把其他资产的图片拖到这里`}
+    title={hasReference
+      ? source ? `参考图来自「${source.name}」；生成时会把这张图作为参考图发送。` : '参考图来源资产已删除，请清除后重新挂载。'
+      : '把其他资产的图片拖到这里作为参考图；留空表示纯文本生成。'}
+    onDragOver={event => { if (accepts(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setOver(true); } }}
+    onDragLeave={event => { const related = event.relatedTarget; if (!(related instanceof Node) || !event.currentTarget.contains(related)) setOver(false); }}
+    onDrop={event => {
+      event.preventDefault();
+      setOver(false);
+      const sourceId = event.dataTransfer.getData(ASSET_DRAG_TYPE);
+      if (sourceId) onMount(sourceId);
+    }}
+  >
+    {url ? <img className="asset-reference-image" src={url} alt={`参考图：${source?.name ?? ''}`} /> : <span className="asset-reference-empty">{missing ? '参考图缺失' : <ImagePlus size={14} />}</span>}
+    {hasReference && <button type="button" className="asset-reference-clear" aria-label={`清除${asset.name}的参考图`} onClick={event => { event.stopPropagation(); onClear(); }}><X size={12} /></button>}
+  </div>;
+}
+
 function DialogueDialog({ open, episode, onClose }: { open: boolean; episode: Episode; onClose: () => void }) {
   const lines = episode.shots.flatMap(shot => shot.dialogues.map(line => ({ shot, line })));
   return <Modal open={open} onClose={onClose} wide title="本集所有台词" description="按镜号列出。改台词请回到分镜表对应那一镜。">
@@ -416,8 +454,9 @@ function PromptSettingsDialog({ open, onClose, navigate }: { open: boolean; onCl
   </Modal>;
 }
 
-function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation, navigate, series }: {
+function AssetsDialog({ open, episode, onClose, onPatch, onAdd, initialKind, generation, navigate, series }: {
   open: boolean; episode: Episode; onClose: () => void; onPatch: (id: string, patch: Partial<Asset>) => void;
+  onAdd: (asset: Asset) => void;
   initialKind: 'character' | 'scene' | 'prop'; generation: ReturnType<typeof useEpisodeGeneration>;
   navigate: (route: string) => void; series: Series;
 }) {
@@ -450,6 +489,70 @@ function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation
 
   const moveFocus = (step: number) => setFocusedId(assets[(focusIndex + step + assets.length) % assets.length]?.id);
 
+  // 有形态的基础资产默认展开：形态本来就是想看的部分，默认收起等于没做。
+  // 只在开窗/换分类时重置，用户手动折叠后不会被下一帧弹开。
+  const [expandedForms, setExpandedForms] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!open) return;
+    setExpandedForms(new Set(groupAssets(episode.assets.filter(asset => asset.kind === kind)).filter(group => group.forms.length > 0).map(group => group.key)));
+  }, [open, kind]);
+  const toggleForm = (key: string) => setExpandedForms(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+
+  /** 新增形态：沿用基础形态的描述与固定短语，默认挂它的当前设定图作参考。 */
+  const addForm = (base: Asset) => {
+    const { base: baseName } = splitFormName(base.name);
+    const seed = base.description.trim();
+    const prefix = seed ? (/[。！？.!?]$/.test(seed) ? seed : `${seed}。`) : '';
+    onAdd({
+      id: uid(), kind: base.kind,
+      name: `${baseName} · 新形态`,
+      description: `${prefix}新形态：保持五官、发型与配色一致，需要变化的部分：`,
+      lock: base.lock || seed,
+      ...(base.imageId ? { referenceAssetId: base.id } : {}),
+    });
+    // 刚建好的形态要当场看得见：这一组如果原本是收起的，顺手展开。
+    setExpandedForms(previous => new Set(previous).add(base.id));
+    toast.success(`已新增「${baseName} · 新形态」，改好名字和描述再生成设定图。`);
+  };
+
+  const renderAssetRow = (asset: Asset, role: 'base' | 'form', hasForms: boolean) => {
+    const { form } = splitFormName(asset.name);
+    const source = referenceAssetFor(asset, assets);
+    const isForm = role === 'form';
+    const canAddForm = role === 'base';
+    return <tr key={asset.id} className={`asset-row ${isForm ? 'is-form' : ''}`.trim()}>
+      <td className="asset-form-cell"><div className="asset-form">
+        {hasForms
+          ? <button type="button" className="form-toggle" aria-expanded={expandedForms.has(asset.id)} aria-label={`${expandedForms.has(asset.id) ? '收起' : '展开'}形态`} onClick={() => toggleForm(asset.id)}><ChevronRight size={14} /></button>
+          : <span className="form-toggle-space" />}
+        <span className="tag subtle">{form || '基础形态'}</span>
+      </div></td>
+      <td><div className="asset-name-cell">
+        <button type="button" className="text-button asset-name" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}>{splitFormName(asset.name).base}</button>
+        {asset.lock.trim() ? <span className="tag subtle">已锁定</span> : <span className="tag warning">未锁定</span>}
+      </div></td>
+      <td><button type="button" className={`text-button form-desc ${openDesc.has(asset.id) ? 'is-open' : ''}`.trim()} aria-expanded={openDesc.has(asset.id)} title={openDesc.has(asset.id) ? '收起描述' : '展开全文'} onClick={() => toggleDesc(asset.id)}>{fixedDescription(asset) || '尚未设置固定描述'}</button></td>
+      <td className="asset-cell-muted">{currentShotNumbers(episode, asset.id).join('、') || '未被引用'}</td>
+      <td><AssetReference asset={asset} source={source}
+        onMount={sourceId => {
+          const picked = assets.find(item => item.id === sourceId);
+          if (!picked) return;
+          if (picked.id === asset.id) { toast.error('不能把这个资产自己的图片作为参考图。'); return; }
+          if (!picked.imageId) { toast.error(`「${picked.name}」还没有设定图，不能作为参考图。`); return; }
+          onPatch(asset.id, { referenceAssetId: picked.id });
+          toast.success(`已把「${picked.name}」的当前设定图挂为「${asset.name}」的参考图。`);
+        }}
+        onClear={() => { onPatch(asset.id, { referenceAssetId: '' }); toast.success('已清除参考图，之后按纯文本生成。'); }} /></td>
+      <td><button type="button" className="asset-table-thumb" aria-label={`查看${asset.name}图片`} draggable={!!asset.imageId}
+        onDragStart={event => { if (!asset.imageId) { event.preventDefault(); return; } event.dataTransfer.setData(ASSET_DRAG_TYPE, asset.id); event.dataTransfer.effectAllowed = 'copy'; }}
+        onClick={() => setFocusedId(asset.id)}><AssetTableThumb asset={asset} /></button></td>
+      <td><div className="asset-row-actions">
+        <Button variant="ghost" size="sm" aria-label={`生成${asset.name}设定图`} onClick={() => void generation.generateAssetImage(asset.id)}><Sparkles size={14} /></Button>
+        {canAddForm && <Button variant="ghost" size="sm" aria-label={`为${splitFormName(asset.name).base}新增形态`} onClick={() => addForm(asset)}><Plus size={14} /></Button>}
+      </div></td>
+    </tr>;
+  };
+
   return <Modal open={open} onClose={onClose} wide title="角色 / 场景 / 道具设置"
     description="资产按集存放。固定描述会逐字进入提示词，改了要让相关镜头重新生成。">
     <div className="row wrap" role="group" aria-label="资产分类">
@@ -458,20 +561,14 @@ function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation
     </div>
     {assets.length === 0 ? <p className="muted">这一集还没有{assetKindLabel[kind]}资产。导入分镜时会自动建好。</p>
       : !focused ? <div className="asset-table-wrap"><table className="asset-table assets-dialog-table">
-        <thead><tr><th scope="col">名称</th><th scope="col">固定描述</th><th scope="col">关联镜头</th><th scope="col">图片</th><th scope="col">操作</th></tr></thead>
-        <tbody>{assets.map(asset => <tr key={asset.id} className="asset-row">
-          <td><div className="asset-name-cell">
-            <button type="button" className="text-button asset-name" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}>{asset.name}</button>
-            {asset.lock.trim() ? <span className="tag subtle">已锁定</span> : <span className="tag warning">未锁定</span>}
-          </div></td>
-          <td><button type="button" className={`text-button form-desc ${openDesc.has(asset.id) ? 'is-open' : ''}`.trim()} aria-expanded={openDesc.has(asset.id)} title={openDesc.has(asset.id) ? '收起描述' : '展开全文'} onClick={() => toggleDesc(asset.id)}>{fixedDescription(asset) || '尚未设置固定描述'}</button></td>
-          <td className="asset-cell-muted">{currentShotNumbers(episode, asset.id).join('、') || '未被引用'}</td>
-          <td><button type="button" className="asset-table-thumb" aria-label={`查看${asset.name}图片`} onClick={() => setFocusedId(asset.id)}><AssetTableThumb asset={asset} /></button></td>
-          <td><div className="asset-row-actions">
-            <Button variant="ghost" size="sm" aria-label={`生成${asset.name}设定图`} onClick={() => void generation.generateAssetImage(asset.id)}><Sparkles size={14} /></Button>
-            <Button variant="ghost" size="sm" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}><Maximize2 size={14} /></Button>
-          </div></td>
-        </tr>)}</tbody>
+        <thead><tr>
+          <th scope="col" className="col-form">形态</th><th scope="col">名称</th><th scope="col">固定描述</th>
+          <th scope="col">关联镜头</th><th scope="col">参考图</th><th scope="col">图片</th><th scope="col">操作</th>
+        </tr></thead>
+        <tbody>{groupAssets(assets).map(group => <Fragment key={group.key}>
+          {renderAssetRow(group.base, 'base', group.forms.length > 0)}
+          {expandedForms.has(group.key) && group.forms.map(form => renderAssetRow(form, 'form', false))}
+        </Fragment>)}</tbody>
       </table></div>
         : <div className="stack media-detail">
           <div className="row between">
