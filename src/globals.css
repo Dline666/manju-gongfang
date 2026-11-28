@@ -444,11 +444,15 @@ details.alert.fold ul{margin-top:2px}
 .asset-thumb-mini{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;flex-shrink:0;border:1px solid var(--site-border);border-radius:8px;background:#121416;overflow:hidden;font-size:13px;color:var(--site-ink-whisper)}
 .asset-thumb-mini img{width:100%;height:100%;object-fit:cover}
 .asset-mini-grid .asset-thumb-mini{width:28px;height:28px}
-/* 列表态整张卡片就是查看详情的入口，不要再塞输入框——编辑属于详情。 */
-.asset-card-button{display:flex;gap:12px;border:1px solid var(--site-border);background:#17181b;border-radius:12px;padding:12px;min-width:0;text-align:left;color:inherit;align-items:flex-start}
-.asset-card-button:hover{border-color:var(--site-border)}
-.asset-card-button:focus-visible{outline:2px solid var(--site-accent);outline-offset:2px}
-.clamp-2{display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* 资产弹窗的表格只有 5 列，宽度规则得自己给——照搬 7 列的 nth-child 会错位。 */
+.asset-table.assets-dialog-table{min-width:720px}
+.asset-table.assets-dialog-table th:nth-child(1){width:170px}
+/* 描述列吃掉剩余宽度，否则旧规则的 130px 会让多余空间平摊到名称和图片列上。 */
+.asset-table.assets-dialog-table th:nth-child(2){width:auto}
+.asset-table.assets-dialog-table th:nth-child(3){width:120px}
+.asset-table.assets-dialog-table th:nth-child(4){width:92px}
+.asset-table.assets-dialog-table th:nth-child(5){width:100px}
+.asset-table-thumb .asset-thumb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;height:100%;background:#121416;font-size:12px;color:var(--site-ink-whisper)}
 /* 详情大图按 9:16 画幅留位，图和占位都撑满，避免左右两栏高矮跳。 */
 .asset-detail-image{display:block;width:100%;border:1px solid var(--site-border);border-radius:12px;background:#0d0f10;object-fit:contain;max-height:520px}
 .asset-detail-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:280px;border:1px solid var(--site-border);border-radius:12px;background:#121416;color:var(--site-ink-whisper)}

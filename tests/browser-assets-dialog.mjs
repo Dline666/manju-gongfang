@@ -16,7 +16,7 @@ const JSON_BODY = {
   title: '测试集',
   assets: [
     { assetId: 'c1', kind: 'character', name: '阿青', description: '十六岁少年，黑短发，青色布衣' },
-    { assetId: 'c2', kind: 'character', name: '老剑师', description: '白发老者，灰袍，拄竹杖' },
+    { assetId: 'c2', kind: 'character', name: '老剑师', description: '' },
     { assetId: 's1', kind: 'scene', name: '山门', description: '黑色石阶，薄雾' },
     { assetId: 'p1', kind: 'prop', name: '断剑', description: '红绳剑柄，斜断口' },
   ],
@@ -58,21 +58,54 @@ try {
   await page.getByRole('button', { name: '确认导入' }).click();
   await page.waitForTimeout(1500);
 
-  // —— 列表 ——
+  // —— 列表：表格 ——
   await page.getByRole('button', { name: '角色设置' }).click();
   await page.waitForTimeout(800);
-  const list = await page.evaluate(() => ({
-    cards: document.querySelectorAll('.asset-card-button').length,
-    textareas: document.querySelectorAll('.asset-card-button textarea').length,
-    names: [...document.querySelectorAll('.asset-card-button strong')].map(el => el.textContent),
-  }));
-  assert.equal(list.cards, 2, '角色应有 2 张卡');
-  assert.equal(list.textareas, 0, '列表里不该有内联输入框——编辑属于详情');
+  const list = await page.evaluate(() => {
+    const table = document.querySelector('.asset-table.assets-dialog-table');
+    return {
+      hasTable: Boolean(table),
+      headers: [...document.querySelectorAll('.assets-dialog-table thead th')].map(el => el.textContent),
+      rows: document.querySelectorAll('.assets-dialog-table .asset-row').length,
+      textareas: document.querySelectorAll('.assets-dialog-table textarea').length,
+      names: [...document.querySelectorAll('.assets-dialog-table .asset-name')].map(el => el.textContent),
+      locked: [...document.querySelectorAll('.assets-dialog-table .asset-row')].map(row => row.querySelector('.tag')?.textContent),
+      thumbs: document.querySelectorAll('.assets-dialog-table .asset-table-thumb').length,
+    };
+  });
+  assert.equal(list.hasTable, true, '列表应是表格，不是卡片网格');
+  assert.deepEqual(list.headers, ['名称', '固定描述', '关联镜头', '图片', '操作']);
+  assert.equal(list.rows, 2, '角色应有 2 行');
+  assert.equal(list.textareas, 0, '表格里不该有内联输入框——编辑属于详情');
+  assert.equal(list.thumbs, 2, '每行都要有缩略图');
   assert.deepEqual(list.names, ['阿青', '老剑师']);
+  // 锁定时长短语为空的那一行要露出来
+  assert.deepEqual(list.locked, ['已锁定', '未锁定'], `锁定状态要一眼可见：${JSON.stringify(list.locked)}`);
   results.push({ step: 'list', ...list });
 
+  // 描述列要吃掉剩余宽度；否则旧表格的固定列宽会把空白摊到名称和图片列上。
+  const widths = await page.evaluate(() => [...document.querySelectorAll('.assets-dialog-table thead th')].map(th => Math.round(th.getBoundingClientRect().width)));
+  assert.ok(widths[1] > widths[0] * 2, `描述列应最宽：${JSON.stringify(widths)}`);
+  assert.ok(widths[3] <= 110 && widths[4] <= 120, `图片与操作列应收紧：${JSON.stringify(widths)}`);
+  const noOverflow = await page.evaluate(() => {
+    const wrap = document.querySelector('.assets-dialog-table').closest('.asset-table-wrap');
+    return { inner: wrap.scrollWidth - wrap.clientWidth, page: document.documentElement.scrollWidth - innerWidth };
+  });
+  assert.equal(noOverflow.inner, 0, '宽屏下表格不该出现横向滚动');
+  assert.equal(noOverflow.page, 0, '宽屏下页面不该横向溢出');
+
+  // 描述超长时能展开
+  const descButton = page.locator('.assets-dialog-table .form-desc').first();
+  assert.equal(await descButton.getAttribute('aria-expanded'), 'false');
+  await descButton.click();
+  await page.waitForTimeout(300);
+  assert.equal(await descButton.getAttribute('aria-expanded'), 'true', '描述应可展开');
+  await descButton.click();
+  await page.waitForTimeout(300);
+  assert.equal(await descButton.getAttribute('aria-expanded'), 'false', '再点应收起');
+
   // —— 详情 ——
-  await page.locator('.asset-card-button').first().click();
+  await page.locator('.assets-dialog-table .asset-name').first().click();
   await page.waitForTimeout(600);
   const detail = await page.evaluate(() => {
     const media = document.querySelector('.lightbox-media');
@@ -109,19 +142,19 @@ try {
   // —— 回列表，换分类 ——
   await page.getByRole('button', { name: '返回列表' }).click();
   await page.waitForTimeout(500);
-  assert.equal(await page.locator('.asset-card-button').count(), 2, '应能回到列表');
+  assert.equal(await page.locator('.assets-dialog-table .asset-row').count(), 2, '应能回到列表');
 
   await page.getByRole('button', { name: '场景', exact: true }).click();
   await page.waitForTimeout(500);
-  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.asset-card-button strong')].map(el => el.textContent)), ['山门']);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.assets-dialog-table .asset-name')].map(el => el.textContent)), ['山门']);
 
   // 换分类应自动回列表，不能停在上一类的某张图上
-  await page.locator('.asset-card-button').first().click();
+  await page.locator('.assets-dialog-table .asset-name').first().click();
   await page.waitForTimeout(400);
   await page.getByRole('button', { name: '道具', exact: true }).click();
   await page.waitForTimeout(500);
   assert.equal(await page.evaluate(() => Boolean(document.querySelector('.lightbox'))), false, '换分类应回到列表');
-  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.asset-card-button strong')].map(el => el.textContent)), ['断剑']);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.assets-dialog-table .asset-name')].map(el => el.textContent)), ['断剑']);
 
   assert.deepEqual(errors, []);
 
@@ -148,7 +181,7 @@ try {
   await mobile.waitForTimeout(1500);
   await mobile.getByRole('button', { name: '角色设置' }).click();
   await mobile.waitForTimeout(800);
-  await mobile.locator('.asset-card-button').first().click();
+  await mobile.locator('.assets-dialog-table .asset-name').first().click();
   await mobile.waitForTimeout(700);
   const mobileGeo = await mobile.evaluate(() => {
     const media = document.querySelector('.lightbox-media').getBoundingClientRect();

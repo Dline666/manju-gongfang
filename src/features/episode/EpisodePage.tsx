@@ -376,6 +376,14 @@ function AssetImage({ asset }: { asset: Asset }) {
     : <div className="asset-detail-empty"><ImageIcon size={22} /><span className="small muted">还没有设定图</span></div>;
 }
 
+/** 表格里的竖版缩略图：64×76 的格子，没有图时给首字占位。 */
+function AssetTableThumb({ asset }: { asset: Asset }) {
+  const url = useMediaUrl(asset.imageId);
+  return url
+    ? <img className="compact-media-image" src={url} alt={`${asset.name} 设定图`} />
+    : <span className="asset-thumb-empty"><ImageIcon size={16} /><span>{asset.name.slice(0, 1)}</span></span>;
+}
+
 function DialogueDialog({ open, episode, onClose }: { open: boolean; episode: Episode; onClose: () => void }) {
   const lines = episode.shots.flatMap(shot => shot.dialogues.map(line => ({ shot, line })));
   return <Modal open={open} onClose={onClose} wide title="本集所有台词" description="按镜号列出。改台词请回到分镜表对应那一镜。">
@@ -418,9 +426,12 @@ function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation
   // Modal 是常驻挂载的，所以每次打开都要跟一次 initialKind，不能只靠 useState 初值。
   const [kind, setKind] = useState<'character' | 'scene' | 'prop'>(initialKind);
   const [focusedId, setFocusedId] = useState<string | undefined>(undefined);
+  // 描述默认折三行；长的固定短语折起来才看得见整张表。
+  const [openDesc, setOpenDesc] = useState<Set<string>>(new Set());
   useEffect(() => { if (open) setKind(initialKind); }, [open, initialKind]);
   // 换分类或关窗时回列表：停在上一类的某张图上会让人以为点错了。
   useEffect(() => { setFocusedId(undefined); }, [kind, open]);
+  const toggleDesc = (id: string) => setOpenDesc(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const assets = episode.assets.filter(asset => asset.kind !== 'voice' && asset.kind === kind);
   const focused = assets.find(asset => asset.id === focusedId);
   const focusIndex = focused ? assets.indexOf(focused) : -1;
@@ -446,16 +457,22 @@ function AssetsDialog({ open, episode, onClose, onPatch, initialKind, generation
         <button key={value} className={`chip ${kind === value ? 'is-active' : ''}`} onClick={() => setKind(value)}>{assetKindLabel[value]}</button>)}
     </div>
     {assets.length === 0 ? <p className="muted">这一集还没有{assetKindLabel[kind]}资产。导入分镜时会自动建好。</p>
-      : !focused ? <div className="asset-grid">
-        {assets.map(asset => <button key={asset.id} className="asset-card asset-card-button" onClick={() => setFocusedId(asset.id)} aria-label={`查看${asset.name}详情`}>
-          <AssetThumb asset={asset} />
-          <div className="min-w-0 stack-tight">
-            <div className="row tight"><strong className="truncate">{asset.name}</strong><span className="tag subtle">{assetKindLabel[asset.kind]}</span></div>
-            <p className="small muted clamp-2">{fixedDescription(asset) || '尚未设置固定描述'}</p>
-            {!asset.lock.trim() && <span className="tag warning">未锁定 · 生成视频前必须补上</span>}
-          </div>
-        </button>)}
-      </div>
+      : !focused ? <div className="asset-table-wrap"><table className="asset-table assets-dialog-table">
+        <thead><tr><th scope="col">名称</th><th scope="col">固定描述</th><th scope="col">关联镜头</th><th scope="col">图片</th><th scope="col">操作</th></tr></thead>
+        <tbody>{assets.map(asset => <tr key={asset.id} className="asset-row">
+          <td><div className="asset-name-cell">
+            <button type="button" className="text-button asset-name" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}>{asset.name}</button>
+            {asset.lock.trim() ? <span className="tag subtle">已锁定</span> : <span className="tag warning">未锁定</span>}
+          </div></td>
+          <td><button type="button" className={`text-button form-desc ${openDesc.has(asset.id) ? 'is-open' : ''}`.trim()} aria-expanded={openDesc.has(asset.id)} title={openDesc.has(asset.id) ? '收起描述' : '展开全文'} onClick={() => toggleDesc(asset.id)}>{fixedDescription(asset) || '尚未设置固定描述'}</button></td>
+          <td className="asset-cell-muted">{currentShotNumbers(episode, asset.id).join('、') || '未被引用'}</td>
+          <td><button type="button" className="asset-table-thumb" aria-label={`查看${asset.name}图片`} onClick={() => setFocusedId(asset.id)}><AssetTableThumb asset={asset} /></button></td>
+          <td><div className="asset-row-actions">
+            <Button variant="ghost" size="sm" aria-label={`生成${asset.name}设定图`} onClick={() => void generation.generateAssetImage(asset.id)}><Sparkles size={14} /></Button>
+            <Button variant="ghost" size="sm" aria-label={`查看${asset.name}详情`} onClick={() => setFocusedId(asset.id)}><Maximize2 size={14} /></Button>
+          </div></td>
+        </tr>)}</tbody>
+      </table></div>
         : <div className="stack media-detail">
           <div className="row between">
             <span className="small muted">{focusIndex + 1} / {assets.length} · {assetKindLabel[focused.kind]}</span>

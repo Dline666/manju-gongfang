@@ -139,14 +139,14 @@ try {
       const dialog = page.getByRole('dialog');
       await dialog.locator('.chip.is-active').waitFor();
       assert.equal(await dialog.locator('.chip.is-active').innerText(), expected, `${label} 应定位到「${expected}」`);
-      assert.equal(await dialog.locator('.asset-card').count(), count, `${label} 该显示 ${count} 个资产`);
+      assert.equal(await dialog.locator('.asset-row').count(), count, `${label} 该显示 ${count} 个资产`);
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
       await dialog.waitFor({ state: 'hidden' });
     }
     const imageCallsBefore = paidRequests;
     await page.getByRole('button', { name: '角色设置', exact: true }).click();
-    // 「生成设定图」现在在资产详情里：先点开一张卡，再生成。
-    await page.locator('.asset-card-button').first().click();
+    // 「生成设定图」现在在资产详情里：先点开一行，再生成。
+    await page.getByRole('button', { name: /查看.*详情/ }).first().click();
     await page.locator('.lightbox').waitFor();
     await page.getByRole('button', { name: /生成设定图/ }).first().click();
     await page.getByText(/还没有固定描述/).first().waitFor({ timeout: 8000 });
