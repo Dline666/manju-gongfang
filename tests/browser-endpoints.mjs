@@ -6,8 +6,6 @@ import assert from 'node:assert/strict';
 import { pickSearchOption, searchSelectOptions } from './select-helpers.mjs';
 
 const BASE = 'https://api.example.com/v1';
-const source = '人物：阿青：黑短发，青色布衣\n场景：山门：黑石阶，薄雾\n道具：断剑：红绳剑柄，斜断口\n'
-  + Array.from({ length: 10 }, (_, i) => `第${i + 1}镜（9秒）\n画面：阿青在山门举起断剑\n开场：石阶前\n动作：抬手\n终点：站定\n运镜：推进\n台词：阿青：我回来了。`).join('\n\n');
 
 const browser = await chromium.launch({ executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
 const results = [];
@@ -27,23 +25,22 @@ try {
       return route.fulfill({ json: { ok: true, data: {} } });
     });
 
-    // 建一个作品并导入剧本（沿用既有回归的稳定路径）
-    await page.goto('http://127.0.0.1:5173/');
-    await page.getByLabel('一句话故事主题').fill('断剑归门');
-    await page.getByRole('button', { name: '开始创作', exact: true }).click();
-    await page.getByRole('button', { name: '导入剧本', exact: true }).click();
-    await page.getByLabel('或粘贴原文').fill(source);
-    await page.getByRole('button', { name: '解析并预览', exact: true }).click();
-    // 旧格式剧本过不了新规格校验：走「仍按旧规格导入」这条显式出口。
-    const legacyImport = page.getByRole('button', { name: '仍按旧规格导入（不锁镜数与时长）' });
-    if (await legacyImport.isVisible()) await legacyImport.click();
-    else await page.getByRole('button', { name: '确认导入并替换剧本', exact: true }).click();
-    await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    // 导入只存剧本正文，不建资产；这里手动建一个人物用于生图。
-    await page.evaluate(async () => {
+    // 建一个系列并直接铺好这一集的资产：端点是设置项，这里只需要有人物可以生图。
+    await page.goto('http://127.0.0.1:5173/#/library');
+    await page.waitForTimeout(500);
+    const seeded = await page.evaluate(async () => {
       const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
-      const p = s.getStudio().projects[0];
-      s.updateProject(p.id, { assets: [{ id: 'ep-hero', kind: 'character', name: '阿青', description: '黑短发，青色布衣', lock: '黑短发，青色布衣' }] });
+      const series = s.createSeries('断剑归门', '东方玄幻水墨风');
+      const ep = series.episodes[0];
+      s.updateEpisode(series.id, ep.id, cur => ({ ...cur,
+        assets: [{ id: 'ep-hero', kind: 'character', name: '阿青', description: '黑短发，青色布衣', lock: '黑短发，青色布衣' }],
+        shots: [1, 2, 3, 4].map(n => ({
+          id: `ep-shot-${n}`, number: n, duration: 12, visual: `第${n}镜画面`, camera: '中景·固定·平视',
+          start: n === 1 ? '开场' : '接上镜', action: '动作', end: n === 4 ? '终点' : '雨落',
+          dialogues: [], assetIds: ['ep-hero'], references: [], audioMode: 'original',
+        })),
+        storyboardReady: true }), false);
+      return { seriesId: series.id, episodeId: ep.id };
     });
 
     // 设置页：加一个自定义端点
@@ -78,12 +75,12 @@ try {
     assert.ok(stored.includes('api.example.com'), 'Base URL 应作为作品配置保存在本机');
 
     // 用它生图：请求体必须原样带上协议、Base URL 与模型 ID
-    await page.goto('http://127.0.0.1:5173/#/assets');
-    await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
-    await page.getByRole('button', { name: '生成设定图', exact: true }).click();
-    await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
-    await page.getByRole('dialog').waitFor({ state: 'hidden' });
-    const image = calls.find(call => call.action === 'image');
+    await page.goto(`http://127.0.0.1:5173/#/library/${seeded.seriesId}/${seeded.episodeId}`);
+    await page.getByRole('button', { name: '角色设置', exact: true }).click();
+    await page.getByRole('button', { name: /生成设定图/ }).first().click();
+    const image = await (async () => {
+      for (let i = 0; i < 60; i++) { const hit = calls.find(call => call.action === 'image'); if (hit) return hit; await page.waitForTimeout(250); }
+    })();
     assert.ok(image, '自定义端点应发出生图请求');
     assert.equal(image.body.provider, 'openai-compatible');
     assert.equal(image.body.baseUrl, BASE);

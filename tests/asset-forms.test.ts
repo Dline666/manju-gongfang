@@ -1,13 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { Asset, Project } from '../src/domain/types';
-import { formBaseAsset, referenceAssetFor, removeAsset, splitFormName } from '../src/features/assets/helpers';
+import type { Asset } from '../src/domain/types';
+import { formBaseAsset, groupAssets, referenceAssetFor, splitFormName } from '../src/features/episode/assetForms';
 
 function asset(id: string, name: string, extra: Partial<Asset> = {}): Asset {
   return { id, kind: 'character', name, description: '描述', lock: '固定短语', ...extra };
-}
-function projectWith(assets: Asset[]): Project {
-  return { id: 'project', name: '测试', theme: '', style: '', createdAt: '', updatedAt: '', revision: 0, skills: [], shots: [], assets, source: 'empty', storyboardReady: false };
 }
 
 test('非基础形态能解析出基础形态，基础形态与普通资产不附带参考图', () => {
@@ -47,6 +44,35 @@ test('参考图只解析仍存在且不是自己的资产，旧形态沿用基�
   assert.equal(referenceAssetFor(asset('dangling', '悬空', { referenceAssetId: 'gone' }), assets), undefined);
   assert.equal(referenceAssetFor(asset('legacy', '阿青 · 旧形态'), [source, asset('legacy', '阿青 · 旧形态')])?.id, 'source', '旧存档里的形态自动沿用基础形态的设定图');
   assert.equal(referenceAssetFor(asset('cleared', '阿青 · 已清空', { referenceAssetId: '' }), [source, asset('cleared', '阿青 · 已清空', { referenceAssetId: '' })]), undefined, '空字符串表示明确清空，不能回落到基础形态');
-  const removed = removeAsset(projectWith([source, form, other]), 'source');
-  assert.deepEqual(removed.assets.map(item => item.referenceAssetId), ['', ''], '删除来源资产后写入明确清空，避免回落到基础形态');
+});
+
+test('分组把形态挂到基础形态下，形态先出现在数组里也不会自成一组', () => {
+  const base = asset('base', '阿青');
+  const form = asset('form', '阿青 · 战损');
+  const other = asset('other', '老剑师');
+  const grouped = groupAssets([form, base, other]);
+  assert.equal(grouped.length, 2, '两个基础形态各一组');
+  assert.equal(grouped[0].base.id, 'base', '基础形态在前');
+  assert.deepEqual(grouped[0].forms.map(item => item.id), ['form']);
+  assert.deepEqual(grouped[1].forms, []);
+  assert.deepEqual(groupAssets([other]).map(group => group.base.id), ['other']);
+});
+
+test('找不到基础形态的游离形态单独成组，不会被丢掉', () => {
+  const orphan = asset('orphan', '无人 · 形态');
+  const grouped = groupAssets([orphan]);
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].base.id, 'orphan', '游离形态要能显示出来');
+  assert.deepEqual(grouped[0].forms, []);
+});
+
+test('同名基础形态按类别互不干扰', () => {
+  const person = asset('p', '阿青');
+  const scene = asset('s', '阿青', { kind: 'scene' });
+  const personForm = asset('pf', '阿青 · 战损');
+  const sceneForm = asset('sf', '阿青 · 战损', { kind: 'scene' });
+  const grouped = groupAssets([person, scene, personForm, sceneForm]);
+  assert.equal(grouped.length, 2);
+  assert.deepEqual(grouped[0].forms.map(item => item.id), ['pf']);
+  assert.deepEqual(grouped[1].forms.map(item => item.id), ['sf']);
 });

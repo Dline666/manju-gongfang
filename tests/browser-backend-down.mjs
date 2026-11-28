@@ -13,26 +13,35 @@ try {
     // 模拟 dev 代理在 Function 没起来时的 502：不是 JSON 信封
     await page.route('**/functions/v1/app?*', route => route.fulfill({ status: 502, contentType: 'text/plain', body: 'Proxy error: connect ECONNREFUSED 127.0.0.1:8000' }));
 
-    await page.goto('http://127.0.0.1:5173/');
-    await page.evaluate(async () => {
-      const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')) || '/src/store/studio.ts');
-      const { templateScript } = await import('/src/features/script/creation.ts');
-      const p = s.createProject('后端不可达测试', '山门断剑');
-      const draft = templateScript(p.theme);
-      draft.assets = [{ id: 'hero', kind: 'character', name: '阿青', description: '十七岁少年，灰白旧布衣', lock: '十七岁少年，灰白旧布衣' }];
-      s.updateProject(p.id, { ...draft, source: 'template', storyboardReady: true });
+    await page.goto('http://127.0.0.1:5173/#/library');
+    await page.waitForTimeout(500);
+    const seeded = await page.evaluate(async () => {
+      const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
+      const series = s.createSeries('后端不可达测试', '东方玄幻水墨风');
+      const ep = series.episodes[0];
+      s.updateEpisode(series.id, ep.id, cur => ({ ...cur,
+        assets: [{ id: 'hero', kind: 'character', name: '阿青', description: '十七岁少年，灰白旧布衣', lock: '十七岁少年，灰白旧布衣' }],
+        shots: [1, 2, 3, 4].map(n => ({
+          id: `bd-shot-${n}`, number: n, duration: 12, visual: `第${n}镜画面`, camera: '中景·固定·平视',
+          start: n === 1 ? '开场' : '接上镜', action: '动作', end: n === 4 ? '终点' : '雨落',
+          dialogues: [], assetIds: ['hero'], references: [], audioMode: 'original',
+        })),
+        storyboardReady: true }), false);
       s.setKey('openai', 'fixture-key');
-      location.hash = '/assets';
+      return { seriesId: series.id, episodeId: ep.id };
     });
-    await page.getByRole('button', { name: '查看阿青详情', exact: true }).click();
-    await page.getByRole('button', { name: '生成设定图', exact: true }).click();
-    await page.getByRole('button', { name: '确认发送并生成图片', exact: true }).click();
-    await page.getByText('本地服务没有响应', { exact: false }).waitFor({ timeout: 20000 });
-    const text = await page.getByRole('dialog').textContent();
+
+    await page.goto(`http://127.0.0.1:5173/#/library/${seeded.seriesId}/${seeded.episodeId}`);
+    await page.getByRole('button', { name: '角色设置', exact: true }).click();
+    await page.getByRole('button', { name: /生成设定图/ }).first().click();
+    // 生图失败不弹新窗：错误留在托盘/提示里，话要说清是本地服务没起
+    const toast = page.getByText('本地服务没有响应', { exact: false }).first();
+    await toast.waitFor({ timeout: 20000 });
+    const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
     assert.ok(text.includes('npm run dev:function'), '要告诉用户怎么把本地服务起起来');
     assert.ok(!text.includes('检查模型配置和网络'), '后端不可达时不该再指向模型配置');
     assert.deepEqual(errors, []);
-    results.push({ width, passed: true, message: text.replace(/\s+/g, ' ').slice(0, 120), errors });
+    results.push({ width, passed: true, message: text.slice(0, 120), errors });
     await context.close();
   }
   console.log(JSON.stringify({ passed: true, results }, null, 2));

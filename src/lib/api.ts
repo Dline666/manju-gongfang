@@ -22,7 +22,10 @@ const messages: Record<string, string> = {
   invalid_screenplay: '剧本结构或时长不符合要求（需要四部分结构、每个动作与对白块都标注【镜头】和时长），请修改主题或原文后重新生成。',
   invalid_director: '导演分镜结构不完整，请检查后重试，或改用本地补全。',
   invalid_assets: '资产提取结果或逐镜关联不完整，现有剧本与资产未被修改。',
+  invalid_chat: '模型这次没有返回可用文本（可能被内容策略拦截或输出被截断）。请改一句说法再试，这次不计入作品内容。',
   submission_unknown: '未收到服务商明确结果，请先检查已有任务，避免重复付费。',
+  upstream_unreachable: '连不上模型服务商：请求没有发出。请检查网络，以及 .env 里配置的 HTTP_PROXY / HTTPS_PROXY 是否可用。',
+  request_aborted: '请求已取消。这次可能已经送达并计费，重发前建议先去平台确认。',
   media_unavailable: '暂时无法下载这段素材，请从原平台下载后重新导入。',
   invalid_input: '请求参数不符合模型要求，请检查时长、模型和参考图。',
   upstream_error: '模型服务返回异常，请检查配置后再试。', service_unavailable: '生成服务暂不可用，请稍后重试。',
@@ -38,6 +41,7 @@ const hints = {
   model: '模型已下线或 ID 写错：换一个模型',
   unknown: '不确定是否已扣费：先查平台任务记录，别立刻重发',
   unavailable: '服务商暂时不可用：稍后重试',
+  network: '网络没通：检查网络与 .env 里的代理设置，再重发',
   route: '服务版本不一致：重启本地 Function 服务后再试',
 };
 export function hintFor(code: string, status = 0): string | undefined {
@@ -49,6 +53,8 @@ export function hintFor(code: string, status = 0): string | undefined {
   if (status === 402 || code === 'insufficient_balance') return hints.balance;
   if (status === 429 || code === 'rate_limited') return hints.rate;
   if (status === 404 || code === 'provider_not_found') return hints.model;
+  // 连不上服务商多半是本机代理的问题，让用户去查代理比「稍后再试」有用。
+  if (code === 'upstream_unreachable') return hints.network;
   if (status === 504 || code === 'submission_unknown') return hints.unknown;
   if (status >= 500 || code === 'upstream_unavailable') return hints.unavailable;
   return undefined;
@@ -137,6 +143,65 @@ export async function callApi<T>(action: string, payload: object, signal?: Abort
     recordStatus('available');
     return result.data as T;
   } catch (error) { recordStatus('failed', error); throw error; }
+}
+/**
+ * 流式调用：只在 `chat` 上用。
+ * 返回的 `text` 每次都是累计值（不是增量），调用方直接覆盖着渲染，不会漏块也不会重块。
+ * onDelta 抛异常等于取消：用于「用户关掉页面」这类主动放弃。
+ */
+export async function callApiStream(
+  action: string, payload: object, onDelta: (textSoFar: string) => void, signal?: AbortSignal,
+): Promise<{ text: string }> {
+  const recordStatus = providerCallStatus(action, payload);
+  try {
+    const response = await request(action, payload, signal);
+    const type = response.headers.get('Content-Type') ?? '';
+    // 后端可能因为我们把 chat 当流式而返回一次性 JSON（比如 Gemini 那条通道），两种都收。
+    if (!type.includes('text/event-stream')) {
+      const result = await response.json().catch(() => null);
+      if (!result || result.ok !== true) throw new ApiError(result?.error || 'submission_unknown');
+      const text = String(result.data?.text ?? '');
+      onDelta(text);
+      recordStatus('available');
+      return { text };
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new ApiError('invalid_chat');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let failed: ApiError | undefined;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf('\n');
+        if (!line.startsWith('data:')) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        let event: { delta?: unknown; done?: unknown; error?: unknown; detail?: unknown };
+        try { event = JSON.parse(raw); } catch { continue; }
+        // 流已经开始（HTTP 200），错误只能写在流里：记住它，等流结束再抛。
+        if (typeof event.error === 'string') { failed = new ApiError(event.error, 502, undefined, typeof event.detail === 'string' ? event.detail : undefined); continue; }
+        if (typeof event.delta === 'string' && event.delta) { text += event.delta; onDelta(text); }
+        if (event.done === true) break;
+      }
+      if (failed) break;
+    }
+    void reader.cancel().catch(() => {});
+    if (failed) throw failed;
+    if (!text.trim()) throw new ApiError('invalid_chat');
+    recordStatus('available');
+    return { text };
+  } catch (error) {
+    const api = error instanceof ApiError ? error : new ApiError(signal?.aborted ? 'request_aborted' : 'submission_unknown', 0, undefined, errorMessage(error));
+    recordStatus('failed', api);
+    throw api;
+  }
 }
 export async function callBinary(action: string, payload: object, signal?: AbortSignal) {
   const recordStatus = providerCallStatus(action, payload);

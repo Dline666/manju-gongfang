@@ -14,12 +14,32 @@ try {
     page.on('pageerror', e => errors.push(e.message));
     await page.route('**/functions/v1/app?*', route => route.fulfill({ json: { ok: true, data: { instruction: '固定契约（测试替身）', schema: { type: 'object' } } } }));
 
-    await page.goto('http://127.0.0.1:5173/');
-    await page.getByLabel('一句话故事主题').fill('断剑归门');
-    await page.getByRole('button', { name: '开始创作', exact: true }).click();
+    await page.goto('http://127.0.0.1:5173/#/library');
+    await page.waitForTimeout(500);
+    // 模板是全局/系列级的设置，本来不需要作品；这里只建一个系列，让「系列级覆盖」那几步有落点。
+    const seeded = await page.evaluate(async () => {
+      const s = await import(performance.getEntriesByType('resource').map(e => e.name).find(n => n.includes('/src/store/studio.ts')));
+      const series = s.createSeries('断剑归门', '东方玄幻水墨风，冷灰 + 金色灵光');
+      s.updateEpisode(series.id, series.episodes[0].id, cur => ({ ...cur,
+        assets: [
+          { id: 'a-hero', kind: 'character', name: '阿青', description: '少年', lock: '灰白旧衣' },
+          { id: 'a-scene', kind: 'scene', name: '山门', description: '石阶', lock: '青灰石阶' },
+          { id: 'a-prop', kind: 'prop', name: '断剑', description: '断剑', lock: '断口有金光' },
+        ],
+        // 分镜表只在有镜头时渲染工具栏，`#/assets` 的入口已被剧集页取代，所以这里得有一集真内容。
+        shots: [1, 2, 3, 4].map(n => ({
+          id: `seed-shot-${n}`, number: n, duration: 12, visual: `第${n}镜画面`,
+          camera: '中景·固定·平视', start: n === 1 ? '开场' : '接上镜', action: '动作',
+          end: n === 4 ? '终点' : '雨落', dialogues: [], assetIds: ['a-hero', 'a-scene', 'a-prop'],
+          references: [], audioMode: 'original',
+        })),
+        storyboardReady: true }), false);
+      return { seriesId: series.id, episodeId: series.episodes[0].id };
+    });
 
     // 1. 图片栏里分出人物 / 场景 / 道具三段。
-    await page.goto('http://127.0.0.1:5173/#/settings/templates?kind=image');
+    // 用全局作用域看模板本身：这一段验的是模板分段，不该被某个系列的数据带偏。
+    await page.goto('http://127.0.0.1:5173/#/settings/templates?kind=image&scope=global');
     const editor = page.locator('.template-editor');
     await editor.waitFor();
     const cats = editor.getByRole('tablist', { name: '品类' });
@@ -91,29 +111,29 @@ try {
     await page.waitForTimeout(300);
     assert.ok(!(await blockTitles(editor2)).includes('人物专用条款'), '重开后场景段仍然没有人物那段');
 
-    // 9. 资产页的「编辑模板」直接落到对应品类那一段。
-    await page.goto('http://127.0.0.1:5173/#/assets');
-    await page.waitForTimeout(300);
-    const assetTab = page.getByRole('tab', { name: '场景' }).first();
-    await assetTab.click();
-    await page.waitForTimeout(300);
-    await page.getByRole('button', { name: '编辑模板', exact: true }).click();
+    // 9. 剧集资产弹窗的「编辑模板」直接落到对应品类那一段。
+    await page.goto(`http://127.0.0.1:5173/#/library/${seeded.seriesId}/${seeded.episodeId}`);
+    await page.getByRole('button', { name: '场景设置', exact: true }).click();
+    await page.getByRole('button', { name: /编辑场景模板/ }).click();
     await page.locator('.template-editor').waitFor();
     const hash = await page.evaluate(() => location.hash);
-    assert.ok(hash.includes('kind=image') && hash.includes('sub=scene'), `资产页跳转要带上 sub=scene，实际 ${hash}`);
+    assert.ok(hash.includes('kind=image') && hash.includes('sub=scene'), `资产入口跳转要带上 sub=scene，实际 ${hash}`);
     const editor3 = page.locator('.template-editor');
     await editor3.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '场景', exact: true }).waitFor();
-    assert.equal(await editor3.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '场景', exact: true }).getAttribute('aria-selected'), 'true', '资产页跳过去要直接停在场景段');
+    assert.equal(await editor3.getByRole('tablist', { name: '品类' }).getByRole('tab', { name: '场景', exact: true }).getAttribute('aria-selected'), 'true', '资产入口跳过去要直接停在场景段');
 
     // 10. 真实生图链路：场景与道具的设定图提示词里不能出现人物那段条款。
-    await page.goto('http://127.0.0.1:5173/#/assets');
+    await page.goto(`http://127.0.0.1:5173/#/library/${seeded.seriesId}/${seeded.episodeId}`);
     await page.waitForTimeout(300);
     const prompts = await page.evaluate(async () => {
       const names = performance.getEntriesByType('resource').map(e => e.name);
       const store = await import(names.find(n => n.includes('/src/store/studio.ts')));
       const lib = await import(names.find(n => n.includes('/src/lib/prompts.ts')));
       const state = store.getStudio();
-      const project = state.projects[0];
+      // Series 不是 Project：提示词函数吃的是「一集」，画幅/风格那些系列级设置要自己补上。
+      const series = state.series[0];
+      const episode = series.episodes[0];
+      const project = { ...episode, name: series.name, theme: series.name, style: series.style ?? '', aspect: series.aspect, resolution: series.resolution };
       const assets = [
         { id: 'a-hero', kind: 'character', name: '阿青', description: '少年', lock: '灰白旧衣' },
         { id: 'a-scene', kind: 'scene', name: '山门', description: '石阶', lock: '青灰石阶' },

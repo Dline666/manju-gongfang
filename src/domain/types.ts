@@ -1,7 +1,7 @@
 export type ProviderProtocol = 'gemini' | 'deepseek' | 'openai' | 'seedream' | 'siliconflow' | 'seedance' | 'minimax' | 'openai-compatible';
 export type Stage = 'library' | 'script' | 'assets' | 'director' | 'storyboard' | 'generation' | 'export' | 'settings';
 export type AssetKind = 'character' | 'scene' | 'prop' | 'voice';
-export type SkillId = 'script' | 'storyboard' | 'image' | 'video';
+export type SkillId = 'script' | 'storyboard' | 'image' | 'video' | 'novel' | 'novel-to-screenplay' | 'screenplay-to-storyboard-json';
 /** 端点能承担的环节。 */
 export type Capability = 'script' | 'image' | 'video' | 'speech';
 /**
@@ -48,6 +48,11 @@ export interface Shot {
   subjects?: string[];
   /** 剧本里为这一镜指定的画面类型（如「远景→摇镜」）；导演步骤必须落实。 */
   cameraHint?: string;
+  /**
+   * 导入分镜 JSON 时的连续性锁（endState）：空间、位置、光线、道具、情绪。
+   * 存成结构化的一段文本，视频提示词的连续性段落直接引用它，不引入新的字段结构。
+   */
+  continuity?: string;
 }
 export interface Confirmed {
   script?: number; assets?: number; director?: number;
@@ -104,6 +109,11 @@ export interface PromptTemplateSet {
    * 没改过的内置 Skill 仍用出厂文案。
    */
   builtinSkills?: Record<string, string>;
+  /**
+   * 被用户主动关掉的内置 Skill id。
+   * 关掉不等于删除：正文档还在，随时能再打开。这是「可开关」的落地点。
+   */
+  disabledBuiltinSkills?: string[];
 }
 /** v1 旧结构：块 id → 覆盖文本。载入时迁移成 v2 的 templates。 */
 export interface PromptConfigV1 { v: 1; style?: StyleSpec; blocks?: Record<string, string> }
@@ -155,8 +165,15 @@ export interface Settings {
   promptTemplates?: PromptTemplateSet;
 }
 export interface ProviderStatus { status: 'available' | 'failed'; action: string; model?: string; error?: string; hint?: string }
+/**
+ * 会持久化的那一部分状态。
+ *
+ * 现在是「系列 → 集」两层（v2）。keys 与 providerStatus 只在内存里，不属于存档形状，
+ * 但设置页会读它们，所以仍在这里声明。
+ * 用 type-only 导入 Series：`domain/series` 反过来 import 本文件，运行时不产生循环依赖。
+ */
 export interface StudioState {
-  version: 1; projects: Project[]; activeId: string | null; settings: Settings;
+  version: 2; series: import('./series').Series[]; activeSeriesId: string | null; activeEpisodeId: string | null; settings: Settings;
   keys: Record<string, string>; providerStatus: Record<string, ProviderStatus>; storageError: string | null;
 }
 export interface PageProps { project: Project; navigate: (stage: Stage) => void }
