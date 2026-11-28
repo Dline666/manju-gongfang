@@ -60,6 +60,12 @@ details.alert ul{margin:0;padding-left:18px}
 .compact-media-card{position:relative}
 .lightbox{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:22px;align-items:start}
 .studio-dialog.wide-dialog{max-width:min(1120px,95vw)!important}
+/* 固定尺寸弹窗：外面不再随内容伸缩，滚动关在内容区里，切分类时窗口纹丝不动。 */
+.studio-dialog.fixed-dialog{width:min(1120px,95vw)!important;max-width:min(1120px,95vw)!important;height:min(780px,88dvh);max-height:88dvh;overflow:hidden;display:flex;flex-direction:column}
+.dialog-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:16px;padding-right:2px}
+.assets-kind-bar{display:flex;align-items:center;gap:10px}
+.assets-kind-select{appearance:none;width:auto;min-width:104px;padding:7px 30px 7px 11px;border-radius:9px;background:#151618 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888d92' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;font-size:12px;cursor:pointer}
+.assets-kind-select:focus{box-shadow:0 0 0 2px #22cbb811}
 .lightbox-media{min-width:0;position:sticky;top:0}
 .lightbox-info{min-width:0}
 .shot-summary{display:flex;align-items:center;gap:10px;min-width:0;flex:1;flex-wrap:wrap;color:inherit}

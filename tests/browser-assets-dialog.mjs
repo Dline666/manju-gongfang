@@ -146,14 +146,20 @@ try {
   await page.waitForTimeout(500);
   assert.equal(await page.locator('.assets-dialog-table .asset-row').count(), 2, '应能回到列表');
 
-  await page.getByRole('button', { name: '场景', exact: true }).click();
+  // 弹窗尺寸固定：切分类只换内容，窗口不该跟着长高缩矮。
+  const boxOf = () => page.evaluate(() => { const r = document.querySelector('.studio-dialog').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; });
+  assert.equal(await page.evaluate(() => document.querySelector('.studio-dialog').classList.contains('fixed-dialog')), true, '资产弹窗应是固定尺寸');
+  const boxCharacter = await boxOf();
+
+  await page.getByLabel('资产分类').selectOption('scene');
   await page.waitForTimeout(500);
+  assert.deepEqual(await boxOf(), boxCharacter, `切到场景后弹窗尺寸不该变：${JSON.stringify(boxCharacter)}`);
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.assets-dialog-table .asset-name')].map(el => el.textContent)), ['山门']);
 
   // 换分类应自动回列表，不能停在上一类的某张图上
   await page.locator('.assets-dialog-table .asset-name').first().click();
   await page.waitForTimeout(400);
-  await page.getByRole('button', { name: '道具', exact: true }).click();
+  await page.getByLabel('资产分类').selectOption('prop');
   await page.waitForTimeout(500);
   assert.equal(await page.evaluate(() => Boolean(document.querySelector('.lightbox'))), false, '换分类应回到列表');
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.assets-dialog-table .asset-name')].map(el => el.textContent)), ['断剑']);

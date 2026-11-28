@@ -553,11 +553,14 @@ function AssetsDialog({ open, episode, onClose, onPatch, onAdd, initialKind, gen
     </tr>;
   };
 
-  return <Modal open={open} onClose={onClose} wide title="角色 / 场景 / 道具设置"
+  return <Modal open={open} onClose={onClose} wide fixed title="角色 / 场景 / 道具设置"
     description="资产按集存放。固定描述会逐字进入提示词，改了要让相关镜头重新生成。">
-    <div className="row wrap" role="group" aria-label="资产分类">
-      {(Object.keys(assetKindLabel) as Array<keyof typeof assetKindLabel>).filter(value => value !== 'voice').map(value =>
-        <button key={value} className={`chip ${kind === value ? 'is-active' : ''}`} onClick={() => setKind(value)}>{assetKindLabel[value]}</button>)}
+    <div className="assets-kind-bar">
+      <select className="assets-kind-select" aria-label="资产分类" value={kind} onChange={event => setKind(event.target.value as 'character' | 'scene' | 'prop')}>
+        {(Object.keys(assetKindLabel) as Array<keyof typeof assetKindLabel>).filter(value => value !== 'voice').map(value =>
+          <option key={value} value={value}>{assetKindLabel[value]}</option>)}
+      </select>
+      <span className="small muted">{assets.length} 个{assetKindLabel[kind]}</span>
     </div>
     {assets.length === 0 ? <p className="muted">这一集还没有{assetKindLabel[kind]}资产。导入分镜时会自动建好。</p>
       : !focused ? <div className="asset-table-wrap"><table className="asset-table assets-dialog-table">

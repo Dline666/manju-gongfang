@@ -6,8 +6,12 @@ import { CircleHelp } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiError, errorMessage } from '../lib/api';
 export { Button };
-export function Modal({ open, onClose, title, description, children, wide }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode; wide?: boolean }) {
-  return <Dialog open={open} onOpenChange={value => { if (!value) onClose(); }}><DialogContent className={`studio-dialog ${wide ? 'wide-dialog' : ''}`.trim()}><DialogTitle>{title}</DialogTitle><DialogDescription>{description || '确认后保存，关闭不会提交更改。'}</DialogDescription>{children}</DialogContent></Dialog>;
+/**
+ * fixed：固定尺寸（宽高都不随内容跳），内容区自己滚。
+ * 用在会来回切分类/翻页的弹窗上——否则每换一次内容窗子就长高一截，手一直在抖。
+ */
+export function Modal({ open, onClose, title, description, children, wide, fixed }: { open: boolean; onClose: () => void; title: string; description?: string; children: ReactNode; wide?: boolean; fixed?: boolean }) {
+  return <Dialog open={open} onOpenChange={value => { if (!value) onClose(); }}><DialogContent className={`studio-dialog ${wide ? 'wide-dialog' : ''} ${fixed ? 'fixed-dialog' : ''}`.trim().replace(/\s+/g, ' ')}><DialogTitle>{title}</DialogTitle><DialogDescription>{description || '确认后保存，关闭不会提交更改。'}</DialogDescription>{fixed ? <div className="dialog-body">{children}</div> : children}</DialogContent></Dialog>;
 }
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="field"><span>{label}</span>{children}{hint && <small className="muted">{hint}</small>}</label>; }
 export function Empty({ title, text, children }: { title: string; text: string; children?: ReactNode }) { return <div className="empty"><div className="empty-symbol">◇</div><h3>{title}</h3><p className="muted">{text}</p>{children}</div>; }

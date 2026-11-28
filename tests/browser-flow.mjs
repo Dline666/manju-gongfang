@@ -134,11 +134,13 @@ try {
     await page.getByText(/还没写固定描述/).first().waitFor({ timeout: 10000 });
 
     // 7b) 三个资产入口各自落到对应分类；这一集只有人物与场景，道具分类该给空态。
-    for (const [label, expected, count] of [['角色设置', '人物', 1], ['场景设置', '场景', 1], ['道具设置', '道具', 0]]) {
+    for (const [label, value, text, count] of [['角色设置', 'character', '人物', 1], ['场景设置', 'scene', '场景', 1], ['道具设置', 'prop', '道具', 0]]) {
       await page.getByRole('button', { name: label, exact: true }).click();
       const dialog = page.getByRole('dialog');
-      await dialog.locator('.chip.is-active').waitFor();
-      assert.equal(await dialog.locator('.chip.is-active').innerText(), expected, `${label} 应定位到「${expected}」`);
+      const picker = dialog.getByLabel('资产分类');
+      await picker.waitFor();
+      assert.equal(await picker.inputValue(), value, `${label} 应定位到「${text}」`);
+      assert.equal(await picker.locator('option:checked').innerText(), text, `${label} 的下拉应显示「${text}」`);
       assert.equal(await dialog.locator('.asset-row').count(), count, `${label} 该显示 ${count} 个资产`);
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
       await dialog.waitFor({ state: 'hidden' });
